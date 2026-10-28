@@ -1198,6 +1198,28 @@ RC cannot handle — as a single transferable, freezable value:
   `chan_send` (go-arguments are the next step); payloads are raw offsets —
   typed relative containers land in W1; C backend only (like `mem_*`).
 
+#### W1: wvec — a typed, position-independent container inside a world
+
+`wvec_*` is an i64 vector that lives INSIDE the world and stores only
+**relative offsets** from `w->base` (header `{len, cap, data_off}` + data).
+The base is re-read on every access — growth realloc moves the region but
+invalidates nothing:
+
+- `wvec_new(w) -> i64` (returns the header OFFSET, not a pointer),
+  `wvec_push(w, v, x)`, `wvec_get(w, v, i)`, `wvec_len(w, v)`,
+  `world_dump(w) -> bytes` (memcpy of `base[0..used]`), `world_load(b) -> i64`
+  (fresh arena, same offsets — no fixup; loaded worlds are mutable).
+- O(1) access (i64 elements inline); an offset table for variable-size
+  elements (str/bytes/nested) is W1.5.
+- Verifier: `wvec_push` is a check-only mutator — legal in loops (unlike
+  freeze/free) but REFUTED on a frozen world (`mutate-after-freeze`) or a
+  moved one (`wvec_push след move`); `wvec_get`/`wvec_len` on a frozen
+  world are clean (readers), on freed/moved — use-after-free/move.
+  Oracle: `examples/verify/worlds.baga`; runtime suite: `tests/wvec_test.baga`.
+- Raw `world_alloc` pointers are valid only until the next world growth —
+  `wvec_*` is the safe typed layer; dump only regions built through it (or
+  entirely from offset structures).
+
 ---
 
 ## 13. The Effect System

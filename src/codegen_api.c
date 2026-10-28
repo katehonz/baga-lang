@@ -1453,6 +1453,80 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return a->frozen;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_world_free(int64_t h) { baga_arena_free(h); }\n");
+    /* W1: wvec — typed вектор ВЪТРЕ в свят, с относителни офсети. Заглавието
+     * {len, cap, data_off} и данните са на офсети спрямо w->base, който се
+     * препрочита при всеки достъп: realloc-ът при растеж мести base, но
+     * офсетите остават валидни (position-independent регион). Резултат:
+     * world_dump е memcpy на base[0..used] и world_load го чете на произволен
+     * адрес — без fixup. Достъпът е O(1) (i64 елементи са inline; offset
+     * таблица за променливи елементи е W1.5). */
+    fprintf(out, "typedef struct { int64_t len; int64_t cap; int64_t data_off; } baga_WVec;\n");
+    fprintf(out, "static baga_Arena *baga_world_a(int64_t h, const char *op) {\n");
+    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    if (!a) { fprintf(stderr, \"baga: %%s: null world handle\\n\", op); exit(1); }\n");
+    fprintf(out, "    return a;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_world_mut_check(baga_Arena *a, const char *op) {\n");
+    fprintf(out, "    if (a->frozen) { fprintf(stderr, \"baga: %%s върху замразен свят — mutate-after-freeze\\n\", op); exit(1); }\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wvec_new(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_new\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wvec_new\");\n");
+    /* Офсет-първа дисциплина: arena_alloc може да realloc-не base, затова
+     * абсолютните указатели се превръщат в офсети веднага и header-ът се
+     * препрочита от base след всеки alloc. */
+    fprintf(out, "    int64_t hp = baga_arena_alloc(wh, (int64_t)sizeof(baga_WVec));\n");
+    fprintf(out, "    int64_t hoff = (int64_t)((char *)(intptr_t)hp - w->base);\n");
+    fprintf(out, "    int64_t dp = baga_arena_alloc(wh, 64);\n");
+    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + hoff);\n");
+    fprintf(out, "    v->len = 0; v->cap = 8;\n");
+    fprintf(out, "    v->data_off = (int64_t)((char *)(intptr_t)dp - w->base);\n");
+    fprintf(out, "    return hoff;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wvec_push(int64_t wh, int64_t voff, int64_t x) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wvec_push\");\n");
+    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    if (v->len == v->cap) {\n");
+    fprintf(out, "        int64_t old_off = v->data_off, old_len = v->len, nc = v->cap * 2;\n");
+    fprintf(out, "        int64_t nd = baga_arena_alloc(wh, nc * 8);\n");
+    fprintf(out, "        memcpy((char *)(intptr_t)nd, w->base + old_off, (size_t)old_len * 8);\n");
+    fprintf(out, "        v = (baga_WVec *)(w->base + voff);   /* base може да е преместен */\n");
+    fprintf(out, "        v->data_off = (int64_t)((char *)(intptr_t)nd - w->base);\n");
+    fprintf(out, "        v->cap = nc;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    int64_t *d = (int64_t *)(w->base + v->data_off);\n");
+    fprintf(out, "    d[v->len++] = x;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wvec_len(int64_t wh, int64_t voff) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_len\");\n");
+    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    return v->len;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wvec_get(int64_t wh, int64_t voff, int64_t i) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get\");\n");
+    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get\", i, v->len);\n");
+    fprintf(out, "    int64_t *d = (int64_t *)(w->base + v->data_off);\n");
+    fprintf(out, "    return d[i];\n");
+    fprintf(out, "}\n");
+    /* dump/load: светът е position-independent — dump е memcpy на региона,
+     * load го възстановява в НОВА арена и офсетите важат веднага. */
+    fprintf(out, "static baga_bytes baga_world_dump(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"world_dump\");\n");
+    fprintf(out, "    baga_bytes r; r.len = w->used;\n");
+    fprintf(out, "    r.data = baga_alloc((size_t)(w->used > 0 ? w->used : 1));\n");
+    fprintf(out, "    if (w->used > 0) memcpy(r.data, w->base, (size_t)w->used);\n");
+    fprintf(out, "    return r;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_world_load(baga_bytes b) {\n");
+    fprintf(out, "    baga_Arena *a = malloc(sizeof(baga_Arena));\n");
+    fprintf(out, "    if (!a) { fprintf(stderr, \"baga: world_load: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    a->used = b.len; a->cap = b.len > 65536 ? b.len : 65536; a->frozen = 0;\n");
+    fprintf(out, "    a->base = malloc((size_t)a->cap);\n");
+    fprintf(out, "    if (b.len > 0) memcpy(a->base, b.data, (size_t)b.len);\n");
+    fprintf(out, "    return (int64_t)(intptr_t)a;\n");
+    fprintf(out, "}\n");
     fprintf(out, "\n");
     /* ---- concurrency (!Par): OS threads + i64 channels (CSP) ---- */
     /* heap pair first — used by chan_recv2 and as worker context packing */

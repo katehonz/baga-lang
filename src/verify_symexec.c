@@ -488,7 +488,7 @@ int is_world_op_call(Node *n) {
     if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
     const char *nm = n->callee->name;
     int is_op = strcmp(nm, "world_alloc") == 0 || strcmp(nm, "world_freeze") == 0 ||
-                strcmp(nm, "world_free") == 0;
+                strcmp(nm, "world_free") == 0 || strcmp(nm, "wvec_push") == 0;
     if (!is_op || world_builtin_shadowed(nm)) return 0;
     return n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT;
 }
@@ -496,7 +496,10 @@ int is_world_expr_call(Node *n) {
     if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
     const char *nm = n->callee->name;
     int is_expr = strcmp(nm, "world_new") == 0 || strcmp(nm, "world_alloc") == 0 ||
-                  strcmp(nm, "world_state") == 0;
+                  strcmp(nm, "world_state") == 0 || strcmp(nm, "wvec_new") == 0 ||
+                  strcmp(nm, "wvec_push") == 0 || strcmp(nm, "wvec_get") == 0 ||
+                  strcmp(nm, "wvec_len") == 0 || strcmp(nm, "world_dump") == 0 ||
+                  strcmp(nm, "world_load") == 0;
     return is_expr && !world_builtin_shadowed(nm);
 }
 int is_world_stmt_call(Node *n) {

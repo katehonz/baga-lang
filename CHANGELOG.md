@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### W1 — wvec: typed position-independent контейнер в свят
+- `wvec_new/wvec_push/wvec_get/wvec_len` — i64 вектор вътре в света с
+  ОТСЕТНА адресация: заглавието `{len, cap, data_off}` и данните са офсети
+  спрямо `base`, който се препрочита при всеки достъп. Realloc-ът при
+  растеж мести региона, без да инвалидира нищо (офсет-първа дисциплина в
+  runtime-а: абсолютните указатели живеят само между две statements).
+- `world_dump(w) -> bytes` / `world_load(b) -> i64` — position-independent
+  сериализация: dump е memcpy на `base[0..used]`, load възстановява в нова
+  арена и офсетите важат веднага (roundtrip-ът е в `tests/wvec_test.baga`:
+  100 елемента през няколко растежа, два вектора в един свят, freeze →
+  dump → free → load → четене и нов push).
+- Верификатор: `wvec_push` е check-only мутатор — легален в цикли, но
+  ОБРОЧЕНО върху замразен (`mutate-after-freeze: wvec_push`) или преместен
+  свят (`wvec_push след move`); `wvec_get/len` върху frozen са чисти
+  (четците на споделен свят). Оркълът `examples/verify/worlds.baga` расте
+  на 9 доказани ensures + 6 оброчени протокола; gate-ът в run_verify.sh и
+  runtime пробите (frozen alloc/push) в run_tests.sh са обновени.
+- Честна граница: i64 елементи са inline (O(1)); offset таблица за
+  променливи елементи (str/bytes/вложени светове) е W1.5; raw
+  `world_alloc` указателите важат само до следващия растеж — `wvec_*` е
+  безопасният слой. LLVM: `wvec_*` е явна грешка (като `world_*`).
+
 ### W0 — светове: региони с ownership/freeze дисциплина
 - Нови builtin-и (C бекенд): `world_new/world_alloc/world_freeze/
   world_state/world_free`. Runtime-ът е арената + frozen бит (отделна

@@ -1,0 +1,84 @@
+// bench/worlds.baga — W1 bench: wvec (офсетен контейнер в свят) срещу Vec.
+//
+// За концептуалния документ (docs/worlds-bg.md): throughput на push/get,
+// размер на dump, цена на dump/load, и къде живее паметта (Vec — в
+// thread-local bump арената, видима за MEM-6; светът — отделна malloc
+// верига, невидима за mem_arena_bytes по дизайн).
+//
+// Числата са от една машина — смисълът е в СЪОТНОШЕНИЯТА, не в абсолютните
+// стойности. Checksum-ите трябва да съвпадат (валидация, не само timing).
+//
+//   ./baga -I . bench/worlds.baga
+
+import "std/time/time.baga"
+
+fn bench_vec(n: i64) -> i64 !Time {
+    let before = mem_peak_bytes()
+    let t0 = monotonic_us()
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        vec_push(v, i)
+        i = i + 1
+    }
+    let t1 = monotonic_us()
+    let mut s: i64 = 0
+    let mut j: i64 = 0
+    while j < n {
+        s = s + vec_get(v, j)
+        j = j + 1
+    }
+    let t2 = monotonic_us()
+    print(concat("vec_push_us       ", i64_to_str(t1 - t0)))
+    print(concat("vec_getsum_us     ", i64_to_str(t2 - t1)))
+    print(concat("vec_checksum      ", i64_to_str(s)))
+    print(concat("vec_bump_peak_d   ", i64_to_str(mem_peak_bytes() - before)))
+    return 0
+}
+
+fn bench_world(n: i64) -> i64 !Time {
+    // Светът е отделна malloc верига — bump телеметрията не го вижда.
+    let bump_before = mem_peak_bytes()
+    let w = world_new()
+    let t0 = monotonic_us()
+    let v = wvec_new(w)
+    let mut i: i64 = 0
+    while i < n {
+        wvec_push(w, v, i)
+        i = i + 1
+    }
+    let t1 = monotonic_us()
+    let mut s: i64 = 0
+    let mut j: i64 = 0
+    while j < n {
+        s = s + wvec_get(w, v, j)
+        j = j + 1
+    }
+    let t2 = monotonic_us()
+    world_freeze(w)
+    let t3 = monotonic_us()
+    let dump = world_dump(w)
+    let t4 = monotonic_us()
+    let w2 = world_load(dump)
+    let t5 = monotonic_us()
+    let loaded = wvec_get(w2, v, n - 1)
+    print(concat("wvec_push_us      ", i64_to_str(t1 - t0)))
+    print(concat("wvec_getsum_us    ", i64_to_str(t2 - t1)))
+    print(concat("wvec_checksum     ", i64_to_str(s)))
+    print(concat("dump_bytes        ", i64_to_str(bytes_len(dump))))
+    print(concat("dump_us           ", i64_to_str(t4 - t3)))
+    print(concat("load_us           ", i64_to_str(t5 - t4)))
+    print(concat("load_last_val     ", i64_to_str(loaded)))
+    print(concat("world_bump_delta  ", i64_to_str(mem_peak_bytes() - bump_before)))
+    world_free(w)
+    world_free(w2)
+    return 0
+}
+
+fn main() -> i64 !Time {
+    let n: i64 = 200000
+    print(concat("n                 ", i64_to_str(n)))
+    bench_vec(n)
+    bench_world(n)
+    return 0
+}

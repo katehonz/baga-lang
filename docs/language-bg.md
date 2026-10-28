@@ -1196,6 +1196,40 @@ world_free(w)                  // 2 = freed — целият свят навед
   (go-аргумент е следваща стъпка); payload-ите са сурови офсети — typed
   относителни контейнери идват в W1; само C бекенда (като `mem_*`/`arena_*`).
 
+#### W1: wvec — typed контейнер в свят, position-independent
+
+`wvec_*` е вектор от i64, който живее ВЪТРЕ в света и пази само **относителни
+офсети** спрямо `w->base` (заглавие `{len, cap, data_off}` + данни). Base-ът
+се препрочита при всеки достъп — realloc-ът при растеж мести региона, но
+нищо не инвалидира:
+
+```baga
+let w = world_new()
+let v = wvec_new(w)          // връща ОФСЕТ на заглавието, не указател
+wvec_push(w, v, 42)          // mutator — изисква mutable свят
+world_freeze(w)
+let x = wvec_get(w, v, 0)    // четците са легални върху замразен свят
+let dump = world_dump(w)     // bytes = memcpy на base[0..used]
+world_free(w)
+let w2 = world_load(dump)    // нова арена, същите офсети — без fixup
+print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
+```
+
+- `wvec_new(w) -> i64` (офсет), `wvec_push(w, v, x)`, `wvec_get(w, v, i)`,
+  `wvec_len(w, v)`, `world_dump(w) -> bytes`, `world_load(b) -> i64`.
+- Достъпът е O(1) (i64 елементи са inline); offset таблица за променливи
+  елементи (str/bytes/вложени) е W1.5.
+- Верификаторът: `wvec_push` е check-only мутатор — легален и в цикли
+  (за разлика от freeze/free), но върху замразен или преместен свят е
+  ОБРОЧЕНО (`mutate-after-freeze: wvec_push`, `wvec_push след move`);
+  `wvec_get`/`wvec_len` върху frozen са чисти (четци), върху freed/moved —
+  use-after-free/move. Оркъл: `examples/verify/worlds.baga`.
+- Raw `world_alloc` указателите важат само до следващия растеж на света —
+  `wvec_*` е безопасният typed слой; dump-вай само региони, построени през
+  него (или изцяло от офсетни структури).
+- `world_load` връща mutable свят (симетрично на dump от mutable); freeze
+  е изричен акт след зареждането.
+
 ---
 
 ## 13. Ефектова система

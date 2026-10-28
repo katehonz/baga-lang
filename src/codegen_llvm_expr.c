@@ -1469,6 +1469,7 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
                         strcmp(n->callee->name, "mem_spare_bytes") == 0 ||
                         strcmp(n->callee->name, "mem_peak_bytes") == 0 ||
                         strncmp(n->callee->name, "world_", 6) == 0 ||
+                        strncmp(n->callee->name, "wvec_", 5) == 0 ||
                         strcmp(n->callee->name, "mem_persist_end") == 0))
                 llv_llvm_unsupported("mem_mark/mem_rewind/mem_persist_*/mem_*_bytes/world_* — само C бекенда; вж. docs/language-en.md");
             if (!fn) {

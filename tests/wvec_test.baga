@@ -1,0 +1,60 @@
+// wvec_test — W1: typed вектор в свят с относителни офсети + dump/load.
+//
+// Заглавието {len, cap, data_off} и данните са ОФСЕТи спрямо base, който
+// се препрочита при всеки достъп: realloc-ът при растеж мести региона, но
+// нищо не инвалидира. light проверка на position-independence: world_dump
+// е memcpy, world_load възстановява в нова арена и четенето продължава —
+// без fixup на указатели.
+//
+// Протоколните нарушения (push върху замразен/преместен свят) се оборват
+// от --verify (examples/verify/worlds.baga); тук е функционалната страна.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    // Растеж: 100 push-а минават през няколко realloc-а — офсетите оцеляват.
+    let w = world_new()
+    let v = wvec_new(w)
+    let mut i: i64 = 0
+    while i < 100 {
+        wvec_push(w, v, i * i)
+        i = i + 1
+    }
+    check("len", wvec_len(w, v) == 100)
+    check("first", wvec_get(w, v, 0) == 0)
+    check("mid", wvec_get(w, v, 50) == 2500)
+    check("last", wvec_get(w, v, 99) == 9801)
+
+    // Два вектора в един свят — независими заглавия.
+    let v2 = wvec_new(w)
+    wvec_push(w, v2, 5)
+    check("two_vecs", wvec_len(w, v) == 100 && wvec_len(w, v2) == 1)
+    check("two_vecs_val", wvec_get(w, v2, 0) == 5)
+
+    // Freeze: четците остават легални (zero-copy споделяне).
+    world_freeze(w)
+    check("frozen_state", world_state(w) == 1)
+    check("frozen_read", wvec_get(w, v, 10) == 100)
+
+    // dump → free → load: position-independent roundtrip.
+    let dump = world_dump(w)
+    check("dump_nonempty", bytes_len(dump) > 0)
+    world_free(w)
+    let w2 = world_load(dump)
+    check("load_len", wvec_len(w2, v) == 100)
+    check("load_vals", wvec_get(w2, v, 99) == 9801 && wvec_get(w2, v2, 0) == 5)
+
+    // Зареденият свят е mutable — пише се наново без фиксация.
+    wvec_push(w2, v2, 6)
+    check("load_mutable", wvec_len(w2, v2) == 2 && wvec_get(w2, v2, 1) == 6)
+    world_free(w2)
+
+    print("wvec_test: all passed")
+}

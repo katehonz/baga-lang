@@ -919,13 +919,16 @@ void eval_world_call(Node *call, State *st, Obligations *ob) {
         } else {
             snprintf(label, sizeof label, "world_free след move на '%s'", wn); viol = label;
         }
-    } else if (strcmp(op, "world_alloc") == 0) {
+    } else {
+        /* world_alloc / wvec_push — check-only мутатори: не сменят
+         * състоянието, само изискват mutable (затова са легални и в цикли,
+         * за разлика от freeze/free). */
         if (e->state == 1) {
-            snprintf(label, sizeof label, "mutate-after-freeze: world_alloc върху замразен '%s'", wn); viol = label;
+            snprintf(label, sizeof label, "mutate-after-freeze: %s върху замразен '%s'", op, wn); viol = label;
         } else if (e->state == 2) {
-            snprintf(label, sizeof label, "world_alloc след world_free на '%s'", wn); viol = label;
+            snprintf(label, sizeof label, "%s след world_free на '%s'", op, wn); viol = label;
         } else if (e->state == 3) {
-            snprintf(label, sizeof label, "world_alloc след move на '%s'", wn); viol = label;
+            snprintf(label, sizeof label, "%s след move на '%s'", op, wn); viol = label;
         }
     }
     if (viol) push_protocol_violation(st, ob, viol);

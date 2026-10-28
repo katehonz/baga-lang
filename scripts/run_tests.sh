@@ -486,7 +486,7 @@ else
 	exit 1
 fi
 
-echo "=== W0 светове: mutate-after-freeze е чиста runtime грешка ==="
+echo "=== W0/W1 светове: mutate-after-freeze е чиста runtime грешка ==="
 printf 'fn main() {\n    let w = world_new()\n    world_freeze(w)\n    let p = world_alloc(w, 8)\n    print(p)\n}\n' > /tmp/baga_world_frozen.baga
 RC=0
 run /tmp/baga_world_frozen.baga > /tmp/baga_world_frozen_out.txt 2>&1 || RC=$?
@@ -495,6 +495,16 @@ if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_world_frozen_out.t
 else
 	echo "FAIL: frozen world_alloc трябваше да е чиста грешка"
 	cat /tmp/baga_world_frozen_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    world_freeze(w)\n    wvec_push(w, v, 1)\n}\n' > /tmp/baga_wvec_frozen.baga
+RC=0
+run /tmp/baga_wvec_frozen.baga > /tmp/baga_wvec_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_wvec_frozen_out.txt; then
+	echo "OK: wvec_push върху замразен свят — чиста грешка, не UB"
+else
+	echo "FAIL: frozen wvec_push трябваше да е чиста грешка"
+	cat /tmp/baga_wvec_frozen_out.txt
 	exit 1
 fi
 

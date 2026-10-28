@@ -129,9 +129,74 @@ fn bad_use_after_move(n: i64) -> i64 !Par {
     return 0
 }
 
+spec ok_frozen_read {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W1: замразен свят се ЧЕТЕ — wvec_get/wvec_len са легални върху frozen.
+// Това е цялата идея: споделен zero-copy регион с произволно много четци
+// и нито един писател.
+fn ok_frozen_read(n: i64) -> i64 {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 7)
+    world_freeze(w)
+    let x = wvec_get(w, v, 0)
+    world_free(w)
+    return n - n
+}
+
+spec bad_push_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W1: wvec_push върху замразен свят — mutate-after-freeze.
+fn bad_push_frozen(n: i64) -> i64 {
+    let w = world_new()
+    let v = wvec_new(w)
+    world_freeze(w)
+    if n > 0 {
+        wvec_push(w, v, 2)
+    }
+    world_free(w)
+    return 0
+}
+
+spec bad_push_after_move {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W1: собствеността е прехвърлена през chan_send — локалният push след
+// това е use-after-move (двама писатели върху един свят = race).
+fn bad_push_after_move(n: i64) -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    let ch = chan_new(1)
+    chan_send(ch, w)
+    if n > 0 {
+        wvec_push(w, v, 3)
+    }
+    chan_close(ch)
+    return 0
+}
+
 fn main() {
     print(ok_lifecycle(1))
+    print(ok_frozen_read(1))
     print(bad_freeze_mutate(0))
     print(bad_double_free(0))
     print(bad_use_after_free(0))
+    print(bad_push_frozen(0))
 }

@@ -221,13 +221,16 @@ grep -q "ok_seq:" /tmp/baga_verify_out.txt && grep -q "ok_map:" /tmp/baga_verify
 	|| { echo "FAIL: mem_drop"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/worlds.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "ok_lifecycle:" /tmp/baga_verify_out.txt && grep -q "ok_shared_frozen:" /tmp/baga_verify_out.txt \
-	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^6$' \
-	&& grep -q "протокол (mutate-after-freeze.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "ok_frozen_read:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^9$' \
+	&& grep -q "протокол (mutate-after-freeze: world_alloc.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (повторен world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (използване след world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (freeze след move.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (mutate-after-freeze: wvec_push.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wvec_push след move.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
-	&& echo "OK: worlds — W0: чист жизнен цикъл и замразено споделяне; mutate-after-freeze, двоен free, use-after-free и use-after-move са оброчени с контрапримери" \
+	&& echo "OK: worlds — W0/W1: чист жизнен цикъл, замразено споделяне и четци; mutate-after-freeze (alloc+wvec_push), двоен free, use-after-free и use-after-move са оброчени с контрапримери" \
 	|| { echo "FAIL: worlds"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
