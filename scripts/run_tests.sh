@@ -592,6 +592,40 @@ run /tmp/baga_sugg_far.baga 2>&1 | grep -q "недефинирана проме�
 	&& echo "OK: без подсказка при далечно име" \
 	|| { echo "FAIL: далечно име не трябва да подсказва"; run /tmp/baga_sugg_far.baga; exit 1; }
 
+echo "=== --json диагностики (AI-consumer канал) ==="
+RC=0
+run --json /tmp/baga_sugg_var.baga > /tmp/baga_json_err.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q '"ok": false' /tmp/baga_json_err.txt \
+	&& grep -q '"severity": "error"' /tmp/baga_json_err.txt \
+	&& grep -q '"line": 3, "col": 11' /tmp/baga_json_err.txt \
+	&& grep -q "имахте предвид 'count'" /tmp/baga_json_err.txt; then
+	echo "OK: --json — грешка с позиция, severity и подсказка"
+else
+	echo "FAIL: --json грешка"; cat /tmp/baga_json_err.txt; exit 1
+fi
+printf 'fn main() {\n    print(1)\n}\n' > /tmp/baga_json_ok.baga
+RC=0
+run --json /tmp/baga_json_ok.baga > /tmp/baga_json_ok.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q '"ok": true' /tmp/baga_json_ok.txt \
+	&& ! grep -q '^1$' /tmp/baga_json_ok.txt; then
+	echo "OK: --json — ok:true envelope, програмата не се изпълнява"
+else
+	echo "FAIL: --json ok"; cat /tmp/baga_json_ok.txt; exit 1
+fi
+printf 'fn main() {\n    let x = \n}\n' > /tmp/baga_json_parse.baga
+RC=0
+run --json /tmp/baga_json_parse.baga > /tmp/baga_json_parse.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q '"severity": "error"' /tmp/baga_json_parse.txt; then
+	echo "OK: --json — parse грешките също са структурирани"
+else
+	echo "FAIL: --json parse"; cat /tmp/baga_json_parse.txt; exit 1
+fi
+if command -v python3 > /dev/null; then
+	python3 -m json.tool < /tmp/baga_json_err.txt > /dev/null \
+		&& echo "OK: --json — валиден JSON (python3)" \
+		|| { echo "FAIL: --json невалиден JSON"; exit 1; }
+fi
+
 echo "=== Map/Vec call-site inference + binary I/O probes ==="
 printf 'fn main() {\n    let m: Map<str, i64> = map_new()\n    map_set(m, "a", "текст")\n}\n' > /tmp/baga_map_bad.baga
 run /tmp/baga_map_bad.baga 2>&1 | grep -q "стойност от тип str, но картата е Map<str, i64>" \

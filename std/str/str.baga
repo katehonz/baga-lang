@@ -11,15 +11,16 @@ fn str_ends_with(s: str, suffix: str) -> bool {
     return substr(s, len(s) - len(suffix), len(s)) == suffix
 }
 
-// Index of the first occurrence of needle, or -1.
+// Index of the first occurrence of needle at or after `start`, or -1.
 // O(|s|): byte_at е O(1) (няма strlen на всяка проба); substr сравнява само
 // при съвпадение на първия байт, за да не стане O(n²) върху дълъг низ.
-fn str_find(s: str, needle: str) -> i64 {
+fn str_find_from(s: str, needle: str, start: i64) -> i64 {
     let n = len(needle)
-    if n == 0 { return 0 }
+    if n == 0 { return start }
     let sn = len(s)
     let first = byte_at(needle, 0)
-    let mut i: i64 = 0
+    let mut i: i64 = start
+    if i < 0 { i = 0 }
     while i + n <= sn {
         if byte_at(s, i) == first {
             if substr(s, i, i + n) == needle { return i }
@@ -29,16 +30,29 @@ fn str_find(s: str, needle: str) -> i64 {
     return -1
 }
 
-// Split on a single-character delimiter. Empty fields are preserved.
+// Index of the first occurrence of needle, or -1.
+fn str_find(s: str, needle: str) -> i64 {
+    return str_find_from(s, needle, 0)
+}
+
+// Split on `delim` — един или повече символи. Празни полета се пазят;
+// празен delim връща [s]. (S1 от smtpbaga/gaps.md е затворена: преди
+// str_split делеше само по ПЪРВИЯ символ на delim — "\r\n" цепеше на '\r'.)
+// Линейно по дължината: str_find_from търси по индекси, substr реже само
+// изходните части (няма междинни копия на остатъка).
 fn str_split(s: str, delim: str) -> Vec<str> {
     let out = vec_new()
-    let d = char_at(delim, 0)
+    let dn = len(delim)
+    if dn == 0 {
+        vec_push(out, s)
+        return out
+    }
     let mut start: i64 = 0
-    for i in 0..len(s) {
-        if char_at(s, i) == d {
-            vec_push(out, substr(s, start, i))
-            start = i + 1
-        }
+    let mut idx = str_find_from(s, delim, 0)
+    while idx >= 0 {
+        vec_push(out, substr(s, start, idx))
+        start = idx + dn
+        idx = str_find_from(s, delim, start)
     }
     vec_push(out, substr(s, start, len(s)))
     return out
@@ -148,4 +162,105 @@ fn int_to_str(n: i64) -> str {
     }
     if neg { out = concat("-", out) }
     return out
+}
+
+// ---------- UTF-8: codepoint-и, не байтове ----------
+// Lenient инструменти за броене и обхождане, не валидатор: непълна или
+// невалидна последователност се третира като един „символ" (сурови байтове).
+// За ASCII str_char_count(s) == len(s).
+
+// Широчина в байтове на последователността при `pos` — по водещия байт,
+// clamp-ната до наличните continuation байтове. 0 при pos извън низа.
+fn str_utf8_width(s: str, pos: i64) -> i64 {
+    let n = len(s)
+    if pos < 0 || pos >= n { return 0 }
+    let b = byte_at(s, pos)
+    let mut w: i64 = 1
+    if b >= 192 && b < 224 { w = 2 }
+    if b >= 224 && b < 240 { w = 3 }
+    if b >= 240 { w = 4 }
+    let mut j: i64 = 1
+    while j < w && pos + j < n {
+        let cb = byte_at(s, pos + j)
+        if cb < 128 || cb >= 192 {
+            w = j
+            j = w
+        } else {
+            j = j + 1
+        }
+    }
+    if pos + w > n { w = n - pos }
+    return w
+}
+
+// Брой codepoint-и в низа.
+fn str_char_count(s: str) -> i64 {
+    let n = len(s)
+    let mut pos: i64 = 0
+    let mut c: i64 = 0
+    while pos < n {
+        pos = pos + str_utf8_width(s, pos)
+        c = c + 1
+    }
+    return c
+}
+
+// i-тият codepoint като низ (празен при i извън броя).
+fn str_char_at(s: str, i: i64) -> str {
+    let n = len(s)
+    let mut pos: i64 = 0
+    let mut k: i64 = 0
+    while pos < n {
+        let w = str_utf8_width(s, pos)
+        if k == i { return substr(s, pos, pos + w) }
+        k = k + 1
+        pos = pos + w
+    }
+    return ""
+}
+
+// i-тият codepoint като число (U+…); -1 при i извън броя.
+fn str_codepoint_at(s: str, i: i64) -> i64 {
+    let n = len(s)
+    let mut pos: i64 = 0
+    let mut k: i64 = 0
+    while pos < n {
+        let w = str_utf8_width(s, pos)
+        if k == i {
+            let b0 = byte_at(s, pos)
+            let mut cp: i64 = b0
+            if w == 2 { cp = b0 - 192 }
+            if w == 3 { cp = b0 - 224 }
+            if w == 4 { cp = b0 - 240 }
+            let mut j: i64 = 1
+            while j < w {
+                cp = cp * 64 + (byte_at(s, pos + j) - 128)
+                j = j + 1
+            }
+            return cp
+        }
+        k = k + 1
+        pos = pos + w
+    }
+    return -1
+}
+
+// Codepoint → UTF-8 низ; "" при невалиден (извън 0..U+10FFFF).
+fn str_from_codepoint(cp: i64) -> str {
+    if cp < 0 || cp > 1114111 { return "" }
+    if cp < 128 { return byte_chr(cp) }
+    if cp < 2048 {
+        return concat(byte_chr(192 + cp / 64), byte_chr(128 + cp % 64))
+    }
+    if cp < 65536 {
+        let b1 = byte_chr(224 + cp / 4096)
+        let b2 = byte_chr(128 + (cp / 64) % 64)
+        let b3 = byte_chr(128 + cp % 64)
+        return concat(concat(b1, b2), b3)
+    }
+    let c1 = byte_chr(240 + cp / 262144)
+    let c2 = byte_chr(128 + (cp / 4096) % 64)
+    let c3 = byte_chr(128 + (cp / 64) % 64)
+    let c4 = byte_chr(128 + cp % 64)
+    return concat(concat(concat(c1, c2), c3), c4)
 }

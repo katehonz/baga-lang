@@ -87,7 +87,9 @@ baga [опции] <файл.baga>
   --check, --lib  Само parse + typecheck (без main, без codegen) — за библиотеки
   --test-specs  Property-based тестване на spec договорите
   --verify    Статична верификация на requires/ensures
-  --json      Машинно-четим JSON изход (с --verify)
+  --json      Машинно-четим JSON: с --verify — вердикти; иначе — parse/check
+              диагнози като envelope {file, ok, diagnostics[{file, line, col,
+              severity, message}]} и програмата НЕ се изпълнява (AI/CI канал)
   --ast       Изпечатвай AST (debug)
   --tokens    Изпечатвай потока от токени (debug)
   --specs     Изпечатвай извлечените спецификации

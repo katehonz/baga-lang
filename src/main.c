@@ -33,6 +33,44 @@ static char *read_file(const char *path, int *out_len) {
     return buf;
 }
 
+/* --json: машинно-четими диагностики за AI агенти и CI (AI-consumer
+ * каналът на CONCEPT.md). Без --verify флагът означава „структуриран check":
+ * envelope-ът замества прозата и програмата НЕ се изпълнява — stdout остава
+ * чист за парсване. Exit кодовете са непроменени (0 = чисто, 1 = грешки). */
+static void json_esc(const char *s) {
+    putchar('"');
+    for (const unsigned char *p = (const unsigned char *)s; p && *p; p++) {
+        switch (*p) {
+        case '"':  printf("\\\""); break;
+        case '\\': printf("\\\\"); break;
+        case '\n': printf("\\n"); break;
+        case '\r': printf("\\r"); break;
+        case '\t': printf("\\t"); break;
+        default:
+            if (*p < 0x20) printf("\\u%04x", *p);
+            else putchar(*p);
+        }
+    }
+    putchar('"');
+}
+static void json_begin(const char *file, int ok) {
+    printf("{\n  \"file\": ");
+    json_esc(file);
+    printf(",\n  \"ok\": %s,\n  \"diagnostics\": [\n", ok ? "true" : "false");
+}
+static void json_end(void) { printf("\n  ]\n}\n"); }
+static void json_diag(const char *fallback_file, SrcPos pos, const char *sev,
+                      const char *msg, int *first) {
+    if (!*first) printf(",\n");
+    *first = 0;
+    printf("    {\"file\": ");
+    json_esc(pos.file ? pos.file : fallback_file);
+    printf(", \"line\": %d, \"col\": %d, \"severity\": \"%s\", \"message\": ",
+           pos.line, pos.col, sev);
+    json_esc(msg ? msg : "");
+    printf("}");
+}
+
 static void usage(void) {
     fprintf(stderr,
         "Бага — компилатор %s\n"
@@ -48,7 +86,8 @@ static void usage(void) {
         "  --leak-check  MEM-6: арена телеметрия — summary при изход; BAGA_MEM_LIMIT\n"
         "                (байтове) надвишен ли е от peak-а → exit 1 (CI gate)\n"
         "  --verify    Статична верификация на requires/ensures (M0–M13 fragment)\n"
-        "  --json      Машинно-четим JSON изход (с --verify)\n"
+        "  --json      Машинно-четим JSON: с --verify — вердикти; иначе —\n"
+        "              parse/check диагнози като envelope (програмата не се изпълнява)\n"
         "  -I <dir>    Директория за търсене на import (повтаряем)\n"
         "  --ast       Изпечатвай AST (debug)\n"
         "  --tokens    Изпечатвай токени (debug)\n"
@@ -199,6 +238,7 @@ int main(int argc, char **argv) {
     int test_specs = 0;
     int verify = 0;
     int check_only = 0;
+    int json_out = 0;
 
     /* програмни аргументи: всичко след input файла (или след '--')
      * отива в arg()/arg_count() на компилираната програма */
@@ -223,7 +263,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--emit-llvm") == 0) { emit_llvm = 1; }
         else if (strcmp(argv[i], "--test-specs") == 0) { test_specs = 1; }
         else if (strcmp(argv[i], "--verify") == 0) { verify = 1; }
-        else if (strcmp(argv[i], "--json") == 0) { verify_set_json(1); }
+        else if (strcmp(argv[i], "--json") == 0) { verify_set_json(1); json_out = 1; }
         else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0) {
             print_version();
             return 0;
@@ -294,8 +334,17 @@ int main(int argc, char **argv) {
     Node *program = parse_program(&parser, tokens.data, tokens.len, input_path);
 
     if (parser.n_errors > 0) {
-        for (int i = 0; i < parser.n_errors; i++)
-            fprintf(stderr, "%s\n", parser.errors[i]);
+        if (json_out) {
+            json_begin(input_path, 0);
+            int first = 1;
+            for (int i = 0; i < parser.n_errors; i++)
+                json_diag(input_path, parser.error_pos[i], "error",
+                          parser.errors[i] + parser.error_off[i], &first);
+            json_end();
+        } else {
+            for (int i = 0; i < parser.n_errors; i++)
+                fprintf(stderr, "%s\n", parser.errors[i]);
+        }
         return 1;
     }
 
@@ -354,9 +403,32 @@ int main(int argc, char **argv) {
     check_program(&checker, program);
 
     if (checker.n_errors > 0) {
-        for (int i = 0; i < checker.n_errors; i++)
-            fprintf(stderr, "%s: %s\n", input_path, checker.errors[i]);
+        if (json_out) {
+            json_begin(input_path, 0);
+            int first = 1;
+            for (int i = 0; i < checker.n_errors; i++)
+                json_diag(input_path, checker.error_pos[i], "error",
+                          checker.errors[i] + checker.error_off[i], &first);
+            for (int i = 0; i < checker.n_warnings; i++)
+                json_diag(input_path, checker.warning_pos[i], "warning",
+                          checker.warnings[i] + checker.warning_off[i], &first);
+            json_end();
+        } else {
+            for (int i = 0; i < checker.n_errors; i++)
+                fprintf(stderr, "%s: %s\n", input_path, checker.errors[i]);
+        }
         return 1;
+    }
+    if (json_out && !verify) {
+        /* --json без --verify: структуриран check — envelope вместо „ok: path",
+         * програмата не се изпълнява (stdout е само за машината). */
+        json_begin(input_path, 1);
+        int first = 1;
+        for (int i = 0; i < checker.n_warnings; i++)
+            json_diag(input_path, checker.warning_pos[i], "warning",
+                      checker.warnings[i] + checker.warning_off[i], &first);
+        json_end();
+        return 0;
     }
     for (int i = 0; i < checker.n_warnings; i++)
         fprintf(stderr, "%s: %s\n", input_path, checker.warnings[i]);

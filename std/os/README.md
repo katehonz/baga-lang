@@ -25,6 +25,7 @@ Signals (C1) are **language builtins**, not `std/os` externs:
 `signal_raise` (see language reference §19).
 - `extern getenv(name: str) -> str !IO` — libc `getenv(3)`; NULL coerces to `""`.
 - `env(name: str) -> str !IO` — environment variable, or `""` when unset.
+- `hostname() -> str !IO` — machine name via `gethostname(2)`; `""` on error.
 - `fd_write(fd: i64, data: str) -> i64 !IO` — write all of `data`, looping on partial writes; 0 on success, -1 on error.
 - `fd_read(fd: i64, n: i64) -> str !IO` — read up to `n` bytes; `""` at EOF or on error.
 - `fd_pwrite(fd: i64, data: str, off: i64) -> i64 !IO` — write all of `data` at absolute offset `off`, looping on partial writes; 0 on success, -1 on error. Does not move the fd's file position.

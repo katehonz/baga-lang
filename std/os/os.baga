@@ -28,6 +28,8 @@ extern fn getpid() -> i64 !IO
 extern fn access(path: str, mode: i64) -> i64 !IO
 // lseek(2): whence SEEK_SET=0, SEEK_CUR=1, SEEK_END=2.
 extern fn lseek(fd: i64, offset: i64, whence: i64) -> i64 !IO
+// gethostname(2): пише името + NUL в buf (буферът е heap, виж контракта).
+extern fn gethostname(buf: str, len: i64) -> i64 !IO
 
 // Size of open fd in bytes (SEEK_END), or -1 on error.
 fn fd_size(fd: i64) -> i64 !IO {
@@ -70,6 +72,21 @@ fn fs_rename(oldpath: str, newpath: str) -> i64 !IO {
 // Environment variable, or "" when unset (the C backend coerces NULL → "").
 fn env(name: str) -> str !IO {
     return getenv(name)?
+}
+
+// Име на машината (gethostname(2)); "" при грешка. S4 от smtpbaga/gaps.md.
+// HOST_NAME_MAX е 64 на Linux; 255 е с резерва и покрива нестандартни ядра.
+fn hostname() -> str !IO {
+    let buf = str_repeat(" ", 256)
+    let r = gethostname(buf, 255)?
+    if r != 0 { return "" }
+    // gethostname пише име + NUL; останалите байтове са от буфера.
+    let mut i: i64 = 0
+    while i < 255 {
+        if byte_at(buf, i) == 0 { return substr(buf, 0, i) }
+        i = i + 1
+    }
+    return substr(buf, 0, 255)
 }
 
 // Write all of `data` to fd, looping on partial writes. Returns 0, or -1.

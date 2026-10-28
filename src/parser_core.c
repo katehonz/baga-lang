@@ -222,8 +222,13 @@ int match(Parser *p, TokenKind k) {
 void parser_error(Parser *p, const char *fmt, ...) {
     if (p->n_errors >= BAGA_MAX_ERRORS) return;
     Token *t = cur(p);
-    char *e = p->errors[p->n_errors++];
+    int k = p->n_errors++;
+    char *e = p->errors[k];
+    p->error_pos[k].line = t->pos.line;
+    p->error_pos[k].col = t->pos.col;
+    p->error_pos[k].file = p->filename;
     int off = snprintf(e, 256, "%s:%d:%d: ", p->filename, t->pos.line, t->pos.col);
+    p->error_off[k] = off > 255 ? 0 : off;
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(e + off, 256 - (size_t)off, fmt, ap);
@@ -683,18 +688,28 @@ static Node *parse_primary(Parser *p) {
         n->then_br = parse_block(p);
         if (match(p, TOK_ELSE)) {
             if (check(p, TOK_IF)) {
-                /* else if → wrap in block */
-                SrcPos epos = cur(p)->pos;
-                advance(p);
-                Node *elif = node_alloc(NODE_IF, epos);
-                elif->cond = parse_expr(p);
-                elif->then_br = parse_block(p);
-                if (match(p, TOK_ELSE)) {
-                    elif->else_br = parse_block(p);
+                /* else-if верига с ПРОИЗВОЛНА дълбочина — десugar във вложени
+                 * NODE_IF, всяко рамо в свой NODE_BLOCK wrap (форма, която
+                 * codegen-ите вече разбират). Преди това второто `else if`
+                 * гърмеше: elif->else_br викаше parse_block без проверка за
+                 * TOK_IF — `if … else if … else if …` не се парсваше. */
+                Node *tail = n;
+                int have_else = 1;
+                while (have_else && check(p, TOK_IF)) {
+                    SrcPos epos = cur(p)->pos;
+                    advance(p);
+                    Node *elif = node_alloc(NODE_IF, epos);
+                    elif->cond = parse_expr(p);
+                    elif->then_br = parse_block(p);
+                    Node *wrap = node_alloc(NODE_BLOCK, epos);
+                    vec_push(wrap->stmts, elif);
+                    tail->else_br = wrap;
+                    tail = elif;
+                    have_else = match(p, TOK_ELSE);
                 }
-                Node *wrap = node_alloc(NODE_BLOCK, epos);
-                vec_push(wrap->stmts, elif);
-                n->else_br = wrap;
+                if (have_else) {
+                    tail->else_br = parse_block(p);
+                }
             } else {
                 n->else_br = parse_block(p);
             }

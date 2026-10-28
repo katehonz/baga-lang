@@ -1,0 +1,45 @@
+// elif_chain_test — else-if верига с произволна дълбочина.
+//
+// Преди: C parser-ът десugar-ваше само ЕДНО `else if` — при второ
+// `elif->else_br` викаше parse_block без проверка за TOK_IF и
+// `if … else if … else if …` гърмеше с „очаквах '{', получих 'if'".
+// Сега веригата е цикъл от вложени NODE_IF (същата AST форма като преди
+// за едно ниво — codegen-ите не са пипани). Self компилаторът остава без
+// else-if (документиран subset — в self/ думата се среща само в низове).
+
+fn classify(x: i64) -> str {
+    if x < 0 {
+        return "neg"
+    } else if x == 0 {
+        return "zero"
+    } else if x < 10 {
+        return "small"
+    } else if x < 100 {
+        return "medium"
+    } else {
+        return "large"
+    }
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    check("neg", classify(0 - 5) == "neg")
+    check("zero", classify(0) == "zero")
+    check("small", classify(7) == "small")
+    check("medium", classify(42) == "medium")
+    check("large", classify(1000) == "large")
+
+    // Верига без финално else (4 нива)
+    let mut g: i64 = 0
+    if classify(1) == "small" { g = 1 } else if classify(0) == "zero" { g = 2 } else if classify(0 - 1) == "neg" { g = 3 } else if classify(9999) == "large" { g = 4 }
+    check("no_final_else", g == 1)
+    print("elif_chain_test: all passed")
+}

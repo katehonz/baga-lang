@@ -64,6 +64,16 @@ need app-product/s3baga/s3.baga
 echo "=== MEM-6 leak-check (арена телеметрия) ==="
 BAGA_MEM_LIMIT=1000000 run --leak-check tests/mem_stats_test.baga
 
+echo "=== --json диагностики (AI-consumer канал) ==="
+printf 'fn main() {\n    print(no_such_thing)\n}\n' > /tmp/ci_json_err.baga
+RC=0
+run --json /tmp/ci_json_err.baga > /tmp/ci_json_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q '"severity": "error"' /tmp/ci_json_out.txt; then
+	echo "OK: --json envelope"
+else
+	echo "FAIL: --json"; cat /tmp/ci_json_out.txt; exit 1
+fi
+
 echo "=== filesize-global ==="
 bash "$ROOT/scripts/filesize-global.sh"
 

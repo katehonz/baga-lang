@@ -64,7 +64,8 @@ fn smoke_pure() -> i64 !Net !IO !Par !Random !Time {
     assert_eq_str("dot_stuff", smtp_dot_stuff(".hidden\r\nnormal"), "..hidden\r\nnormal\r\n")
 
     // Base64 редове: всеки ред ≤ 76 знака (RFC 2045).
-    // Делим на "\n" — str_split гледа само първия символ (виж gaps).
+    // Делим на "\n" и махаме '\r' — упражнява smtp_strip_cr пътя (str_split
+    // вече поддържа и многосимволни разделители като "\r\n").
     let long = str_repeat("A", 300)
     let b64 = smtp_b64_lines(long)
     let lines = str_split(b64, "\n")

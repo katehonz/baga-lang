@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### parser — else-if вериги с произволна дълбочина
+- `if … else if … else if … else …` вече се парсва: преди десugar-ът
+  покриваше само ЕДНО `else if` (второто викаше parse_block без проверка
+  за `if` → „очаквах '{', получих 'if'"). AST формата за едно ниво е
+  непроменена — codegen-ите не са пипани. Self компилаторът остава без
+  else-if (документиран subset). Тест: `tests/elif_chain_test.baga`.
+
+### std — str_split по цял разделител, hostname(), UTF-8
+- `str_split(s, delim)` дели по delim от **един или повече** символи (S1 от
+  smtpbaga/gaps.md е затворена; едносимволното поведение е идентично —
+  http_client/smtp/oauth тестове минават без промяна). Празен delim връща
+  `[s]`. Линейно: ново `str_find_from(s, needle, start)` търси по индекси,
+  без междинни копия на остатъка.
+- `std/os`: `hostname()` през `extern gethostname(2)` (S4 затворена).
+- `std/str`: UTF-8 codepoint инструменти (lenient, не валидатор) —
+  `str_utf8_width`, `str_char_count`, `str_char_at`, `str_codepoint_at`,
+  `str_from_codepoint`. Кирилицата е first-class в езика — вече и в
+  strings: `str_char_count("здравей") == 7` (len е 14 байта).
+- Тестове: разширени `tests/std/str_test.baga` (57 проверки) и
+  `tests/std/os_test.baga`.
+
+### --json за диагнози — AI-consumer каналът е пълен
+- `--json` вече покрива и parse/check грешките, не само `--verify`:
+  envelope `{file, ok, diagnostics: [{file, line, col, severity, message}]}`
+  на stdout, exit код непроменен. Без `--verify` флагът означава
+  „структуриран check" — програмата не се изпълнява, stdout е само за
+  машината. Предупрежденията (`--warn-leaks`) влизат като `severity:
+  "warning"`; подсказките „имахте предвид" са в `message`.
+- `SrcPos` + offset на съобщението се пазят успоредно с човешкия текст
+  (Parser/Checker в baga.h) — прозата остава за хората, JSON-ът за агенти.
+- Проби: run_tests.sh (позиция/severity/подсказка, ok:true без изпълнение,
+  parse грешки, валидация с python3) + ci-smoke.sh.
+
 ### MEM-6 — арена телеметрия и leak детектор
 - Нови builtin-и (C бекенд): `mem_arena_bytes()` (live), `mem_spare_bytes()`
   (reclaim-нат кеш), `mem_peak_bytes()` (high-water на live). Process-wide

@@ -315,7 +315,12 @@ void register_fn(CheckCtx *ctx, Node *item) {
 
 void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
     if (ctx->chk->n_errors >= BAGA_MAX_ERRORS) return;
-    char *e = ctx->chk->errors[ctx->chk->n_errors++];    int off = snprintf(e, 256, "%d:%d: ", pos.line, pos.col);
+    int k = ctx->chk->n_errors;
+    char *e = ctx->chk->errors[k];
+    ctx->chk->error_pos[k] = pos;
+    int off = snprintf(e, 256, "%d:%d: ", pos.line, pos.col);
+    ctx->chk->error_off[k] = off > 255 ? 0 : off;
+    ctx->chk->n_errors++;
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(e + off, 256 - (size_t)off, fmt, ap);
@@ -329,8 +334,12 @@ void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
 /* MEM-3: предупреждение — не спира компилацията (за разлика от check_error). */
 static void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
     if (ctx->chk->n_warnings >= BAGA_MAX_ERRORS) return;
-    char *e = ctx->chk->warnings[ctx->chk->n_warnings++];
+    int k = ctx->chk->n_warnings;
+    char *e = ctx->chk->warnings[k];
+    ctx->chk->warning_pos[k] = pos;
     int off = snprintf(e, 256, "%d:%d: предупреждение: ", pos.line, pos.col);
+    ctx->chk->warning_off[k] = off > 255 ? 0 : off;
+    ctx->chk->n_warnings++;
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(e + off, 256 - (size_t)off, fmt, ap);

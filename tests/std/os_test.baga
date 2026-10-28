@@ -28,6 +28,11 @@ fn main() -> i64 !IO {
     check("env_set", len(env("PATH")) > 0)
     check("env_unset", env("BAGA_DEFINITELY_NOT_SET_42") == "")
 
+    // hostname (S4 от smtpbaga/gaps.md): gethostname(2) през heap буфер
+    let hn = hostname()?
+    check("hostname_nonempty", len(hn) > 0)
+    check("hostname_bounded", len(hn) <= 255)
+
     // mem_i64: little-endian load
     let b = chr(1)
     let s = concat(b, "aaaaaaa")

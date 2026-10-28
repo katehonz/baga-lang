@@ -537,6 +537,10 @@ typedef struct {
     /* error reporting */
     char   errors[BAGA_MAX_ERRORS][256];
     int    n_errors;
+    /* AI-consumer канал (--json): позиция и offset на съобщението след
+     * "file:line:col: " префикса — текстът в errors[] остава за хора. */
+    SrcPos error_pos[BAGA_MAX_ERRORS];
+    int    error_off[BAGA_MAX_ERRORS];
 } Parser;
 
 Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename);
@@ -553,6 +557,12 @@ typedef struct {
     int  n_errors;
     char warnings[BAGA_MAX_ERRORS][256];
     int  n_warnings;
+    /* AI-consumer канал (--json): позиция и offset на съобщението след
+     * "line:col: " префикса — текстът в errors[]/warnings[] остава за хора. */
+    SrcPos error_pos[BAGA_MAX_ERRORS];
+    int    error_off[BAGA_MAX_ERRORS];
+    SrcPos warning_pos[BAGA_MAX_ERRORS];
+    int    warning_off[BAGA_MAX_ERRORS];
     int  warn_leaks;    /* --warn-leaks: MEM-3 scope-exit leak предупреждения */
     int  allow_no_main; /* 1 = library / --check mode: do not require main */
     void *gen_snap;     /* M21: opaque — snapshot на регистрите (checker.c) */
