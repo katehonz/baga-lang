@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-28
+
 ### M31 — пълен bitvector фрагмент: bit-blasting + in-house DPLL
 - Фронтиерът от `docs/thesis-open-problems.md` §2 (option 1) е отворен:
   когато FM ядрото каже НЕ МОГА за ensures върху права i64 функция,
@@ -91,6 +93,10 @@
   `app-product/7x7office`, 13-те негови теста в `tests/` и блоковете в
   `scripts/run_tests.sh` / `scripts/ci-smoke.sh`. Външното хранилище
   `bagalang/7x7office` не е пипано; историческият запис под [1.1.4] остава.
+
+### repo — версията е синхронизирана
+- `BAGA_VERSION` в `include/baga.h` беше изостанал на 1.1.2 при `VERSION`
+  1.1.4 (пропуснат при миналия release). Сега и двете са 1.2.0.
 
 ## [1.1.4] — 2026-09-28
 
