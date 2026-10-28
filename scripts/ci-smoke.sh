@@ -26,13 +26,6 @@ need app-product/httpdbaga/http.baga
 need app-product/jwtbaga/jwt.baga
 need app-product/otpbaga/otp.baga
 need app-product/smtpbaga/smtp.baga
-need app-product/7x7office/secp/idm/mail_text.baga
-need app-product/7x7office/secp/idm/ws_roles.baga
-need app-product/7x7office/secp/tree/acl_roles.baga
-need app-product/7x7office/secp/tree/share_roles.baga
-need app-product/7x7office/secp/tree/activity_kinds.baga
-need app-product/7x7office/secp/reports/sheet.baga
-need app-product/7x7office/secp/data/seal.baga
 
 echo "=== examples ==="
 run examples/zdravei.baga
@@ -53,47 +46,11 @@ run tests/jwt_test.baga
 run tests/otp_test.baga
 run tests/smtp_test.baga
 
-echo "=== mail (Фаза 6.3: reset токени, payload, текстове) ==="
-run -I app-product/7x7office/secp tests/mail_test.baga
-
-echo "=== workspaces (Фаза 2: роли, нива, slug) ==="
-run -I app-product/7x7office/secp tests/ws_roles_test.baga
-
-echo "=== ACL по възли (Фаза 2: наследяване, най-специфичен печели) ==="
-run -I app-product/7x7office/secp tests/acl_roles_test.baga
-
-echo "=== публични линкове (Фаза 3: поддърво, срок, таван, парола) ==="
-run -I app-product/7x7office/secp tests/share_roles_test.baga
-
-echo "=== activity feed (Фаза 3: verb-ове, таван на meta, limit) ==="
-run -I app-product/7x7office/secp tests/activity_kinds_test.baga
-
-echo "=== админ отчети (Фаза 6: формат, колони, броене) ==="
-run -I app-product/7x7office/secp tests/report_sheet_test.baga
-
-echo "=== криптиране на blob (Фаза 7: AES-GCM плик) ==="
-run -I app-product/7x7office/secp tests/data_seal_test.baga
-
 echo "=== WOPI (Фаза 7: заключване, CheckFileInfo) ==="
 run tests/wopi_test.baga
 
 echo "=== S3 подпис (Фаза 7: SigV4) ==="
 run tests/s3_sign_test.baga
-
-echo "=== bulkhead (Фаза 7: кои пътища взимат слот) ==="
-run -I app-product/7x7office/secp tests/secp_guard_test.baga
-
-echo "=== маршрути (Фаза 0: public, шаблони) ==="
-run -I app-product/7x7office/secp tests/secp_routes_test.baga
-
-echo "=== S3 изчакване (профил: след затваряне) ==="
-run -I app-product/7x7office/secp tests/s3_hold_test.baga
-
-echo "=== качване (Фаза 1: multipart, offset) ==="
-run tests/upload_test.baga
-
-echo "=== WS събития (Фаза 3: verb→event, протокол, изходящи съобщения) ==="
-run -I app-product/7x7office/secp tests/ws_events_test.baga
 
 echo "=== чат стая (Фаза 3: празен текст, таван, ключ) ==="
 run tests/chat_room_test.baga
@@ -101,21 +58,8 @@ run tests/chat_room_test.baga
 echo "=== WebDAV протокол (Фаза 4: Depth, Destination, XML) ==="
 run tests/dav_test.baga
 
-# Интеграционният тест за файлове по пространство иска жив Postgres и
-# построен secp — в CI средата ги няма (виж scripts/run_tests.sh, където се
-# пуска при наличен target/secp). Тук само проверяваме, че не е изчезнал.
-need app-product/7x7office/secp/tools/ws_files_smoke.sh
-need app-product/7x7office/secp/tools/ws_events_smoke.sh
-need app-product/7x7office/secp/tools/dav_smoke.sh
-need app-product/7x7office/secp/tools/report_smoke.sh
-need app-product/7x7office/secp/tools/crypt_smoke.sh
-need app-product/7x7office/secp/tools/wopi_smoke.sh
-need app-product/7x7office/secp/tools/s3_smoke.sh
-need app-product/7x7office/secp/tools/otel_smoke.sh
 need app-product/wopibaga/wopi.baga
 need app-product/s3baga/s3.baga
-need app-product/7x7office/secp/system/ws_events.baga
-need app-product/7x7office/secp/system/ws_gateway_pump.baga
 
 echo "=== filesize-global ==="
 bash "$ROOT/scripts/filesize-global.sh"

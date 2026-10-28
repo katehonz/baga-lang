@@ -413,95 +413,6 @@ else
 	exit 1
 fi
 
-echo "=== поща (Фаза 6.3: reset токени, mail payload, текстове) ==="
-# Чистите части на пощата — без база и без мрежа. Проверяват хеша на
-# reset токена, JSON payload-а на фоновата задача и порта по TLS режим.
-RC=0
-run -I app-product/7x7office/secp tests/mail_test.baga > /tmp/baga_mail_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "mail_test: all passed" /tmp/baga_mail_out.txt; then
-	echo "OK: поща — reset токени + mail payload + текстове"
-else
-	echo "FAIL: mail_test"
-	cat /tmp/baga_mail_out.txt
-	exit 1
-fi
-
-# Ролите на workspaces (Фаза 2) — чистата логика кой какво може. Без база
-# и без мрежа, защото това е security-границата и трябва да се проверява
-# на всяко `make test`, а не само когато някой вдигне Postgres.
-RC=0
-run -I app-product/7x7office/secp tests/ws_roles_test.baga > /tmp/baga_ws_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "ws_roles_test: all passed" /tmp/baga_ws_out.txt; then
-	echo "OK: workspaces — роли, нива на достъп, slug"
-else
-	echo "FAIL: ws_roles_test"
-	cat /tmp/baga_ws_out.txt
-	exit 1
-fi
-
-# ACL по възли (Фаза 2) — чистата логика „кой печели" по път. Същата причина
-# да е в `make test`: грешка в наследяването е изтичане на права, а не
-# козметика, затова не чака жива база.
-RC=0
-run -I app-product/7x7office/secp tests/acl_roles_test.baga > /tmp/baga_acl_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "acl_roles_test: all passed" /tmp/baga_acl_out.txt; then
-	echo "OK: ACL — наследяване по път, най-специфичен печели, защита на owner"
-else
-	echo "FAIL: acl_roles_test"
-	cat /tmp/baga_acl_out.txt
-	exit 1
-fi
-
-# Публични линкове (Фаза 3) — втората security граница: линк дава достъп БЕЗ
-# вход. Грешка тук не се вижда на екрана (напр. /a пуска /ab), затова е в
-# `make test`, не само в живия smoke.
-RC=0
-run -I app-product/7x7office/secp tests/share_roles_test.baga > /tmp/baga_share_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "share_roles_test: all passed" /tmp/baga_share_out.txt; then
-	echo "OK: share — поддърво, срок, таван, парола, ниво върху файл"
-else
-	echo "FAIL: share_roles_test"
-	cat /tmp/baga_share_out.txt
-	exit 1
-fi
-
-# Activity feed (Фаза 3) — видовете действия и таваните. Feed-ът показва на
-# целия екип, затова непознат verb не бива да стига до UI-а; тук се пази и
-# „речникът", че всяко извикано от handler действие е познато.
-RC=0
-run -I app-product/7x7office/secp tests/activity_kinds_test.baga > /tmp/baga_activity_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "activity_kinds_test: all passed" /tmp/baga_activity_out.txt; then
-	echo "OK: activity — verb-ове, класификация, таван на meta, limit"
-else
-	echo "FAIL: activity_kinds_test"
-	cat /tmp/baga_activity_out.txt
-	exit 1
-fi
-
-# Админ отчети (Фаза 6) — форматът и колоните са договорът между файла и UI-а.
-# Грешен verb-стълб би показал чужд брой под грешно име.
-RC=0
-run -I app-product/7x7office/secp tests/report_sheet_test.baga > /tmp/baga_report_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "report_sheet_test: all passed" /tmp/baga_report_out.txt; then
-	echo "OK: reports — формат, език, колони по verb, броене"
-else
-	echo "FAIL: report_sheet_test"
-	cat /tmp/baga_report_out.txt
-	exit 1
-fi
-
-# Криптиране на blob (Фаза 7) — плика. Грешен nonce или пространство
-# не бива да връща текста.
-RC=0
-run -I app-product/7x7office/secp tests/data_seal_test.baga > /tmp/baga_seal_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "data_seal_test: all passed" /tmp/baga_seal_out.txt; then
-	echo "OK: seal — AES-GCM, пространство, ключ"
-else
-	echo "FAIL: data_seal_test"
-	cat /tmp/baga_seal_out.txt
-	exit 1
-fi
-
 # WOPI (Фаза 7) — заключването. 409 при чужд lock е договорът с Collabora.
 RC=0
 run tests/wopi_test.baga > /tmp/baga_wopi_out.txt 2>&1 || RC=$?
@@ -513,7 +424,7 @@ else
 	exit 1
 fi
 
-# S3 подпис (Фаза 7). Живият клиент е в s3_smoke; тук е само SigV4.
+# S3 подпис (Фаза 7) — SigV4.
 RC=0
 run tests/s3_sign_test.baga > /tmp/baga_s3_sign_out.txt 2>&1 || RC=$?
 if [[ $RC -eq 0 ]] && grep -q "s3_sign_test: all passed" /tmp/baga_s3_sign_out.txt; then
@@ -522,155 +433,6 @@ else
 	echo "FAIL: s3_sign_test"
 	cat /tmp/baga_s3_sign_out.txt
 	exit 1
-fi
-
-# Bulkhead (Фаза 7) — кой път взима слот. Живият 429 е в otel_smoke.
-RC=0
-run -I app-product/7x7office/secp tests/secp_guard_test.baga > /tmp/baga_guard_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "secp_guard_test: all passed" /tmp/baga_guard_out.txt; then
-	echo "OK: guard — health извън тавана, пълен таван е 0"
-else
-	echo "FAIL: secp_guard_test"
-	cat /tmp/baga_guard_out.txt
-	exit 1
-fi
-
-# Маршрути (Фаза 0) — public и шаблони. Без база.
-RC=0
-run -I app-product/7x7office/secp tests/secp_routes_test.baga > /tmp/baga_routes_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "secp_routes_test: all passed" /tmp/baga_routes_out.txt; then
-	echo "OK: routes — public и шаблони"
-else
-	echo "FAIL: secp_routes_test"
-	cat /tmp/baga_routes_out.txt
-	exit 1
-fi
-
-RC=0
-run -I app-product/7x7office/secp tests/s3_hold_test.baga > /tmp/baga_s3_hold_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "s3_hold_test: all passed" /tmp/baga_s3_hold_out.txt; then
-	echo "OK: s3 hold — изчакване след затваряне"
-else
-	echo "FAIL: s3_hold_test"
-	cat /tmp/baga_s3_hold_out.txt
-	exit 1
-fi
-
-# Качване (Фаза 1) — multipart и offset. Дискът е /tmp, без Postgres.
-RC=0
-run tests/upload_test.baga > /tmp/baga_upload_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "upload_test: all passed" /tmp/baga_upload_out.txt; then
-	echo "OK: upload — multipart и offset"
-else
-	echo "FAIL: upload_test"
-	cat /tmp/baga_upload_out.txt
-	exit 1
-fi
-
-# Файловият скоуп по workspace + Фаза 3 (ACL, линкове, activity) —
-# интеграционно, на живо срещу построения secp и Postgres. Покрива това,
-# което `baga` не може: рутиране, JWT, миграции, boot backfill и изчистване
-# на дървото при триене. Пуска се само ако `target/secp` е бил построен
-# (иначе `make test` би изисквал `sandak build`, което не е нужно за чистите
-# езикови тестове).
-SECP_BIN="$ROOT/app-product/7x7office/secp/target/secp"
-if [[ -x "$SECP_BIN" ]]; then
-	echo "=== workspaces × файлове (жива PG + secp: скоуп, роли, ACL, линкове, activity, backfill, purge) ==="
-	RC=0
-	bash "$ROOT/app-product/7x7office/secp/tools/ws_files_smoke.sh" > /tmp/baga_ws_files_out.txt 2>&1 || RC=$?
-	if [[ $RC -eq 0 ]] && grep -q "ws_files_smoke: all passed" /tmp/baga_ws_files_out.txt; then
-		echo "OK: workspaces файлове — скоуп, роли, ACL, линкове, activity, backfill, изчистване"
-	else
-		echo "FAIL: ws_files_smoke"
-		cat /tmp/baga_ws_files_out.txt
-		exit 1
-	fi
-	# WS gateway-ът (Фаза 3) е ОТДЕЛЕН сокет и отделен цикъл — интеграционен
-	# тест, който pure `baga` тестът (ws_events_test) не може да покрие:
-	# handshake, автентикация, абонамент, излъчване по мрежата, изолация
-	# между пространствата. Проверява се срещу СЪЩИЯ построен secp.
-	echo "=== WS gateway (жив: handshake/401, subscribe, push на събития, изолация, ping) ==="
-	RC=0
-	bash "$ROOT/app-product/7x7office/secp/tools/ws_events_smoke.sh" > /tmp/baga_ws_events_out.txt 2>&1 || RC=$?
-	if [[ $RC -eq 0 ]] && grep -q "ws_events_smoke: all passed" /tmp/baga_ws_events_out.txt; then
-		echo "OK: WS gateway — upgrade 401/404, subscribe/hello, push, изолация, too_large"
-	else
-		echo "FAIL: ws_events_smoke"
-		cat /tmp/baga_ws_events_out.txt
-		exit 1
-	fi
-else
-	echo "SKIP: ws_files_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
-	echo "SKIP: ws_events_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
-	echo "SKIP: dav_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
-	echo "SKIP: report_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
-	echo "SKIP: crypt_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
-	echo "SKIP: wopi_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
-	echo "SKIP: s3_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
-	echo "SKIP: otel_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
-fi
-
-if [[ -x "$SECP_BIN" ]]; then
-	echo "=== WebDAV (жив: OPTIONS, MKCOL, PUT, GET, PROPFIND, MOVE, COPY, DELETE) ==="
-	RC=0
-	bash "$ROOT/app-product/7x7office/secp/tools/dav_smoke.sh" > /tmp/baga_dav_out.txt 2>&1 || RC=$?
-	if [[ $RC -eq 0 ]] && grep -q "dav_smoke: all passed" /tmp/baga_dav_out.txt; then
-		echo "OK: WebDAV"
-	else
-		echo "FAIL: dav_smoke"
-		cat /tmp/baga_dav_out.txt
-		exit 1
-	fi
-	echo "=== админ отчети (жив: 401/403, място, активност, csv/xlsx/html/pdf/ods) ==="
-	RC=0
-	bash "$ROOT/app-product/7x7office/secp/tools/report_smoke.sh" > /tmp/baga_report_smoke_out.txt 2>&1 || RC=$?
-	if [[ $RC -eq 0 ]] && grep -q "report_smoke: all passed" /tmp/baga_report_smoke_out.txt; then
-		echo "OK: reports — място, активност, файлове"
-	else
-		echo "FAIL: report_smoke"
-		cat /tmp/baga_report_smoke_out.txt
-		exit 1
-	fi
-	echo "=== криптиране (жив: AES-GCM на диска, четене на текста) ==="
-	RC=0
-	bash "$ROOT/app-product/7x7office/secp/tools/crypt_smoke.sh" > /tmp/baga_crypt_out.txt 2>&1 || RC=$?
-	if [[ $RC -eq 0 ]] && grep -q "crypt_smoke: all passed" /tmp/baga_crypt_out.txt; then
-		echo "OK: crypt — шифрован blob, същият текст"
-	else
-		echo "FAIL: crypt_smoke"
-		cat /tmp/baga_crypt_out.txt
-		exit 1
-	fi
-	echo "=== WOPI (жив: CheckFileInfo, Get/Put, LOCK 409) ==="
-	RC=0
-	bash "$ROOT/app-product/7x7office/secp/tools/wopi_smoke.sh" > /tmp/baga_wopi_smoke_out.txt 2>&1 || RC=$?
-	if [[ $RC -eq 0 ]] && grep -q "wopi_smoke: all passed" /tmp/baga_wopi_smoke_out.txt; then
-		echo "OK: wopi — файл, lock, запис"
-	else
-		echo "FAIL: wopi_smoke"
-		cat /tmp/baga_wopi_smoke_out.txt
-		exit 1
-	fi
-	echo "=== S3 (жив: SigV4, качване, нулев байт, празен локален диск) ==="
-	RC=0
-	bash "$ROOT/app-product/7x7office/secp/tools/s3_smoke.sh" > /tmp/baga_s3_smoke_out.txt 2>&1 || RC=$?
-	if [[ $RC -eq 0 ]] && grep -q "s3_smoke: all passed" /tmp/baga_s3_smoke_out.txt; then
-		echo "OK: s3 — blob през S3, дискът е празен"
-	else
-		echo "FAIL: s3_smoke"
-		cat /tmp/baga_s3_smoke_out.txt
-		exit 1
-	fi
-	echo "=== следа и таван (жив: traceparent, 404, OTLP, 429) ==="
-	RC=0
-	bash "$ROOT/app-product/7x7office/secp/tools/otel_smoke.sh" > /tmp/baga_otel_smoke_out.txt 2>&1 || RC=$?
-	if [[ $RC -eq 0 ]] && grep -q "otel_smoke: all passed" /tmp/baga_otel_smoke_out.txt; then
-		echo "OK: otel — traceparent, колектор, bulkhead"
-	else
-		echo "FAIL: otel_smoke"
-		cat /tmp/baga_otel_smoke_out.txt
-		exit 1
-	fi
 fi
 
 echo "=== boilaDB SSL (SSLRequest → 'S' → TLS 1.3 → PG wire) ==="
@@ -742,7 +504,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga|wopi_test.baga|s3_sign_test.baga|s3_hold_test.baga|secp_guard_test.baga|secp_routes_test.baga|upload_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|wopi_test.baga|s3_sign_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done
