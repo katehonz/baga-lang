@@ -703,6 +703,8 @@ void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) {
         s->entries[s->count].is_arena = 0;
         s->entries[s->count].arena_id = 0;
         s->entries[s->count].region_id = 0;
+        s->entries[s->count].is_world = 0;
+        s->entries[s->count].world_frozen = 0;
         s->entries[s->count].pos = pos;
         s->count++;
     }
@@ -728,6 +730,8 @@ void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_mut, Src
         s->entries[s->count].is_arena = 0;
         s->entries[s->count].arena_id = 0;
         s->entries[s->count].region_id = 0;
+        s->entries[s->count].is_world = 0;
+        s->entries[s->count].world_frozen = 0;
         s->entries[s->count].pos = pos;
         s->count++;
     }
@@ -922,8 +926,37 @@ static int expr_arena_id(CheckCtx *ctx, Node *n) {
     return lookup_arena_id(ctx, n);
 }
 
+/* W1.6: дали изразът ражда world handle — world_new/world_load или алиас */
+static int expr_is_world(CheckCtx *ctx, Node *n) {
+    if (!n) return 0;
+    if (n->kind == NODE_IDENT) {
+        EnvEntry *e = ck_env_find(ctx, n->name);
+        return (e && e->is_world) ? 1 : 0;
+    }
+    if (n->kind == NODE_CALL && n->callee && n->callee->kind == NODE_IDENT &&
+        !find_fn_rec(ctx, n->callee->name)) {
+        const char *f = n->callee->name;
+        return (strcmp(f, "world_new") == 0 || strcmp(f, "world_load") == 0) ? 1 : 0;
+    }
+    return 0;
+}
+
 void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
     if (!pe || !init) return;
+    /* W1.6: world handle — алиасът наследява frozen състоянието на източника
+     * (консервативно: по-нататъшните freeze/free се логват по име, MEM-1
+     * граница — по-дълбоки графове от алиаси не се следят) */
+    if (expr_is_world(ctx, init)) {
+        pe->is_world = 1;
+        pe->world_frozen = 0;
+        if (init->kind == NODE_IDENT) {
+            EnvEntry *src = ck_env_find(ctx, init->name);
+            if (src && src->world_frozen) world_note_frozen(ctx, pe);
+        }
+    } else {
+        pe->is_world = 0;
+        pe->world_frozen = 0;
+    }
     int rid = region_of_expr(ctx, init);
     int aid = expr_arena_id(ctx, init);
     if (aid > 0) {
@@ -1027,6 +1060,93 @@ void drop_join_arms(CheckCtx *ctx, int log_base, const int *arm_end, int narm) {
         }
     }
     ctx->n_drop_log = w;
+}
+
+/* W1.6: freeze-join машинерия — огледало на drop-версиите върху
+ * world_frozen. Отделен лог, същата семантика: definitely frozen = замразено
+ * във всеки клон; maybe-frozen (само в един) се вдига, защото seatbelt-ът
+ * не бива да измисля грешки — пътевите случаи ги покрива верификаторът. */
+
+/* маркирай world handle като замразен + лог за if/match join */
+void world_note_frozen(CheckCtx *ctx, EnvEntry *e) {
+    if (!e || e->world_frozen) return;
+    e->world_frozen = 1;
+    if (ctx->n_freeze_log < 256)
+        ctx->freeze_log[ctx->n_freeze_log++] = e;
+    else
+        ctx->freeze_log_overflowed = 1;
+}
+
+/* вдигни всички freeze-ове, логнати от base нататък */
+void freeze_lift_from(CheckCtx *ctx, int base) {
+    for (int i = base; i < ctx->n_freeze_log; i++) ctx->freeze_log[i]->world_frozen = 0;
+}
+
+/* двуклонен join (if/else, catch) — вж. drop_join2 */
+void freeze_join2(CheckCtx *ctx, int log_base, int mid) {
+    if (ctx->freeze_log_overflowed) {
+        freeze_lift_from(ctx, log_base);
+        ctx->n_freeze_log = log_base;
+        ctx->freeze_log_overflowed = 0;
+        return;
+    }
+    int end = ctx->n_freeze_log;
+    for (int j = mid; j < end; j++) {
+        EnvEntry *e = ctx->freeze_log[j];
+        int in_first = 0;
+        for (int i = log_base; i < mid; i++)
+            if (ctx->freeze_log[i] == e) { in_first = 1; break; }
+        e->world_frozen = in_first;
+    }
+    int w = log_base;
+    for (int j = mid; j < end; j++) {
+        EnvEntry *e = ctx->freeze_log[j];
+        if (!e->world_frozen) continue;
+        int seen = 0;
+        for (int k = log_base; k < w; k++)
+            if (ctx->freeze_log[k] == e) { seen = 1; break; }
+        if (!seen) ctx->freeze_log[w++] = e;
+    }
+    ctx->n_freeze_log = w;
+}
+
+/* N-arm join (match) — вж. drop_join_arms */
+void freeze_join_arms(CheckCtx *ctx, int log_base, const int *arm_end, int narm) {
+    if (ctx->freeze_log_overflowed || !arm_end || narm <= 0) {
+        freeze_lift_from(ctx, log_base);
+        ctx->n_freeze_log = log_base;
+        ctx->freeze_log_overflowed = 0;
+        return;
+    }
+    int w = log_base;
+    for (int i = log_base; i < arm_end[0]; i++) {
+        EnvEntry *e = ctx->freeze_log[i];
+        int everywhere = 1;
+        for (int k = 1; k < narm && everywhere; k++) {
+            int found = 0;
+            for (int j = arm_end[k - 1]; j < arm_end[k]; j++)
+                if (ctx->freeze_log[j] == e) { found = 1; break; }
+            if (!found) everywhere = 0;
+        }
+        e->world_frozen = everywhere;
+        if (everywhere) {
+            int seen = 0;
+            for (int m = log_base; m < w; m++)
+                if (ctx->freeze_log[m] == e) { seen = 1; break; }
+            if (!seen) ctx->freeze_log[w++] = e;
+        }
+    }
+    for (int k = 1; k < narm; k++) {
+        for (int j = arm_end[k - 1]; j < arm_end[k]; j++) {
+            EnvEntry *e = ctx->freeze_log[j];
+            if (!e->world_frozen) continue;
+            int in0 = 0;
+            for (int i = log_base; i < arm_end[0]; i++)
+                if (ctx->freeze_log[i] == e) { in0 = 1; break; }
+            if (!in0) e->world_frozen = 0;
+        }
+    }
+    ctx->n_freeze_log = w;
 }
 
 Type *env_lookup(CheckCtx *ctx, const char *name) {

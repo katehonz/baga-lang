@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### W1.6 — светове: compile-time seatbelt с join-логика
+- Праволинейните нарушения на световния протокол вече са COMPILE грешка (без
+  `--verify`): `world_freeze(w)` после мутатор (`world_alloc`, `wvec_new`,
+  `wvec_push`, `wvec_push_str`) — `mutate-after-freeze: … върху замразен свят
+  'w'`; двоен freeze — `повторен world_freeze`; двоен `world_free` и всеки
+  достъп след него (ползва MEM-2 `dropped` + drop-лог, така че use-after-free
+  проверката и join-овете идват без нов код).
+- **Join-логика, не прибързан seatbelt**: `world_frozen` живее в отделен
+  `freeze_log` с `freeze_lift_from`/`freeze_join2`/`freeze_join_arms` върху
+  `if`/`else`, `match` (enum и не-enum) и `catch` — definitely frozen =
+  замразен във ВСЕКИ клон; freeze само в един клон ⇒ maybe-frozen и
+  seatbelt-ът мълчи (никакви фалшиви положителни в легален код). Препълнен
+  лог (> 256) деградира консервативно: пропусната грешка, никога измислена.
+- i64 параметър се брои за потенциален world handle — двоен `world_free` върху
+  параметър вътре в callee е compile грешка (иначе е двоен `free()` на malloc:
+  истинско UB, не чистата грешка на runtime seatbelt-а).
+- `check_fn` snapshot-ва и drop-, и freeze-лог МАСИВИТЕ (не само броячите):
+  тялото нулира и презаписва записите, а функцията може да се провери посред
+  infer на извикващия (lazy проверка / generic инстанция) — иначе join-ът на
+  обграждащата функция четеше чужди `EnvEntry` указатели. Латентен MEM-2
+  проблем, затворен заедно с W1.6.
+- Оркълът `examples/verify/worlds.baga` е пренаписан да е изцяло
+  path-sensitive (нарушението след join на if-клон) — праволинейните версии
+  вече не се компилират. Вердиктите са непроменени: 12 доказани ensures +
+  8 оброчени протокола. Нови проби в run_tests.sh: двоен freeze,
+  use-after-free, двоен free на параметър, definitely-frozen грешка и
+  maybe-frozen БЕЗ грешка (гардът срещу фалшиви положителни).
+- Docs: worlds-bg.md §3 (таблица „кой какво хваща") + §5 граници + пътна
+  карта, language-bg/en §W1.6.
+
 ### W1.5 — светове: низове, move през go, world_used
 - `wvec_push_str(w, v, s)` / `wvec_get_str(w, v, i)` — низът се КОПИРА в
   региона и елементът е неговият офсет: dump/load носи текстовете

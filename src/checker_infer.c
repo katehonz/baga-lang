@@ -1020,6 +1020,46 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             if (is_alloc) return type_new(TYPE_I64);
             return type_new(TYPE_VOID);
         }
+        /* W1.6: world seatbelt върху world handle-а (i64 локала). Всеки
+         * world_/wvec_ builtin (без world_new и world_load) взима света като
+         * аргумент 0. world_free ползва MEM-2 машинерията (dropped + drop_log),
+         * така че след него всеки достъп до променливата гърми; world_frozen има
+         * собствен freeze_log със същата join-семантика. „Maybe frozen"
+         * (замразен само в един клон на if) НЕ е грешка — seatbelt-ът никога не
+         * измисля; пътевите случаи ги покрива --verify (HK_WORLD). i64 параметър
+         * се брои за потенциален handle (двоен world_free в callee е двоен free()
+         * на malloc — истинско UB); алиаси извън `let b = w` и светове, върнати
+         * от потребителска fn, остават неследени (MEM-1 граница). */
+        if ((strcmp(name, "world_free") == 0 || strcmp(name, "world_freeze") == 0 ||
+             strcmp(name, "world_alloc") == 0 || strcmp(name, "wvec_new") == 0 ||
+             strcmp(name, "wvec_push") == 0 || strcmp(name, "wvec_push_str") == 0) &&
+            !env_lookup(ctx, name) && !ck_find_fn(ctx, name)) {
+            int is_free = strcmp(name, "world_free") == 0;
+            int is_freeze = strcmp(name, "world_freeze") == 0;
+            Node *wh = n->args.len > 0 ? n->args.data[0] : NULL;
+            EnvEntry *e = (wh && wh->kind == NODE_IDENT) ? ck_env_find(ctx, wh->name) : NULL;
+            if (e && e->is_world && !e->dropped) {
+                if (is_free) {
+                    if (ctx->loop_depth && e->scope_depth <= ctx->loop_depth)
+                        check_error(ctx, n->pos,
+                            "world_free на външен за цикъла свят '%s' — втората итерация би била use-after-free",
+                            wh->name);
+                    else {
+                        e->dropped = 1;
+                        if (ctx->n_drop_log < 256) ctx->drop_log[ctx->n_drop_log++] = e;
+                        else ctx->drop_log_overflowed = 1;
+                    }
+                } else if (is_freeze) {
+                    if (e->world_frozen)
+                        check_error(ctx, n->pos, "повторен world_freeze на '%s'", wh->name);
+                    else
+                        world_note_frozen(ctx, e);
+                } else if (e->world_frozen) {
+                    check_error(ctx, n->pos,
+                        "mutate-after-freeze: %s върху замразен свят '%s'", name, wh->name);
+                }
+            }
+        }
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {
                 n->callee->type = type_new(TYPE_VOID);

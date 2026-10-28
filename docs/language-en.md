@@ -1227,6 +1227,17 @@ invalidates nothing:
   argument (directly or inside a cell2 pack) is a move — use-after-move is
   refuted. Nested worlds: a `wvec_new` offset is an element of the outer
   wvec.
+- W1.6: a checker seatbelt — straight-line violations are a COMPILE error, no
+  `--verify` needed: `world_freeze(w)` followed by a mutator (`world_alloc`,
+  `wvec_new`, `wvec_push`, `wvec_push_str`), a double freeze, a double
+  `world_free` (including on an i64 parameter inside a callee — otherwise a
+  double malloc `free()`), and any access after `world_free`. The join logic is
+  conservative: a freeze in only one if/match arm ⇒ after the join the world is
+  "maybe frozen" and the seatbelt stays SILENT — the path-sensitive case is
+  refuted by the verifier with a counterexample. Boundary: a handle is
+  recognized from `let w = world_new()`/`world_load(b)` and from i64
+  parameters; a wrapper function returning a world is not tracked (nor are
+  aliases — MEM-1).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

@@ -26,6 +26,10 @@ struct EnvEntry {
     int is_mut;
     /* MEM-2: drop seatbelt — per-variable live/dropped състояние */
     int dropped;      /* drop() е извикан върху тази локална */
+    int is_world;     /* W1.6: локалата е world handle (let w = world_new()) */
+    int world_frozen; /* W1.6: ОПРЕДЕЛЕН world_freeze (join-консервативно:
+                       * maybe-frozen след if-клон остава 0 — верификаторът
+                       * покрива пътевите случаи, seatbelt-ът не измисля) */
     int is_param;     /* параметър — буферът е на извикващия, drop забранен */
     int captured;     /* заснет от ламбда — drop би оставил висящ указател */
     int scope_depth;  /* ctx->depth при дефиницията (за loop-правилото) */
@@ -101,6 +105,11 @@ typedef struct {
     EnvEntry *drop_log[256];
     int n_drop_log;
     int drop_log_overflowed; /* логът се е препълнил — join деградира консервативно */
+    /* W1.6: паралелен лог за world_frozen — същата lift/join семантика като
+     * drop_log (отделен масив, за да не се пипа MEM-2 машинерията) */
+    EnvEntry *freeze_log[256];
+    int n_freeze_log;
+    int freeze_log_overflowed;
     int loop_depth;   /* 0 = извън цикъл; иначе depth-а на обграждащия цикъл */
     int next_arena_id; /* MEM-3: монотонен id за arena_new (handle алиаси) */
     int arena_freed_ids[128]; /* MEM-3: arena_id-та, върху които имаше arena_free */
@@ -156,6 +165,10 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init);   /* 981 */
 void drop_lift_from(CheckCtx *ctx, int base);   /* 1009 */
 void drop_join2(CheckCtx *ctx, int log_base, int mid);   /* 1018 */
 void drop_join_arms(CheckCtx *ctx, int log_base, const int *arm_end, int narm);   /* 1048 */
+void freeze_lift_from(CheckCtx *ctx, int base);   /* W1.6 */
+void freeze_join2(CheckCtx *ctx, int log_base, int mid);   /* W1.6 */
+void freeze_join_arms(CheckCtx *ctx, int log_base, const int *arm_end, int narm);   /* W1.6 */
+void world_note_frozen(CheckCtx *ctx, EnvEntry *e);   /* W1.6 */
 Type *env_lookup(CheckCtx *ctx, const char *name);   /* 1088 */
 int env_is_mut(CheckCtx *ctx, const char *name);   /* 1099 */
 Type *ck_find_fn(CheckCtx *ctx, const char *name);   /* 1110 */

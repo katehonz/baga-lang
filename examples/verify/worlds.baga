@@ -12,6 +12,13 @@
 // проследяват — MEM-1 договор); move се моделира само през chan_send
 // (go-аргумент е W0.5); cross-world capability връзки още ги няма.
 //
+// W1.6: checker-ът вече има собствен seatbelt за ПРАВОЛИНЕЙНИ нарушения
+// (freeze→mutate, двоен freeze, достъп след world_free) и те не стигат дотук
+// — компилацията гърми. Затова всяко bad_* тук е path-sensitive: нарушаващото
+// действие е след join на if-клон, където checker-ът не е сигурен (maybe
+// frozen / maybe freed) и честно мълчи, а верификаторът изследва пътевите и
+// оборва лошата. Същото разделение като при mem_drop.baga.
+//
 //   ./baga --verify examples/verify/worlds.baga
 
 spec ok_lifecycle {
@@ -61,13 +68,15 @@ spec bad_freeze_mutate {
         output >= 0
 }
 
-// Мутиране след freeze — скрито зад if-клон (прав път е само при n > 0).
+// Мутиране след freeze — freeze е САМО в then-клона, така че след join
+// checker-ът (W1.6 seatbelt) не знае със сигурност, че светът е замразен, и
+// оставя реда легален. Верификаторът минава по двата пътя и оборва n > 0.
 fn bad_freeze_mutate(n: i64) -> i64 {
     let w = world_new()
     if n > 0 {
         world_freeze(w)
-        let p = world_alloc(w, 16)
     }
+    let p = world_alloc(w, 16)
     world_free(w)
     return 0
 }
@@ -80,13 +89,15 @@ spec bad_double_free {
         output >= 0
 }
 
-// Двоен free — вторият е зад if, така че checker-ът не го хваща праволинейно.
+// Двоен free — първият е само в then-клона, така че след join вторият не е
+// „сигурно върху освободен свят" за checker-а (W1.6); верификаторът го
+// оборва по пътя n > 0.
 fn bad_double_free(n: i64) -> i64 {
     let w = world_new()
-    world_free(w)
     if n > 0 {
         world_free(w)
     }
+    world_free(w)
     return 0
 }
 
@@ -98,13 +109,14 @@ spec bad_use_after_free {
         output >= 0
 }
 
-// Четене на състоянието след free — use-after-free.
+// Четене на състоянието след free — use-after-free. Free-ът е само в
+// then-клона ⇒ checker-ът (W1.6) не е сигурен; верификаторът е.
 fn bad_use_after_free(n: i64) -> i64 {
     let w = world_new()
-    world_free(w)
     if n > 0 {
-        let s = world_state(w)
+        world_free(w)
     }
+    let s = world_state(w)
     return 0
 }
 
@@ -158,14 +170,15 @@ spec bad_push_frozen {
         output >= 0
 }
 
-// W1: wvec_push върху замразен свят — mutate-after-freeze.
+// W1: wvec_push върху замразен свят — mutate-after-freeze. Freeze-ът е само
+// в then-клона ⇒ checker-legal (W1.6 join), верификаторът оборва n > 0.
 fn bad_push_frozen(n: i64) -> i64 {
     let w = world_new()
     let v = wvec_new(w)
-    world_freeze(w)
     if n > 0 {
-        wvec_push(w, v, 2)
+        world_freeze(w)
     }
+    wvec_push(w, v, 2)
     world_free(w)
     return 0
 }
@@ -224,14 +237,15 @@ spec bad_push_str_frozen {
         output >= 0
 }
 
-// W1.5: низов push върху замразен свят — mutate-after-freeze.
+// W1.5: низов push върху замразен свят — mutate-after-freeze. Freeze-ът е
+// само в then-клона ⇒ checker-legal (W1.6 join), верификаторът оборва n > 0.
 fn bad_push_str_frozen(n: i64) -> i64 {
     let w = world_new()
     let v = wvec_new(w)
-    world_freeze(w)
     if n > 0 {
-        wvec_push_str(w, v, "x")
+        world_freeze(w)
     }
+    wvec_push_str(w, v, "x")
     world_free(w)
     return 0
 }

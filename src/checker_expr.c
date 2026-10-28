@@ -217,18 +217,24 @@ Type *infer(CheckCtx *ctx, Node *n) {
             /* MEM-2: drop-join — drop-нато в then се брои само ако else
              * (или отсъствието му) също го гарантира. */
             int log_base = ctx->n_drop_log;
+            int flog_base = ctx->n_freeze_log;
             Type *tt = infer(ctx, n->then_br);
             int then_end = ctx->n_drop_log;
+            int fthen_end = ctx->n_freeze_log;
             /* else-клонът не трябва да вижда drop-овете от then: временно ги вдигни */
             drop_lift_from(ctx, log_base);
+            freeze_lift_from(ctx, flog_base);
             Type *et = n->else_br ? infer(ctx, n->else_br) : type_new(TYPE_VOID);
             if (n->else_br) {
                 drop_join2(ctx, log_base, then_end);
+                freeze_join2(ctx, flog_base, fthen_end);
             } else {
                 /* без else нищо не е сигурно drop-нато — вече вдигнахме
                  * флаговете; нелогнатите (overflow) изобщо не са маркирани */
                 ctx->n_drop_log = log_base;
                 ctx->drop_log_overflowed = 0;
+                ctx->n_freeze_log = flog_base;
+                ctx->freeze_log_overflowed = 0;
             }
             t = type_eq(tt, et) ? tt : tt;
             break;
@@ -566,8 +572,10 @@ Type *infer(CheckCtx *ctx, Node *n) {
             /* MEM-2: две алтернативи — try изразът (нормален път) и handler-ът
              * (прихванат ефект); definitely dropped = drop-нато и в двете */
             int log_base = ctx->n_drop_log;
+            int flog_base = ctx->n_freeze_log;
             Type *et = infer(ctx, n->catch_expr);
             int try_end = ctx->n_drop_log;
+            int ftry_end = ctx->n_freeze_log;
             /* LP4: catch на ефект, който изразът не носи, минаваше тихо —
              * мъртъв код и прикритие за правописни грешки в името. */
             if (et->kind != TYPE_ERROR) {
@@ -593,6 +601,7 @@ Type *infer(CheckCtx *ctx, Node *n) {
             }
             /* handler-ът не трябва да вижда drop-овете от try израза */
             drop_lift_from(ctx, log_base);
+            freeze_lift_from(ctx, flog_base);
             push_scope(ctx);
             if (pl && n->catch_binding) {
                 /* M20: payload-ът е с живота на handler-а */
@@ -601,6 +610,7 @@ Type *infer(CheckCtx *ctx, Node *n) {
             infer(ctx, n->catch_handler);
             pop_scope(ctx);
             drop_join2(ctx, log_base, try_end);
+            freeze_join2(ctx, flog_base, ftry_end);
             t = type_new(et->kind);
             /* keep Vec elem / struct name, like a plain call result does */
             t->elem = et->elem;
@@ -757,12 +767,15 @@ Type *infer(CheckCtx *ctx, Node *n) {
                 t = type_new(TYPE_VOID);
                 /* MEM-2: всеки arm е алтернатива — N-arm drop-join */
                 int log_base = ctx->n_drop_log;
+                int flog_base = ctx->n_freeze_log;
                 int arm_end[64];
+                int farm_end[64];
                 int narm = n->match_arms.len;
                 for (int i = 0; i < n->match_arms.len; i++) {
                     Node *arm = n->match_arms.data[i];
                     /* този arm не трябва да вижда drop-овете от предишните */
                     drop_lift_from(ctx, log_base);
+                    freeze_lift_from(ctx, flog_base);
                     if (!arm->arm_pattern) {
                         has_wild = 1;
                     } else if (arm->arm_pattern->kind != NODE_IDENT &&
@@ -820,6 +833,7 @@ Type *infer(CheckCtx *ctx, Node *n) {
                     ctx->cur_ret = saved_ret;
                     pop_scope(ctx);
                     if (i < 64) arm_end[i] = ctx->n_drop_log;
+                    if (i < 64) farm_end[i] = ctx->n_freeze_log;
                     if (bt->kind == TYPE_VOID && arm->arm_body &&
                         arm->arm_body->kind == NODE_BLOCK &&
                         arm->arm_body->stmts.len > 0) {
@@ -842,6 +856,8 @@ Type *infer(CheckCtx *ctx, Node *n) {
                 free(covered);
                 /* MEM-2: definitely dropped = drop-нато във всеки arm */
                 drop_join_arms(ctx, log_base, narm <= 64 ? arm_end : NULL, narm);
+                /* W1.6: definitely frozen = замразено във всеки arm */
+                freeze_join_arms(ctx, flog_base, narm <= 64 ? farm_end : NULL, narm);
                 break;
             }
             /* не-enum match: досегашното поведение (първият arm дава типа) */
@@ -849,13 +865,16 @@ Type *infer(CheckCtx *ctx, Node *n) {
             {
                 /* MEM-2: всеки arm е алтернатива — N-arm drop-join */
                 int log_base = ctx->n_drop_log;
+                int flog_base = ctx->n_freeze_log;
                 int arm_end[64];
+                int farm_end[64];
                 int narm = n->match_arms.len;
                 int has_wild = 0;
                 for (int i = 0; i < n->match_arms.len; i++) {
                     Node *arm = n->match_arms.data[i];
                     /* този arm не трябва да вижда drop-овете от предишните */
                     drop_lift_from(ctx, log_base);
+                    freeze_lift_from(ctx, flog_base);
                     if (arm->arm_pattern) infer(ctx, arm->arm_pattern);
                     else has_wild = 1;  /* `_` — гарантира изпълнение на някой arm */
                     /* infer arm body; extract type from return if wrapped */
@@ -864,6 +883,7 @@ Type *infer(CheckCtx *ctx, Node *n) {
                     Type *bt = infer(ctx, arm->arm_body);
                     ctx->cur_ret = saved_ret;
                     if (i < 64) arm_end[i] = ctx->n_drop_log;
+                    if (i < 64) farm_end[i] = ctx->n_freeze_log;
                     if (bt->kind == TYPE_VOID && arm->arm_body &&
                         arm->arm_body->kind == NODE_BLOCK &&
                         arm->arm_body->stmts.len > 0) {
@@ -876,12 +896,16 @@ Type *infer(CheckCtx *ctx, Node *n) {
                 /* MEM-2: не-enum match няма exhaustiveness проверка — без `_`
                  * при runtime може да не се изпълни НИТО ЕДИН arm, затова
                  * intersection-ът е unsound: консервативно вдигане на всичко */
-                if (has_wild)
+                if (has_wild) {
                     drop_join_arms(ctx, log_base, narm <= 64 ? arm_end : NULL, narm);
-                else {
+                    freeze_join_arms(ctx, flog_base, narm <= 64 ? farm_end : NULL, narm);
+                } else {
                     drop_lift_from(ctx, log_base);
                     ctx->n_drop_log = log_base;
                     ctx->drop_log_overflowed = 0;
+                    freeze_lift_from(ctx, flog_base);
+                    ctx->n_freeze_log = flog_base;
+                    ctx->freeze_log_overflowed = 0;
                 }
             }
             break;

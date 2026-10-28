@@ -486,12 +486,12 @@ else
 	exit 1
 fi
 
-echo "=== W0/W1 светове: mutate-after-freeze е чиста runtime грешка ==="
+echo "=== W0/W1 светове: mutate-after-freeze е чиста грешка (W1.6 — на компилация) ==="
 printf 'fn main() {\n    let w = world_new()\n    world_freeze(w)\n    let p = world_alloc(w, 8)\n    print(p)\n}\n' > /tmp/baga_world_frozen.baga
 RC=0
 run /tmp/baga_world_frozen.baga > /tmp/baga_world_frozen_out.txt 2>&1 || RC=$?
 if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_world_frozen_out.txt; then
-	echo "OK: world_alloc върху замразен свят — чиста грешка, не UB"
+	echo "OK: world_alloc върху замразен свят — compile грешка, не UB"
 else
 	echo "FAIL: frozen world_alloc трябваше да е чиста грешка"
 	cat /tmp/baga_world_frozen_out.txt
@@ -501,7 +501,7 @@ printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    world
 RC=0
 run /tmp/baga_wvec_frozen.baga > /tmp/baga_wvec_frozen_out.txt 2>&1 || RC=$?
 if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_wvec_frozen_out.txt; then
-	echo "OK: wvec_push върху замразен свят — чиста грешка, не UB"
+	echo "OK: wvec_push върху замразен свят — compile грешка, не UB"
 else
 	echo "FAIL: frozen wvec_push трябваше да е чиста грешка"
 	cat /tmp/baga_wvec_frozen_out.txt
@@ -511,10 +511,68 @@ printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    world
 RC=0
 run /tmp/baga_wvec_str_frozen.baga > /tmp/baga_wvec_str_frozen_out.txt 2>&1 || RC=$?
 if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_wvec_str_frozen_out.txt; then
-	echo "OK: wvec_push_str върху замразен свят — чиста грешка, не UB"
+	echo "OK: wvec_push_str върху замразен свят — compile грешка, не UB"
 else
 	echo "FAIL: frozen wvec_push_str трябваше да е чиста грешка"
 	cat /tmp/baga_wvec_str_frozen_out.txt
+	exit 1
+fi
+
+echo "=== W1.6 seatbelt: двоен freeze / use-after-free са compile грешки ==="
+printf 'fn main() {\n    let w = world_new()\n    world_freeze(w)\n    world_freeze(w)\n    world_free(w)\n}\n' > /tmp/baga_w_double_freeze.baga
+RC=0
+run /tmp/baga_w_double_freeze.baga > /tmp/baga_w_double_freeze_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "повторен world_freeze" /tmp/baga_w_double_freeze_out.txt; then
+	echo "OK: двоен world_freeze — compile грешка"
+else
+	echo "FAIL: двоен world_freeze трябваше да е compile грешка"
+	cat /tmp/baga_w_double_freeze_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    world_free(w)\n    print(world_state(w))\n}\n' > /tmp/baga_w_uaf.baga
+RC=0
+run /tmp/baga_w_uaf.baga > /tmp/baga_w_uaf_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w_uaf_out.txt; then
+	echo "OK: world_state след world_free — compile грешка"
+else
+	echo "FAIL: use-after-world_free трябваше да е compile грешка"
+	cat /tmp/baga_w_uaf_out.txt
+	exit 1
+fi
+printf 'fn worker(w: i64) {\n    world_free(w)\n    world_free(w)\n}\nfn main() {\n    let w = world_new()\n    worker(w)\n}\n' > /tmp/baga_w_param_double.baga
+RC=0
+run /tmp/baga_w_param_double.baga > /tmp/baga_w_param_double_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w_param_double_out.txt; then
+	echo "OK: двоен world_free върху параметър (в callee) — compile грешка"
+else
+	echo "FAIL: двоен world_free на параметър трябваше да е compile грешка"
+	cat /tmp/baga_w_param_double_out.txt
+	exit 1
+fi
+
+echo "=== W1.6 join: maybe-frozen НЕ е грешка, definitely-frozen е ==="
+# freeze само в then-клона ⇒ след join checker-ът не е сигурен и мълчи
+# (иначе seatbelt-ът би измислял грешки в легален код); runtime минава по
+# else-пътя и светът е жив. Пътевия случай го оборва --verify.
+printf 'fn main() {\n    let w = world_new()\n    let n = 0\n    if n > 0 {\n        world_freeze(w)\n    }\n    let p = world_alloc(w, 8)\n    print(p)\n    world_free(w)\n}\n' > /tmp/baga_w_maybe_frozen.baga
+RC=0
+run /tmp/baga_w_maybe_frozen.baga > /tmp/baga_w_maybe_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]]; then
+	echo "OK: maybe-frozen (freeze само в един клон) — без измислена грешка"
+else
+	echo "FAIL: maybe-frozen не трябва да е compile грешка"
+	cat /tmp/baga_w_maybe_frozen_out.txt
+	exit 1
+fi
+# freeze и в двата клона ⇒ сигурно замразен ⇒ mutate след join е грешка
+printf 'fn main() {\n    let w = world_new()\n    let n = 0\n    if n > 0 {\n        world_freeze(w)\n    } else {\n        world_freeze(w)\n    }\n    let p = world_alloc(w, 8)\n    print(p)\n}\n' > /tmp/baga_w_def_frozen.baga
+RC=0
+run /tmp/baga_w_def_frozen.baga > /tmp/baga_w_def_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_w_def_frozen_out.txt; then
+	echo "OK: definitely-frozen (freeze и в двата клона) — compile грешка"
+else
+	echo "FAIL: definitely-frozen mutate трябваше да е compile грешка"
+	cat /tmp/baga_w_def_frozen_out.txt
 	exit 1
 fi
 

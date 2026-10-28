@@ -384,6 +384,12 @@ static int generic_inst_add(CheckCtx *ctx, Node *fn, Type **bind, SrcPos pos) {
     int saved_loop = ctx->loop_depth;
     int saved_dlog = ctx->n_drop_log;
     int saved_ovf = ctx->drop_log_overflowed;
+    int saved_flog = ctx->n_freeze_log;
+    int saved_fovf = ctx->freeze_log_overflowed;
+    EnvEntry *saved_dlog_arr[256];
+    EnvEntry *saved_flog_arr[256];
+    memcpy(saved_dlog_arr, ctx->drop_log, sizeof saved_dlog_arr);
+    memcpy(saved_flog_arr, ctx->freeze_log, sizeof saved_flog_arr);
     ctx->g_names.len = 0; ctx->g_types.len = 0;
     for (int i = 0; i < np; i++) {
         vec_push(ctx->g_names, fn->type_params[i]);
@@ -412,6 +418,10 @@ static int generic_inst_add(CheckCtx *ctx, Node *fn, Type **bind, SrcPos pos) {
     ctx->loop_depth = saved_loop;
     ctx->n_drop_log = saved_dlog;
     ctx->drop_log_overflowed = saved_ovf;
+    ctx->n_freeze_log = saved_flog;
+    ctx->freeze_log_overflowed = saved_fovf;
+    memcpy(ctx->drop_log, saved_dlog_arr, sizeof saved_dlog_arr);
+    memcpy(ctx->freeze_log, saved_flog_arr, sizeof saved_flog_arr);
 
     /* M23: trait bounds — конкретният тип трябва да имплементира bound-а */
     for (int i = 0; i < np; i++) {
@@ -665,7 +675,17 @@ void check_fn(CheckCtx *ctx, Node *fn) {
     int saved_loop = ctx->loop_depth;
     int saved_dlog = ctx->n_drop_log;
     int saved_ovf = ctx->drop_log_overflowed;
+    int saved_flog = ctx->n_freeze_log;
+    int saved_fovf = ctx->freeze_log_overflowed;
     int saved_nfreed = ctx->n_arena_freed;
+    /* W1.6: лог-МАСИВИТЕ също се snapshot-ват — check_fn нулира броячите и
+     * презаписва записите, а може да се извика посред infer на извикващия
+     * (lazy проверка / generic инстанция); без това join-ът на обграждащата
+     * функция чете чужди EnvEntry указатели и измисля dropped/frozen. */
+    EnvEntry *saved_dlog_arr[256];
+    EnvEntry *saved_flog_arr[256];
+    memcpy(saved_dlog_arr, ctx->drop_log, sizeof saved_dlog_arr);
+    memcpy(saved_flog_arr, ctx->freeze_log, sizeof saved_flog_arr);
 
     ctx->cur_fn = fn->fn_name;
     ctx->cur_ret = fn->ret_type ? resolve_type_node(ctx, fn->ret_type) : type_new(TYPE_VOID);
@@ -691,8 +711,15 @@ void check_fn(CheckCtx *ctx, Node *fn) {
             /* MEM-3: i64 param може да е arena handle за alloc/return
              * резюмета — но НЕ е is_arena (иначе `let x = n` гърми като
              * забравена арена, liveness_struct.baga). */
-            if (pt && pt->kind == TYPE_I64)
+            if (pt && pt->kind == TYPE_I64) {
                 pe->arena_id = ++ctx->next_arena_id;
+                /* W1.6: i64 параметър е потенциален world handle — така
+                 * seatbelt-ът за double-free / mutate-after-freeze важи и
+                 * вътре в callee-то (world_free е двоен free на malloc).
+                 * Началното състояние е неизвестно → world_frozen = 0,
+                 * т.е. никакво измислено обвинение към извикващия. */
+                pe->is_world = 1;
+            }
         }
     }
 
@@ -700,6 +727,8 @@ void check_fn(CheckCtx *ctx, Node *fn) {
      * fn граница); без reset block-local drop-ове пълнят лога за целия модул */
     ctx->n_drop_log = 0;
     ctx->drop_log_overflowed = 0;
+    ctx->n_freeze_log = 0;
+    ctx->freeze_log_overflowed = 0;
     ctx->n_arena_freed = 0;
     if (fn->fn_body) {
         for (int i = 0; i < fn->fn_body->stmts.len; i++)
@@ -782,6 +811,10 @@ void check_fn(CheckCtx *ctx, Node *fn) {
     ctx->loop_depth = saved_loop;
     ctx->n_drop_log = saved_dlog;
     ctx->drop_log_overflowed = saved_ovf;
+    ctx->n_freeze_log = saved_flog;
+    ctx->freeze_log_overflowed = saved_fovf;
+    memcpy(ctx->drop_log, saved_dlog_arr, sizeof saved_dlog_arr);
+    memcpy(ctx->freeze_log, saved_flog_arr, sizeof saved_flog_arr);
     ctx->n_arena_freed = saved_nfreed;
 }
 

@@ -1236,6 +1236,15 @@ print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
   `go`/`go_bg` с свят в аргумента (директно или в cell2) е move —
   use-after-move се оборва. Вложени светове: офсетът на `wvec_new` е
   елемент на външния wvec.
+- W1.6: checker seatbelt — праволинейните нарушения са COMPILE грешка, без
+  `--verify`: `world_freeze(w)` и после мутатор (`world_alloc`, `wvec_new`,
+  `wvec_push`, `wvec_push_str`), двоен freeze, двоен `world_free` (включително
+  върху i64 параметър вътре в callee — иначе е двоен `free()` на malloc) и
+  всеки достъп след `world_free`. Join-логиката е консервативна: freeze само в
+  един клон на if/match ⇒ след join светът е „може би замразен" и seatbelt-ът
+  МЪЛЧИ — пътевия случай го оборва верификаторът с контрапример. Граница:
+  handle се разпознава по `let w = world_new()`/`world_load(b)` и по i64
+  параметър; обвивка, която връща свят, не се следи (алиасите — също, MEM-1).
 - Пълният дизайн-документ — модел, сравнение с Verona/Pony/Cyclone, bench,
   честни граници и пътна карта: `docs/worlds-bg.md`.
 
