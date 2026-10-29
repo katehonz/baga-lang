@@ -658,35 +658,38 @@ else
 	exit 1
 fi
 
-echo "=== W2.2 Worlds runtime: невалиден офсет/blob е чиста грешка, не UB ==="
+echo "=== W2.2 Worlds runtime: невалиден id/blob е чиста грешка, не UB ==="
 # Сгрешен wvec офсет четеше извън malloc блока (heap-buffer-overflow под ASan).
+# От W2.10 контейнерът е id, не суров офсет — проверката е срещу таблицата.
 printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push(w, v, 42)\n    print(wvec_len(w, 70000))\n}\n' > /tmp/baga_wvec_badoff.baga
 RC=0
 run /tmp/baga_wvec_badoff.baga > /tmp/baga_wvec_badoff_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "невалиден wvec офсет" /tmp/baga_wvec_badoff_out.txt; then
-	echo "OK: невалиден wvec офсет — чиста грешка"
+if [[ $RC -ne 0 ]] && grep -q "невалиден контейнер id" /tmp/baga_wvec_badoff_out.txt; then
+	echo "OK: невалиден контейнер id — чиста грешка"
 else
-	echo "FAIL: невалидният wvec офсет трябваше да е чиста грешка"
+	echo "FAIL: невалидният контейнер id трябваше да е чиста грешка"
 	cat /tmp/baga_wvec_badoff_out.txt
 	exit 1
 fi
-# i64 елемент, прочетен като низ — офсетът е извън региона.
+# i64 елемент, прочетен като низ — схемата на контейнера го отхвърля (W2.10),
+# а дори без нея офсетът е извън региона.
 printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push(w, v, 12345)\n    print(wvec_get_str(w, v, 0))\n}\n' > /tmp/baga_wvec_badstr.baga
 RC=0
 run /tmp/baga_wvec_badstr.baga > /tmp/baga_wvec_badstr_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "не е офсет в региона" /tmp/baga_wvec_badstr_out.txt; then
+if [[ $RC -ne 0 ]] && grep -q "контейнерът не е от низове" /tmp/baga_wvec_badstr_out.txt; then
 	echo "OK: wvec_get_str върху i64 елемент — чиста грешка"
 else
 	echo "FAIL: wvec_get_str с невалиден елемент трябваше да е чиста грешка"
 	cat /tmp/baga_wvec_badstr_out.txt
 	exit 1
 fi
-# world_load на случаен blob + wvec достъп — trust boundary, чиста грешка.
-printf 'fn main() {\n    let b = bytes_of_str("not-a-world-blob-at-all")\n    let w = world_load(b)\n    print(wvec_len(w, 0))\n}\n' > /tmp/baga_world_badload.baga
+# Отрязан dump с валиден magic — trust boundary: таблицата/заглавията се
+# проверяват срещу used, затова е чиста грешка, не четене извън блока.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    let mut i: i64 = 0\n    while i < 1000 {\n        wvec_push(w, v, i)\n        i = i + 1\n    }\n    let d = world_dump(w)\n    let w2 = world_load(bytes_slice(d, 0, bytes_len(d) / 2))\n    print(wvec_len(w2, v))\n    world_free(w)\n}\n' > /tmp/baga_world_badload.baga
 RC=0
 run /tmp/baga_world_badload.baga > /tmp/baga_world_badload_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "невалиден wvec офсет" /tmp/baga_world_badload_out.txt; then
-	echo "OK: world_load на боклук + wvec достъп — чиста грешка"
+if [[ $RC -ne 0 ]] && grep -q "повредено wvec заглавие" /tmp/baga_world_badload_out.txt; then
+	echo "OK: отрязан dump — чиста грешка при достъп, не UB"
 else
 	echo "FAIL: счупеният blob трябваше да дава чиста грешка"
 	cat /tmp/baga_world_badload_out.txt
@@ -819,16 +822,16 @@ else
 	exit 1
 fi
 
-echo "=== W2.9 wmap/wbytes: невалиден офсет и сгрешен елемент са чиста грешка ==="
+echo "=== W2.9 wmap/wbytes: невалиден id и сгрешен елемент са чиста грешка ==="
 # Сгрешен wmap офсет (или счупен blob) четеше извън malloc блока преди W2.2
-# дисциплината; сега е чиста грешка.
+# дисциплината; от W2.10 контейнерът е id и проверката е срещу таблицата.
 printf 'fn main() {\n    let w = world_new()\n    let m = wmap_new(w)\n    wmap_set(w, m, 1, 5)\n    print(wmap_len(w, 99999))\n}\n' > /tmp/baga_wmap_badoff.baga
 RC=0
 run /tmp/baga_wmap_badoff.baga > /tmp/baga_wmap_badoff_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "невалиден wmap офсет" /tmp/baga_wmap_badoff_out.txt; then
-	echo "OK: невалиден wmap офсет — чиста грешка"
+if [[ $RC -ne 0 ]] && grep -q "невалиден контейнер id" /tmp/baga_wmap_badoff_out.txt; then
+	echo "OK: невалиден wmap id — чиста грешка"
 else
-	echo "FAIL: невалидният wmap офсет трябваше да е чиста грешка"
+	echo "FAIL: невалидният wmap id трябваше да е чиста грешка"
 	cat /tmp/baga_wmap_badoff_out.txt
 	exit 1
 fi
@@ -836,7 +839,7 @@ fi
 printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push(w, v, 12345)\n    let g = wvec_get_bytes(w, v, 0)\n    print(bytes_len(g))\n}\n' > /tmp/baga_wbytes_conf.baga
 RC=0
 run /tmp/baga_wbytes_conf.baga > /tmp/baga_wbytes_conf_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "не е валиден bytes офсет" /tmp/baga_wbytes_conf_out.txt; then
+if [[ $RC -ne 0 ]] && grep -q "контейнерът не е от bytes елементи" /tmp/baga_wbytes_conf_out.txt; then
 	echo "OK: wvec_get_bytes върху i64 елемент — чиста грешка"
 else
 	echo "FAIL: type-confusion върху bytes елемент трябваше да е чиста грешка"
@@ -876,6 +879,79 @@ if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze: wmap_set" /tmp/baga_wmap_fro
 else
 	echo "FAIL: wmap_set върху замразен свят трябваше да е грешка"
 	cat /tmp/baga_wmap_frozen_out.txt
+	exit 1
+fi
+
+echo "=== W2.10 авто-компакция: корени и схема в региона ==="
+# Компакцията пренарежда живите байтове (корените са таблицата на
+# контейнерите, схемата е ekind/vkind) — used намалява, id-тата и данните не.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    let mut i: i64 = 0\n    while i < 50000 {\n        wvec_push(w, v, i)\n        i = i + 1\n    }\n    let before = world_used(w)\n    world_compact(w)\n    let after = world_used(w)\n    print(before)\n    print(after)\n    print(wvec_get(w, v, 49999))\n    print(bytes_len(world_dump_compact(w)))\n    world_free(w)\n}\n' > /tmp/baga_wcompact.baga
+RC=0
+run /tmp/baga_wcompact.baga > /tmp/baga_wcompact_out.txt 2>&1 || RC=$?
+BEFORE=$(sed -n 1p /tmp/baga_wcompact_out.txt)
+AFTER=$(sed -n 2p /tmp/baga_wcompact_out.txt)
+if [[ $RC -eq 0 ]] && [[ "$AFTER" -lt "$BEFORE" ]] && [[ "$(sed -n 3p /tmp/baga_wcompact_out.txt)" == "49999" ]] \
+	&& [[ "$(sed -n 4p /tmp/baga_wcompact_out.txt)" == "$AFTER" ]]; then
+	echo "OK: world_compact свива региона ($BEFORE → $AFTER) без да пипа данните и id-тата"
+else
+	echo "FAIL: компакцията трябваше да свие региона и да запази данните"
+	cat /tmp/baga_wcompact_out.txt
+	exit 1
+fi
+# world_compact е мутатор — върху замразен свят е compile грешка (W1.6).
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    world_freeze(w)\n    world_compact(w)\n}\n' > /tmp/baga_wcompact_frozen.baga
+RC=0
+run /tmp/baga_wcompact_frozen.baga > /tmp/baga_wcompact_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze: world_compact" /tmp/baga_wcompact_frozen_out.txt; then
+	echo "OK: world_compact върху замразен свят — compile грешка (dump_compact е четене)"
+else
+	echo "FAIL: world_compact върху замразен свят трябваше да е грешка"
+	cat /tmp/baga_wcompact_frozen_out.txt
+	exit 1
+fi
+# Контейнерите са хомогенни: без схема компакцията не знае кои елементи са
+# payload, затова смесването е чиста грешка (като при Map в езика).
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push(w, v, 1)\n    wvec_push_str(w, v, "x")\n}\n' > /tmp/baga_wmix.baga
+RC=0
+run /tmp/baga_wmix.baga > /tmp/baga_wmix_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "смесени типове елементи" /tmp/baga_wmix_out.txt; then
+	echo "OK: смесени типове елементи в контейнер — чиста грешка"
+else
+	echo "FAIL: смесването на i64 и str елементи трябваше да е грешка"
+	cat /tmp/baga_wmix_out.txt
+	exit 1
+fi
+# Схемата важи и за четците: i64 достъп до контейнер от низове връщаше офсета
+# като число (а обратното — боклук, ако стойността случайно е валиден офсет).
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "низ")\n    print(wvec_get(w, v, 0))\n}\n' > /tmp/baga_wkind_read.baga
+RC=0
+run /tmp/baga_wkind_read.baga > /tmp/baga_wkind_read_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът не е от i64 елементи" /tmp/baga_wkind_read_out.txt; then
+	echo "OK: wvec_get върху контейнер от низове — чиста грешка (схемата на региона)"
+else
+	echo "FAIL: i64 читател на str контейнер трябваше да е грешка"
+	cat /tmp/baga_wkind_read_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let m = wmap_new(w)\n    wmap_set_str(w, m, 1, "низ")\n    print(wmap_get(w, m, 1))\n}\n' > /tmp/baga_wkind_read2.baga
+RC=0
+run /tmp/baga_wkind_read2.baga > /tmp/baga_wkind_read2_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът не е от i64 стойности" /tmp/baga_wkind_read2_out.txt; then
+	echo "OK: wmap_get върху контейнер от низове — чиста грешка (схемата на региона)"
+else
+	echo "FAIL: i64 читател на str wmap трябваше да е грешка"
+	cat /tmp/baga_wkind_read2_out.txt
+	exit 1
+fi
+# Регионът има magic: чужд blob вече не се зарежда като свят.
+printf 'fn main() {\n    let b = bytes_of_str("not-a-world-blob-at-all")\n    let w = world_load(b)\n    print(world_used(w))\n}\n' > /tmp/baga_wload_magic.baga
+RC=0
+run /tmp/baga_wload_magic.baga > /tmp/baga_wload_magic_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "blob-ът не е свят" /tmp/baga_wload_magic_out.txt; then
+	echo "OK: world_load на чужд blob — чиста грешка (magic проверка)"
+else
+	echo "FAIL: world_load трябваше да проверява magic"
+	cat /tmp/baga_wload_magic_out.txt
 	exit 1
 fi
 

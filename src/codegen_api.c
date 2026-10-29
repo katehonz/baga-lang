@@ -506,11 +506,32 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * ИНВАРИАНТ: slen == strlen(s) винаги — str е C низ и NUL го съкращава
      * (str_of_bytes/read_file на двоичен вход); тези producers ползват
      * strlen(r), не „естествената" дължина (иначе LLVM-оракулът лови). */
+    /* STR-1 fix: [baga_lo,baga_hi) е ОБХВАТЪТ на всички bump блокове, но
+     * блоковете НЕ са непрекъснати — glibc/ASan връщат различни региони за
+     * различни размери, затова обхватът може да покрие .rodata и четенето на
+     * s-16 пред литерал е out-of-bounds (ASan го хваща; извън ASan е тих
+     * прочит на чужда памет или segfault, ако s-16 е некартирана). Обхватът
+     * остава като евтин reject, а доказателството е per-блоковата проверка:
+     * s-16 се чете само ако s наистина е в някой блок. Блоковете никога не се
+     * free-ват (MEM-5 връща ги в spare), значи кешираният hit не увисва. */
+    if (!cg->rc) {
+        fprintf(out, "static __thread baga_ABlk *baga_blk_hit = NULL;\n");
+        fprintf(out, "static inline int baga_str_in_bump(const char *s) {\n");
+        fprintf(out, "    baga_ABlk *b = baga_blk_hit;\n");
+        fprintf(out, "    if (b && s >= b->data + %d && s < b->data + b->cap) return 1;\n", hs);
+        fprintf(out, "    if (!baga_lo || s < baga_lo + %d || s >= baga_hi) return 0;\n", hs);
+        fprintf(out, "    for (b = baga_arena_head; b; b = b->next)\n");
+        fprintf(out, "        if (s >= b->data + %d && s < b->data + b->cap) { baga_blk_hit = b; return 1; }\n", hs);
+        fprintf(out, "    for (b = baga_persist_head; b; b = b->next)\n");
+        fprintf(out, "        if (s >= b->data + %d && s < b->data + b->cap) { baga_blk_hit = b; return 1; }\n", hs);
+        fprintf(out, "    return 0;\n");
+        fprintf(out, "}\n");
+    }
     fprintf(out, "static inline __attribute__((always_inline)) int64_t baga_str_len(const char *s) {\n");
     if (cg->rc) {
         fprintf(out, "    return (int64_t)strlen(s);\n");
     } else {
-        fprintf(out, "    if (!s || !baga_lo || (char *)s < baga_lo + %d || (char *)s >= baga_hi) return (int64_t)strlen(s);\n", hs);
+        fprintf(out, "    if (!s || !baga_str_in_bump(s)) return (int64_t)strlen(s);\n");
         fprintf(out, "    baga_Hdr *h = (baga_Hdr *)((char *)s - %d);\n", hs);
         fprintf(out, "    if (h->magic != BAGA_HDR_MAGIC || !(h->persist & 2)) return (int64_t)strlen(s);\n");
         fprintf(out, "    return (int64_t)(h->persist >> 2);\n");
@@ -1537,7 +1558,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * арената + frozen бит (seatbelt: чиста грешка при alloc в замразен
      * свят); протоколът use-after-free/use-after-move/mutate-after-freeze
      * се ДОКАЗВА/ОБОРВА от верификатора (HK_WORLD ghost, като HK_DROP). */
-    fprintf(out, "static int64_t baga_world_new(void) { return baga_arena_new(); }\n");
+    /* W2.10: светът започва с baga_WHdr (magic + таблица на контейнерите) —
+     * инициализацията е в блока на контейнерите по-долу (forward decl). */
+    fprintf(out, "static int64_t baga_world_init_hdr(int64_t h);\n");
+    fprintf(out, "static int64_t baga_world_new(void) { return baga_world_init_hdr(baga_arena_new()); }\n");
     fprintf(out, "static int64_t baga_world_alloc(int64_t h, int64_t size) {\n");
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
     fprintf(out, "    if (!a) { fprintf(stderr, \"baga: world_alloc: null handle\\n\"); exit(1); }\n");
@@ -1560,172 +1584,107 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return a->frozen;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_world_free(int64_t h) { baga_arena_free(h); }\n");
-    /* W1: wvec — typed вектор ВЪТРЕ в свят, с относителни офсети. Заглавието
-     * {len, cap, data_off} и данните са на офсети спрямо w->base, който се
-     * препрочита при всеки достъп: realloc-ът при растеж мести base, но
-     * офсетите остават валидни (position-independent регион). Резултат:
-     * world_dump е memcpy на base[0..used] и world_load го чете на произволен
-     * адрес — без fixup. Достъпът е O(1) (i64 елементи са inline; offset
-     * таблица за променливи елементи е W1.5). */
-    fprintf(out, "typedef struct { int64_t len; int64_t cap; int64_t data_off; } baga_WVec;\n");
+    fprintf(out, "\n");
+    fprintf(out, "/* W1/W2.9/W2.10: контейнери ВЪТРЕ в свят — wvec (последователност) и wmap\n");
+    fprintf(out, " * (ключ/стойност). Адресацията е през ИДЕНТИФИКАТОР, не през суров офсет:\n");
+    fprintf(out, " * регионът започва с baga_WHdr (magic + таблица на контейнерите), таблицата е\n");
+    fprintf(out, " * в самия регион, затова\n");
+    fprintf(out, " *   • dump/load носи и magic, и таблицата ⇒ id-тата важат и след зареждане;\n");
+    fprintf(out, " *   • runtime-ът ЗНАЕ корените (таблицата) и схемата (ekind/vkind), значи\n");
+    fprintf(out, " *     може да компактира сам (world_compact / world_dump_compact) — W1.5\n");
+    fprintf(out, " *     ръчният rebuild идеом вече не е единственият път;\n");
+    fprintf(out, " *   • произволен i64 не може да се представи за контейнер (id се проверява\n");
+    fprintf(out, " *     срещу таблицата, kind — срещу очаквания).\n");
+    fprintf(out, " * Вътрешността е offset-адресирана: абсолютни указатели не живеят между две\n");
+    fprintf(out, " * извиквания, защото realloc при растеж мести base (офсет-първа дисциплина). */\n");
+    fprintf(out, "#define BAGA_WORLD_MAGIC 0x42475700000A01LL\n");
+    fprintf(out, "#define BAGA_WORLD_VERSION 1\n");
+    fprintf(out, "typedef struct { int64_t magic; int64_t version; int64_t tbl_off; int64_t tbl_len; int64_t tbl_cap; } baga_WHdr;\n");
+    fprintf(out, "typedef struct { int64_t off; int64_t kind; } baga_WEnt;   /* kind: 1=wvec, 2=wmap */\n");
+    fprintf(out, "typedef struct { int64_t len; int64_t cap; int64_t data_off; int64_t ekind; } baga_WVec;\n");
+    fprintf(out, "typedef struct { int64_t k; int64_t v; int64_t st; } baga_WSlot;\n");
+    fprintf(out, "typedef struct { int64_t len; int64_t cap; int64_t slots_off; int64_t vkind; } baga_WMap;\n");
+    fprintf(out, "\n");
+    fprintf(out, "static void baga_world_bad(const char *op, const char *what, long long a, long long b) {\n");
+    fprintf(out, "    fprintf(stderr, \"baga: %%s: %%s (%%lld, used/len=%%lld)\\n\", op, what, a, b);\n");
+    fprintf(out, "    exit(1);\n");
+    fprintf(out, "}\n");
     fprintf(out, "static baga_Arena *baga_world_a(int64_t h, const char *op) {\n");
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
     fprintf(out, "    if (!a) { fprintf(stderr, \"baga: %%s: null world handle\\n\", op); exit(1); }\n");
+    fprintf(out, "    if (a->used < (int64_t)sizeof(baga_WHdr))\n");
+    fprintf(out, "        { fprintf(stderr, \"baga: %%s: handle-ът не е свят (регионът е твърде малък)\\n\", op); exit(1); }\n");
+    fprintf(out, "    baga_WHdr *hd = (baga_WHdr *)a->base;\n");
+    fprintf(out, "    if (hd->magic != BAGA_WORLD_MAGIC)\n");
+    fprintf(out, "        { fprintf(stderr, \"baga: %%s: handle-ът не е свят (няма magic) — светове са world_new/world_load\\n\", op); exit(1); }\n");
+    fprintf(out, "    if (hd->version != BAGA_WORLD_VERSION)\n");
+    fprintf(out, "        { fprintf(stderr, \"baga: %%s: неподдържана версия на света %%lld\\n\", op, (long long)hd->version); exit(1); }\n");
     fprintf(out, "    return a;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_world_mut_check(baga_Arena *a, const char *op) {\n");
     fprintf(out, "    if (a->frozen) { fprintf(stderr, \"baga: %%s върху замразен свят — mutate-after-freeze\\n\", op); exit(1); }\n");
     fprintf(out, "}\n");
-    /* W2.2: всеки адрес, който wvec пипа, е доказан ВЪТРЕ в региона — иначе
-     * сгрешен voff или зловреден/счупен blob от world_load четеше/пишеше извън
-     * malloc блока (heap-buffer-overflow под ASan). Два помощника, всяка
-     * проверка е по 2 сравнения, без деление и без signed overflow (сметките
-     * са в uint64: евентуален wrap дава адрес ПАК в региона, никога извън него).
-     * Не валидираме целия инвариант на заглавието — само адреса на достъпа. */
-    fprintf(out, "static baga_WVec *baga_wvec_at(baga_Arena *w, int64_t voff, const char *op) {\n");
-    fprintf(out, "    if (voff < 0 || voff > w->used - (int64_t)sizeof(baga_WVec)) {\n");
-    fprintf(out, "        fprintf(stderr, \"baga: %%s: невалиден wvec офсет %%lld (used=%%lld)\\n\", op, (long long)voff, (long long)w->used);\n");
-    fprintf(out, "        exit(1);\n");
+    fprintf(out, "static int64_t baga_woff(baga_Arena *w, int64_t p) {\n");
+    fprintf(out, "    return (int64_t)((char *)(intptr_t)p - w->base);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static baga_WHdr *baga_whdr(baga_Arena *w) { return (baga_WHdr *)w->base; }\n");
+    fprintf(out, "static int64_t baga_world_init_hdr(int64_t h) {\n");
+    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    baga_WHdr *hd = (baga_WHdr *)a->base;\n");
+    fprintf(out, "    hd->magic = BAGA_WORLD_MAGIC; hd->version = BAGA_WORLD_VERSION;\n");
+    fprintf(out, "    hd->tbl_off = 0; hd->tbl_len = 0; hd->tbl_cap = 0;\n");
+    fprintf(out, "    a->used = (int64_t)sizeof(baga_WHdr);\n");
+    fprintf(out, "    return h;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "\n");
+    fprintf(out, "/* таблица на контейнерите: id е 1-базиран индекс (0 = невалиден) */\n");
+    fprintf(out, "static baga_WEnt *baga_went(baga_Arena *w, int64_t id, int64_t kind, const char *op) {\n");
+    fprintf(out, "    baga_WHdr *hd = baga_whdr(w);\n");
+    fprintf(out, "    if (id <= 0 || id > hd->tbl_len)\n");
+    fprintf(out, "        baga_world_bad(op, \"невалиден контейнер id\", (long long)id, (long long)hd->tbl_len);\n");
+    fprintf(out, "    if (hd->tbl_off < 0 || hd->tbl_off > w->used || hd->tbl_cap < 0 ||\n");
+    fprintf(out, "        hd->tbl_cap * (int64_t)sizeof(baga_WEnt) > w->used - hd->tbl_off)\n");
+    fprintf(out, "        baga_world_bad(op, \"повредена таблица на контейнерите\", (long long)hd->tbl_off, (long long)w->used);\n");
+    fprintf(out, "    baga_WEnt *e = (baga_WEnt *)(w->base + hd->tbl_off) + (id - 1);\n");
+    fprintf(out, "    if (e->kind != kind)\n");
+    fprintf(out, "        baga_world_bad(op, kind == 1 ? \"id не е wvec\" : \"id не е wmap\", (long long)id, (long long)e->kind);\n");
+    fprintf(out, "    if (e->off < 0 || e->off > w->used)\n");
+    fprintf(out, "        baga_world_bad(op, \"контейнерът сочи извън региона\", (long long)e->off, (long long)w->used);\n");
+    fprintf(out, "    return e;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wtbl_add(int64_t wh, int64_t off, int64_t kind) {\n");
+    fprintf(out, "    baga_Arena *w = (baga_Arena *)(intptr_t)wh;\n");
+    fprintf(out, "    baga_WHdr *hd = baga_whdr(w);\n");
+    fprintf(out, "    if (hd->tbl_len == hd->tbl_cap) {\n");
+    fprintf(out, "        int64_t ncap = hd->tbl_cap ? hd->tbl_cap * 2 : 16;\n");
+    fprintf(out, "        int64_t np = baga_arena_alloc(wh, ncap * (int64_t)sizeof(baga_WEnt));\n");
+    fprintf(out, "        int64_t noff = baga_woff(w, np);\n");
+    fprintf(out, "        if (hd->tbl_cap > 0)\n");
+    fprintf(out, "            memcpy(w->base + noff, w->base + hd->tbl_off, (size_t)(hd->tbl_cap * sizeof(baga_WEnt)));\n");
+    fprintf(out, "        hd = baga_whdr(w);            /* base може да е преместен */\n");
+    fprintf(out, "        hd->tbl_off = noff; hd->tbl_cap = ncap;\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    return (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    baga_WEnt *e = (baga_WEnt *)(w->base + hd->tbl_off) + hd->tbl_len;\n");
+    fprintf(out, "    e->off = off; e->kind = kind;\n");
+    fprintf(out, "    hd->tbl_len++;\n");
+    fprintf(out, "    return hd->tbl_len;               /* id */\n");
+    fprintf(out, "}\n");
+    fprintf(out, "\n");
+    fprintf(out, "/* заглавия и елементи — всеки адрес се доказва вътре в региона (W2.2) */\n");
+    fprintf(out, "static baga_WVec *baga_wvec_at(baga_Arena *w, int64_t voff, const char *op) {\n");
+    fprintf(out, "    if (voff < 0 || voff > w->used - (int64_t)sizeof(baga_WVec))\n");
+    fprintf(out, "        baga_world_bad(op, \"невалиден wvec офсет\", (long long)voff, (long long)w->used);\n");
+    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    if (v->len < 0 || v->cap < v->len || v->data_off < 0 || v->data_off > w->used ||\n");
+    fprintf(out, "        v->cap > w->used || v->cap * 8 > w->used - v->data_off)\n");
+    fprintf(out, "        baga_world_bad(op, \"повредено wvec заглавие\", (long long)voff, (long long)w->used);\n");
+    fprintf(out, "    return v;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t *baga_wvec_data(baga_Arena *w, baga_WVec *v, int64_t i, const char *op) {\n");
     fprintf(out, "    uint64_t off = (uint64_t)v->data_off + (uint64_t)i * 8u;\n");
-    fprintf(out, "    if (off > (uint64_t)w->used || (uint64_t)w->used - off < 8u) {\n");
-    fprintf(out, "        fprintf(stderr, \"baga: %%s: достъп извън региона (off=%%llu used=%%lld)\\n\", op, (unsigned long long)off, (long long)w->used);\n");
-    fprintf(out, "        exit(1);\n");
-    fprintf(out, "    }\n");
+    fprintf(out, "    if (off > (uint64_t)w->used || (uint64_t)w->used - off < 8u)\n");
+    fprintf(out, "        baga_world_bad(op, \"достъп извън региона\", (unsigned long long)off, (long long)w->used);\n");
     fprintf(out, "    return (int64_t *)(w->base + off);\n");
-    fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_wvec_new(int64_t wh) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_new\");\n");
-    fprintf(out, "    baga_world_mut_check(w, \"wvec_new\");\n");
-    /* Офсет-първа дисциплина: arena_alloc може да realloc-не base, затова
-     * абсолютните указатели се превръщат в офсети веднага и header-ът се
-     * препрочита от base след всеки alloc. */
-    fprintf(out, "    int64_t hp = baga_arena_alloc(wh, (int64_t)sizeof(baga_WVec));\n");
-    fprintf(out, "    int64_t hoff = (int64_t)((char *)(intptr_t)hp - w->base);\n");
-    fprintf(out, "    int64_t dp = baga_arena_alloc(wh, 64);\n");
-    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + hoff);\n");
-    fprintf(out, "    v->len = 0; v->cap = 8;\n");
-    fprintf(out, "    v->data_off = (int64_t)((char *)(intptr_t)dp - w->base);\n");
-    fprintf(out, "    return hoff;\n");
-    fprintf(out, "}\n");
-    fprintf(out, "static void baga_wvec_push(int64_t wh, int64_t voff, int64_t x) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push\");\n");
-    fprintf(out, "    baga_world_mut_check(w, \"wvec_push\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_push\");\n");
-    fprintf(out, "    if (v->len == v->cap) {\n");
-    fprintf(out, "        int64_t old_off = v->data_off, old_len = v->len, nc = v->cap * 2;\n");
-    /* W2.2: и старият span се валидира преди memcpy (счупено заглавие от
-     * blob) — същата uint64 аритметика като baga_wvec_data. */
-    fprintf(out, "        if ((uint64_t)old_off + (uint64_t)old_len * 8u > (uint64_t)w->used) { fprintf(stderr, \"baga: wvec_push: старият блок е извън региона\\n\"); exit(1); }\n");
-    fprintf(out, "        int64_t nd = baga_arena_alloc(wh, nc * 8);\n");
-    fprintf(out, "        memcpy((char *)(intptr_t)nd, w->base + old_off, (size_t)old_len * 8);\n");
-    fprintf(out, "        v = (baga_WVec *)(w->base + voff);   /* base може да е преместен */\n");
-    fprintf(out, "        v->data_off = (int64_t)((char *)(intptr_t)nd - w->base);\n");
-    fprintf(out, "        v->cap = nc;\n");
-    fprintf(out, "    }\n");
-    fprintf(out, "    int64_t *d = baga_wvec_data(w, v, v->len, \"wvec_push\");\n");
-    fprintf(out, "    *d = x;\n");
-    fprintf(out, "    v->len++;\n");
-    fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_wvec_len(int64_t wh, int64_t voff) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_len\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_len\");\n");
-    fprintf(out, "    return v->len;\n");
-    fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_wvec_get(int64_t wh, int64_t voff, int64_t i) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_get\");\n");
-    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get\", i, v->len);\n");
-    fprintf(out, "    return *baga_wvec_data(w, v, i, \"wvec_get\");\n");
-    fprintf(out, "}\n");
-    /* dump/load: светът е position-independent — dump е memcpy на региона,
-     * load го възстановява в НОВА арена и офсетите важат веднага. */
-    fprintf(out, "static baga_bytes baga_world_dump(int64_t wh) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"world_dump\");\n");
-    fprintf(out, "    baga_bytes r; r.len = w->used;\n");
-    fprintf(out, "    r.data = baga_alloc((size_t)(w->used > 0 ? w->used : 1));\n");
-    fprintf(out, "    if (w->used > 0) memcpy(r.data, w->base, (size_t)w->used);\n");
-    fprintf(out, "    return r;\n");
-    fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_world_load(baga_bytes b) {\n");
-    /* W2.2: load е trust boundary — blob-ът може да е от файл/мрежа. Самата
-     * арена се проверява тук (размер/данни), а структурата на wvec-овете вътре
-     * — при всеки достъп (baga_wvec_at), така че счупен blob дава чиста
-     * грешка, не out-of-bounds четене. */
-    fprintf(out, "    if (b.len < 0 || (b.len > 0 && !b.data)) { fprintf(stderr, \"baga: world_load: невалиден blob\\n\"); exit(1); }\n");
-    fprintf(out, "    baga_Arena *a = malloc(sizeof(baga_Arena));\n");
-    fprintf(out, "    if (!a) { fprintf(stderr, \"baga: world_load: oom\\n\"); exit(1); }\n");
-    fprintf(out, "    a->used = b.len; a->cap = b.len > 65536 ? b.len : 65536; a->frozen = 0;\n");
-    fprintf(out, "    a->base = malloc((size_t)a->cap);\n");
-    fprintf(out, "    if (!a->base) { fprintf(stderr, \"baga: world_load: oom\\n\"); exit(1); }\n");
-    fprintf(out, "    if (b.len > 0) memcpy(a->base, b.data, (size_t)b.len);\n");
-    /* W2.3: зареденият свят стартира с ПРАЗЕН кеш — вътрешната променяемост
-     * не е част от стойността на света (dump-ът не я носи), затова lazy
-     * индексите се построяват наново при нужда. W2.5: същото важи за
-     * връзките — те са handle-и, не офсети, значи dump-ът не ги носи. */
-    fprintf(out, "    pthread_mutex_init(&a->wlock, NULL); a->wcache = NULL;\n");
-    fprintf(out, "    a->links = NULL; a->n_links = 0; a->cap_links = 0; a->linked_by = 0;\n");
-    fprintf(out, "    return (int64_t)(intptr_t)a;\n");
-    fprintf(out, "}\n");
-    /* W1.5: текущият bump обем на света — метрика за growth garbage
-     * (used срещу живите данни). Компактирането е rebuild идеом: нов свят
-     * + wvec_* обхождане (документиран в docs/worlds-bg.md). */
-    fprintf(out, "static int64_t baga_world_used(int64_t wh) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"world_used\");\n");
-    fprintf(out, "    return w->used;\n");
-    fprintf(out, "}\n");
-    /* W1.5: str елемент — низът се КОПИРА в региона и елементът е неговият
-     * ОФСЕТ (position-independent: dump/load го носи). Get връща borrowed
-     * указател в региона: за frozen свят е стабилен (никога не расте); за
-     * mutable — валиден до следващия растежен realloc (документирано,
-     * MEM-1 дух). Няма baga_Hdr — len() минава по strlen fallback-а
-     * (range guard-ът не покрива светове). */
-    fprintf(out, "static void baga_wvec_push_str(int64_t wh, int64_t voff, const char *s) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push_str\");\n");
-    fprintf(out, "    baga_world_mut_check(w, \"wvec_push_str\");\n");
-    fprintf(out, "    (void)baga_wvec_at(w, voff, \"wvec_push_str\");\n");
-    fprintf(out, "    int64_t n = baga_str_len(s);\n");
-    /* W2.2: s може да сочи ВЪТРЕ В САМИЯ РЕГИОН (`wvec_push_str(w, v2,
-     * wvec_get_str(w, v, 0))`). arena_alloc при растеж realloc-ва base и
-     * старият s висеше — heap-use-after-free при memcpy (потвърдено с ASan).
-     * Офсет-първа дисциплина и за низа: бележим офсета ПРЕДИ alloc и
-     * препрочитаме указателя СЛЕД него. */
-    fprintf(out, "    int in_region = (uintptr_t)s >= (uintptr_t)w->base && (uintptr_t)s < (uintptr_t)(w->base + w->used);\n");
-    fprintf(out, "    int64_t s_off = in_region ? (int64_t)(s - w->base) : 0;\n");
-    fprintf(out, "    int64_t sp = baga_arena_alloc(wh, n + 1);\n");
-    fprintf(out, "    if (in_region) s = w->base + s_off;\n");
-    fprintf(out, "    int64_t soff = (int64_t)((char *)(intptr_t)sp - w->base);\n");
-    fprintf(out, "    memcpy(w->base + soff, s, (size_t)n + 1);\n");
-    fprintf(out, "    baga_wvec_push(wh, voff, soff);\n");
-    fprintf(out, "}\n");
-    fprintf(out, "static const char *baga_wvec_get_str(int64_t wh, int64_t voff, int64_t i) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get_str\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_get_str\");\n");
-    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get_str\", i, v->len);\n");
-    /* W2.2: елементът е ОФСЕТ на низ в региона. Валидираме го: в [0, used) и с
-     * NUL преди края на региона — иначе strlen/print четеше извън блока при
-     * сгрешен елемент или счупен blob от world_load. */
-    fprintf(out, "    int64_t soff = *baga_wvec_data(w, v, i, \"wvec_get_str\");\n");
-    fprintf(out, "    if (soff < 0 || soff >= w->used) { fprintf(stderr, \"baga: wvec_get_str: елементът не е офсет в региона (%%lld)\\n\", (long long)soff); exit(1); }\n");
-    fprintf(out, "    if (!memchr(w->base + soff, 0, (size_t)(w->used - soff))) { fprintf(stderr, \"baga: wvec_get_str: низът няма NUL в региона\\n\"); exit(1); }\n");
-    fprintf(out, "    return w->base + soff;\n");
-    fprintf(out, "}\n");
-    fprintf(out, "\n");
-    fprintf(out, "/* W2.9: wmap — ключ/стойност ВЪТРЕ в света (offset-адресиран, position-\n");
-    fprintf(out, " * independent: оцелява през dump/load, за разлика от wcache). Отворено\n");
-    fprintf(out, " * адресиране, load factor <= 0.75, tombstone при del; слотовете са\n");
-    fprintf(out, " * {k, v, st} тройки на офсети спрямо base. Терминацията на сондирането е\n");
-    fprintf(out, " * load-bearing: put ПРЕДИЗЛАГА дупка пред празен слот, а растежът държи\n");
-    fprintf(out, " * живите <= 0.75*cap, значи винаги остава празен слот. */\n");
-    fprintf(out, "typedef struct { int64_t k; int64_t v; int64_t st; } baga_WSlot;\n");
-    fprintf(out, "typedef struct { int64_t len; int64_t cap; int64_t slots_off; } baga_WMap;\n");
-    fprintf(out, "\n");
-    fprintf(out, "static void baga_world_bad(const char *op, const char *what, long long a, long long b) {\n");
-    fprintf(out, "    fprintf(stderr, \"baga: %%s: %%s (%%lld, used=%%lld)\\n\", op, what, a, b);\n");
-    fprintf(out, "    exit(1);\n");
     fprintf(out, "}\n");
     fprintf(out, "static baga_WMap *baga_wmap_at(baga_Arena *w, int64_t moff, const char *op) {\n");
     fprintf(out, "    if (moff < 0 || moff > w->used - (int64_t)sizeof(baga_WMap))\n");
@@ -1743,6 +1702,140 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        baga_world_bad(op, \"wmap слот извън региона\", (long long)off, (long long)w->used);\n");
     fprintf(out, "    return (baga_WSlot *)(w->base + off);\n");
     fprintf(out, "}\n");
+    fprintf(out, "/* ekind/vkind: 0 = още няма елементи, 1 = i64, 2 = str, 3 = bytes. Контейнерът\n");
+    fprintf(out, " * е ХОМОГЕНЕН — смесването е чиста грешка, защото компакцията трябва да знае\n");
+    fprintf(out, " * кои елементи са офсети към payload. */\n");
+    fprintf(out, "static void baga_kind_set(int64_t *slot, int64_t want, const char *op) {\n");
+    fprintf(out, "    if (*slot == 0) { *slot = want; return; }\n");
+    fprintf(out, "    if (*slot != want)\n");
+    fprintf(out, "        baga_world_bad(op, \"смесени типове елементи в контейнера\", (long long)*slot, (long long)want);\n");
+    fprintf(out, "}\n");
+    /* Читателската страна на схемата: i64 достъп до контейнер от низове връщаше
+     * офсета като число, а str достъп до i64 елемент — боклук, стига стойността
+     * случайно да е валиден офсет. Вид 0 значи „още няма елементи" — там няма
+     * какво да се прочете накриво, затова не е грешка. */
+    fprintf(out, "static void baga_kind_chk(int64_t have, int64_t want, const char *op, const char *what) {\n");
+    fprintf(out, "    if (have != 0 && have != want) baga_world_bad(op, what, (long long)have, (long long)want);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wreg_str_off(baga_Arena *w, int64_t soff, const char *op) {\n");
+    fprintf(out, "    if (soff < 0 || soff >= w->used) baga_world_bad(op, \"низът не е офсет в региона\", (long long)soff, (long long)w->used);\n");
+    fprintf(out, "    if (!memchr(w->base + soff, 0, (size_t)(w->used - soff)))\n");
+    fprintf(out, "        baga_world_bad(op, \"низът няма NUL в региона\", (long long)soff, (long long)w->used);\n");
+    fprintf(out, "    return soff;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wreg_bytes_off(baga_Arena *w, int64_t soff, const char *op) {\n");
+    fprintf(out, "    if (soff < 0 || soff > w->used - 8) baga_world_bad(op, \"bytes елементът не е офсет в региона\", (long long)soff, (long long)w->used);\n");
+    fprintf(out, "    int64_t n; memcpy(&n, w->base + soff, 8);\n");
+    fprintf(out, "    if (n < 0 || n > w->used - (soff + 8))\n");
+    fprintf(out, "        baga_world_bad(op, \"дължината на bytes е извън региона\", (long long)n, (long long)w->used);\n");
+    fprintf(out, "    return n;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "\n");
+    fprintf(out, "/* ---- wvec ---- */\n");
+    fprintf(out, "static int64_t baga_wvec_new(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_new\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wvec_new\");\n");
+    fprintf(out, "    int64_t hp = baga_arena_alloc(wh, (int64_t)sizeof(baga_WVec));\n");
+    fprintf(out, "    int64_t hoff = baga_woff(w, hp);\n");
+    fprintf(out, "    int64_t dp = baga_arena_alloc(wh, 64);\n");
+    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + hoff);\n");
+    fprintf(out, "    v->len = 0; v->cap = 8; v->ekind = 0;\n");
+    fprintf(out, "    v->data_off = baga_woff(w, dp);\n");
+    fprintf(out, "    return baga_wtbl_add(wh, hoff, 1);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wvec_grow(int64_t wh, baga_Arena *w, int64_t voff) {\n");
+    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    int64_t old_off = v->data_off, old_len = v->len, nc = v->cap * 2;\n");
+    fprintf(out, "    if ((uint64_t)old_off + (uint64_t)old_len * 8u > (uint64_t)w->used)\n");
+    fprintf(out, "        baga_world_bad(\"wvec_push\", \"старият блок е извън региона\", (long long)old_off, (long long)w->used);\n");
+    fprintf(out, "    int64_t nd = baga_arena_alloc(wh, nc * 8);\n");
+    fprintf(out, "    memcpy((char *)(intptr_t)nd, w->base + old_off, (size_t)old_len * 8);\n");
+    fprintf(out, "    v = (baga_WVec *)(w->base + voff);      /* base може да е преместен */\n");
+    fprintf(out, "    v->data_off = baga_woff(w, nd);\n");
+    fprintf(out, "    v->cap = nc;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wvec_push_raw(int64_t wh, int64_t id, int64_t x) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wvec_push\");\n");
+    fprintf(out, "    int64_t voff = baga_went(w, id, 1, \"wvec_push\")->off;\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_push\");\n");
+    fprintf(out, "    if (v->len == v->cap) { baga_wvec_grow(wh, w, voff); v = baga_wvec_at(w, voff, \"wvec_push\"); }\n");
+    fprintf(out, "    *baga_wvec_data(w, v, v->len, \"wvec_push\") = x;\n");
+    fprintf(out, "    v->len++;\n");
+    fprintf(out, "}\n");
+    /* публичният push налага ekind; push_str/push_bytes си маркират СВОЯ kind
+     * и ползват raw — иначе вътрешното извикване би видяло \"смесени типове\" */
+    fprintf(out, "static void baga_wvec_push(int64_t wh, int64_t id, int64_t x) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wvec_push\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_push\")->off, \"wvec_push\");\n");
+    fprintf(out, "    baga_kind_set(&v->ekind, 1, \"wvec_push\");\n");
+    fprintf(out, "    baga_wvec_push_raw(wh, id, x);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wvec_len(int64_t wh, int64_t id) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_len\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_len\")->off, \"wvec_len\");\n");
+    fprintf(out, "    return v->len;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wvec_get(int64_t wh, int64_t id, int64_t i) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_get\")->off, \"wvec_get\");\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get\", i, v->len);\n");
+    fprintf(out, "    baga_kind_chk(v->ekind, 1, \"wvec_get\", \"контейнерът не е от i64 елементи\");\n");
+    fprintf(out, "    return *baga_wvec_data(w, v, i, \"wvec_get\");\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wvec_push_str(int64_t wh, int64_t id, const char *s) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push_str\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wvec_push_str\");\n");
+    fprintf(out, "    int64_t voff = baga_went(w, id, 1, \"wvec_push_str\")->off;\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_push_str\");\n");
+    fprintf(out, "    baga_kind_set(&v->ekind, 2, \"wvec_push_str\");\n");
+    fprintf(out, "    int64_t n = baga_str_len(s);\n");
+    fprintf(out, "    int in_region = (uintptr_t)s >= (uintptr_t)w->base && (uintptr_t)s < (uintptr_t)(w->base + w->used);\n");
+    fprintf(out, "    int64_t s_off = in_region ? (int64_t)(s - w->base) : 0;\n");
+    fprintf(out, "    int64_t sp = baga_arena_alloc(wh, n + 1);\n");
+    fprintf(out, "    if (in_region) s = w->base + s_off;\n");
+    fprintf(out, "    int64_t soff = baga_woff(w, sp);\n");
+    fprintf(out, "    memcpy(w->base + soff, s, (size_t)n + 1);\n");
+    fprintf(out, "    baga_wvec_push_raw(wh, id, soff);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static const char *baga_wvec_get_str(int64_t wh, int64_t id, int64_t i) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get_str\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_get_str\")->off, \"wvec_get_str\");\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get_str\", i, v->len);\n");
+    fprintf(out, "    baga_kind_chk(v->ekind, 2, \"wvec_get_str\", \"контейнерът не е от низове\");\n");
+    fprintf(out, "    return w->base + baga_wreg_str_off(w, *baga_wvec_data(w, v, i, \"wvec_get_str\"), \"wvec_get_str\");\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wvec_push_bytes(int64_t wh, int64_t id, baga_bytes b) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push_bytes\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wvec_push_bytes\");\n");
+    fprintf(out, "    int64_t voff = baga_went(w, id, 1, \"wvec_push_bytes\")->off;\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_push_bytes\");\n");
+    fprintf(out, "    baga_kind_set(&v->ekind, 3, \"wvec_push_bytes\");\n");
+    fprintf(out, "    if (b.len < 0 || (b.len > 0 && !b.data)) baga_world_bad(\"wvec_push_bytes\", \"невалиден bytes аргумент\", (long long)b.len, 0);\n");
+    fprintf(out, "    if (b.len > INT64_MAX - 8) { fprintf(stderr, \"baga: wvec_push_bytes: блокът е прекалено голям\\n\"); exit(1); }\n");
+    fprintf(out, "    int in_region = b.len > 0 && (uintptr_t)b.data >= (uintptr_t)w->base &&\n");
+    fprintf(out, "                    (uintptr_t)b.data < (uintptr_t)(w->base + w->used);\n");
+    fprintf(out, "    int64_t b_off = in_region ? (int64_t)((char *)b.data - w->base) : 0;\n");
+    fprintf(out, "    int64_t p = baga_arena_alloc(wh, 8 + b.len);\n");
+    fprintf(out, "    if (in_region) b.data = (unsigned char *)(w->base + b_off);\n");
+    fprintf(out, "    int64_t off = baga_woff(w, p);\n");
+    fprintf(out, "    memcpy(w->base + off, &b.len, 8);\n");
+    fprintf(out, "    if (b.len > 0) memcpy(w->base + off + 8, b.data, (size_t)b.len);\n");
+    fprintf(out, "    baga_wvec_push_raw(wh, id, off);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static baga_bytes baga_wvec_get_bytes(int64_t wh, int64_t id, int64_t i) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get_bytes\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_get_bytes\")->off, \"wvec_get_bytes\");\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get_bytes\", i, v->len);\n");
+    fprintf(out, "    baga_kind_chk(v->ekind, 3, \"wvec_get_bytes\", \"контейнерът не е от bytes елементи\");\n");
+    fprintf(out, "    int64_t soff = *baga_wvec_data(w, v, i, \"wvec_get_bytes\");\n");
+    fprintf(out, "    int64_t n = baga_wreg_bytes_off(w, soff, \"wvec_get_bytes\");\n");
+    fprintf(out, "    baga_bytes r; r.len = n; r.data = (unsigned char *)(w->base + soff + 8);\n");
+    fprintf(out, "    return r;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "\n");
+    fprintf(out, "/* ---- wmap ---- (baga_wc_h е дефинирана по-нагоре, в wcache блока) */\n");
     fprintf(out, "static void baga_wm_insert(baga_Arena *w, baga_WMap *m, int64_t k, int64_t v, const char *op) {\n");
     fprintf(out, "    int64_t mask = m->cap - 1;\n");
     fprintf(out, "    int64_t i = (int64_t)(baga_wc_h(k) & (uint64_t)mask), hole = -1;\n");
@@ -1758,39 +1851,6 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    s->k = k; s->v = v; s->st = 1;\n");
     fprintf(out, "    m->len++;\n");
     fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_wmap_new(int64_t wh) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_new\");\n");
-    fprintf(out, "    baga_world_mut_check(w, \"wmap_new\");\n");
-    fprintf(out, "    int64_t hp = baga_arena_alloc(wh, (int64_t)sizeof(baga_WMap));\n");
-    fprintf(out, "    int64_t hoff = (int64_t)((char *)(intptr_t)hp - w->base);\n");
-    fprintf(out, "    int64_t sp = baga_arena_alloc(wh, 16 * (int64_t)sizeof(baga_WSlot));\n");
-    fprintf(out, "    int64_t soff = (int64_t)((char *)(intptr_t)sp - w->base);\n");
-    fprintf(out, "    memset(w->base + soff, 0, (size_t)(16 * sizeof(baga_WSlot)));\n");
-    fprintf(out, "    baga_WMap *m = (baga_WMap *)(w->base + hoff);\n");
-    fprintf(out, "    m->len = 0; m->cap = 16; m->slots_off = soff;\n");
-    fprintf(out, "    return hoff;\n");
-    fprintf(out, "}\n");
-    fprintf(out, "static void baga_wmap_set(int64_t wh, int64_t moff, int64_t k, int64_t v) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_set\");\n");
-    fprintf(out, "    baga_world_mut_check(w, \"wmap_set\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_set\");\n");
-    fprintf(out, "    if ((m->len + 1) * 4 > m->cap * 3) {\n");
-    fprintf(out, "        int64_t ocap = m->cap, ooff = m->slots_off, ncap = ocap * 2;\n");
-    fprintf(out, "        if (ooff < 0 || ocap < 0 || ooff + ocap * (int64_t)sizeof(baga_WSlot) > w->used)\n");
-    fprintf(out, "            baga_world_bad(\"wmap_set\", \"старият блок е извън региона\", (long long)ooff, (long long)w->used);\n");
-    fprintf(out, "        int64_t np = baga_arena_alloc(wh, ncap * (int64_t)sizeof(baga_WSlot));\n");
-    fprintf(out, "        int64_t noff = (int64_t)((char *)(intptr_t)np - w->base);\n");
-    fprintf(out, "        memset(w->base + noff, 0, (size_t)(ncap * sizeof(baga_WSlot)));\n");
-    fprintf(out, "        m = (baga_WMap *)(w->base + moff);   /* base може да е преместен */\n");
-    fprintf(out, "        m->cap = ncap; m->slots_off = noff; m->len = 0;\n");
-    fprintf(out, "        for (int64_t i = 0; i < ocap; i++) {\n");
-    fprintf(out, "            baga_WSlot *os = (baga_WSlot *)(w->base + ooff + i * (int64_t)sizeof(baga_WSlot));\n");
-    fprintf(out, "            if (os->st == 1) baga_wm_insert(w, m, os->k, os->v, \"wmap_set\");\n");
-    fprintf(out, "        }\n");
-    fprintf(out, "        m = (baga_WMap *)(w->base + moff);\n");
-    fprintf(out, "    }\n");
-    fprintf(out, "    baga_wm_insert(w, m, k, v, \"wmap_set\");\n");
-    fprintf(out, "}\n");
     fprintf(out, "static baga_WSlot *baga_wm_find(baga_Arena *w, baga_WMap *m, int64_t k, const char *op) {\n");
     fprintf(out, "    if (m->len == 0) return NULL;\n");
     fprintf(out, "    int64_t mask = m->cap - 1;\n");
@@ -1802,93 +1862,240 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        i = (i + 1) & mask;\n");
     fprintf(out, "    }\n");
     fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_wmap_get(int64_t wh, int64_t moff, int64_t k) {\n");
+    fprintf(out, "static int64_t baga_wmap_new(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_new\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wmap_new\");\n");
+    fprintf(out, "    int64_t hp = baga_arena_alloc(wh, (int64_t)sizeof(baga_WMap));\n");
+    fprintf(out, "    int64_t hoff = baga_woff(w, hp);\n");
+    fprintf(out, "    int64_t sp = baga_arena_alloc(wh, 16 * (int64_t)sizeof(baga_WSlot));\n");
+    fprintf(out, "    int64_t soff = baga_woff(w, sp);\n");
+    fprintf(out, "    memset(w->base + soff, 0, (size_t)(16 * sizeof(baga_WSlot)));\n");
+    fprintf(out, "    baga_WMap *m = (baga_WMap *)(w->base + hoff);\n");
+    fprintf(out, "    m->len = 0; m->cap = 16; m->slots_off = soff; m->vkind = 0;\n");
+    fprintf(out, "    return baga_wtbl_add(wh, hoff, 2);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wmap_set_raw(int64_t wh, int64_t id, int64_t k, int64_t v) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_set\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wmap_set\");\n");
+    fprintf(out, "    int64_t moff = baga_went(w, id, 2, \"wmap_set\")->off;\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_set\");\n");
+    fprintf(out, "    if ((m->len + 1) * 4 > m->cap * 3) {\n");
+    fprintf(out, "        int64_t ocap = m->cap, ooff = m->slots_off, ncap = ocap * 2;\n");
+    fprintf(out, "        if (ooff < 0 || ooff + ocap * (int64_t)sizeof(baga_WSlot) > w->used)\n");
+    fprintf(out, "            baga_world_bad(\"wmap_set\", \"старият блок е извън региона\", (long long)ooff, (long long)w->used);\n");
+    fprintf(out, "        int64_t np = baga_arena_alloc(wh, ncap * (int64_t)sizeof(baga_WSlot));\n");
+    fprintf(out, "        int64_t noff = baga_woff(w, np);\n");
+    fprintf(out, "        memset(w->base + noff, 0, (size_t)(ncap * sizeof(baga_WSlot)));\n");
+    fprintf(out, "        m = (baga_WMap *)(w->base + moff);\n");
+    fprintf(out, "        m->cap = ncap; m->slots_off = noff; m->len = 0;\n");
+    fprintf(out, "        for (int64_t i = 0; i < ocap; i++) {\n");
+    fprintf(out, "            baga_WSlot *os = (baga_WSlot *)(w->base + ooff + i * (int64_t)sizeof(baga_WSlot));\n");
+    fprintf(out, "            if (os->st == 1) baga_wm_insert(w, m, os->k, os->v, \"wmap_set\");\n");
+    fprintf(out, "        }\n");
+    fprintf(out, "        m = (baga_WMap *)(w->base + moff);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    baga_wm_insert(w, m, k, v, \"wmap_set\");\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wmap_set(int64_t wh, int64_t id, int64_t k, int64_t v) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_set\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wmap_set\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_set\")->off, \"wmap_set\");\n");
+    fprintf(out, "    baga_kind_set(&m->vkind, 1, \"wmap_set\");\n");
+    fprintf(out, "    baga_wmap_set_raw(wh, id, k, v);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wmap_get(int64_t wh, int64_t id, int64_t k) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_get\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_get\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_get\")->off, \"wmap_get\");\n");
+    fprintf(out, "    baga_kind_chk(m->vkind, 1, \"wmap_get\", \"контейнерът не е от i64 стойности\");\n");
     fprintf(out, "    baga_WSlot *s = baga_wm_find(w, m, k, \"wmap_get\");\n");
     fprintf(out, "    return s ? s->v : 0;\n");
     fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_wmap_has(int64_t wh, int64_t moff, int64_t k) {\n");
+    fprintf(out, "static int64_t baga_wmap_has(int64_t wh, int64_t id, int64_t k) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_has\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_has\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_has\")->off, \"wmap_has\");\n");
     fprintf(out, "    return baga_wm_find(w, m, k, \"wmap_has\") ? 1 : 0;\n");
     fprintf(out, "}\n");
-    fprintf(out, "static void baga_wmap_del(int64_t wh, int64_t moff, int64_t k) {\n");
+    fprintf(out, "static void baga_wmap_del(int64_t wh, int64_t id, int64_t k) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_del\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wmap_del\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_del\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_del\")->off, \"wmap_del\");\n");
     fprintf(out, "    baga_WSlot *s = baga_wm_find(w, m, k, \"wmap_del\");\n");
     fprintf(out, "    if (s) { s->st = 2; m->len--; }\n");
     fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_wmap_len(int64_t wh, int64_t moff) {\n");
+    fprintf(out, "static int64_t baga_wmap_len(int64_t wh, int64_t id) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_len\");\n");
-    fprintf(out, "    return baga_wmap_at(w, moff, \"wmap_len\")->len;\n");
+    fprintf(out, "    return baga_wmap_at(w, baga_went(w, id, 2, \"wmap_len\")->off, \"wmap_len\")->len;\n");
     fprintf(out, "}\n");
-    fprintf(out, "/* W2.9: стойност-низ в wmap — низът се КОПИРА в региона, елементът е офсет\n");
-    fprintf(out, " * (като wvec_push_str). W2.2: източникът може да сочи в самия регион, затова\n");
-    fprintf(out, " * офсетът се бележи ПРЕДИ alloc и указателят се препрочита СЛЕД него. */\n");
-    fprintf(out, "static void baga_wmap_set_str(int64_t wh, int64_t moff, int64_t k, const char *s) {\n");
+    fprintf(out, "static void baga_wmap_set_str(int64_t wh, int64_t id, int64_t k, const char *s) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_set_str\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wmap_set_str\");\n");
-    fprintf(out, "    (void)baga_wmap_at(w, moff, \"wmap_set_str\");\n");
+    fprintf(out, "    int64_t moff = baga_went(w, id, 2, \"wmap_set_str\")->off;\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_set_str\");\n");
+    fprintf(out, "    baga_kind_set(&m->vkind, 2, \"wmap_set_str\");\n");
     fprintf(out, "    int64_t n = baga_str_len(s);\n");
     fprintf(out, "    int in_region = (uintptr_t)s >= (uintptr_t)w->base && (uintptr_t)s < (uintptr_t)(w->base + w->used);\n");
     fprintf(out, "    int64_t s_off = in_region ? (int64_t)(s - w->base) : 0;\n");
     fprintf(out, "    int64_t sp = baga_arena_alloc(wh, n + 1);\n");
     fprintf(out, "    if (in_region) s = w->base + s_off;\n");
-    fprintf(out, "    int64_t soff = (int64_t)((char *)(intptr_t)sp - w->base);\n");
+    fprintf(out, "    int64_t soff = baga_woff(w, sp);\n");
     fprintf(out, "    memcpy(w->base + soff, s, (size_t)n + 1);\n");
-    fprintf(out, "    baga_wmap_set(wh, moff, k, soff);\n");
+    fprintf(out, "    baga_wmap_set_raw(wh, id, k, soff);\n");
     fprintf(out, "}\n");
-    fprintf(out, "static const char *baga_wmap_get_str(int64_t wh, int64_t moff, int64_t k) {\n");
+    fprintf(out, "static const char *baga_wmap_get_str(int64_t wh, int64_t id, int64_t k) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_get_str\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_get_str\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_get_str\")->off, \"wmap_get_str\");\n");
+    fprintf(out, "    baga_kind_chk(m->vkind, 2, \"wmap_get_str\", \"контейнерът не е от низове\");\n");
     fprintf(out, "    baga_WSlot *s = baga_wm_find(w, m, k, \"wmap_get_str\");\n");
     fprintf(out, "    if (!s) { fprintf(stderr, \"baga: wmap_get_str: липсващ ключ %%lld\\n\", (long long)k); exit(1); }\n");
-    fprintf(out, "    int64_t soff = s->v;\n");
-    fprintf(out, "    if (soff < 0 || soff >= w->used)\n");
-    fprintf(out, "        baga_world_bad(\"wmap_get_str\", \"стойността не е офсет в региона\", (long long)soff, (long long)w->used);\n");
-    fprintf(out, "    if (!memchr(w->base + soff, 0, (size_t)(w->used - soff)))\n");
-    fprintf(out, "        baga_world_bad(\"wmap_get_str\", \"низът няма NUL в региона\", (long long)soff, (long long)w->used);\n");
-    fprintf(out, "    return w->base + soff;\n");
+    fprintf(out, "    return w->base + baga_wreg_str_off(w, s->v, \"wmap_get_str\");\n");
     fprintf(out, "}\n");
-    fprintf(out, "/* W2.9: wbytes — двоични елементи с вградени NUL. Елементът е офсет към\n");
-    fprintf(out, " * [8 байта дължина][данни]; дължината се чете с memcpy (без изискване за\n");
-    fprintf(out, " * подравняване) и се валидира срещу used — счупен blob дава чиста грешка.\n");
-    fprintf(out, " * Get връща ЗАЕМАН изглед в региона (като wvec_get_str): стабилен за frozen,\n");
-    fprintf(out, " * за mutable до следващия растеж, умира с world_free (checker-ът го тагва). */\n");
-    fprintf(out, "static void baga_wvec_push_bytes(int64_t wh, int64_t voff, baga_bytes b) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push_bytes\");\n");
-    fprintf(out, "    baga_world_mut_check(w, \"wvec_push_bytes\");\n");
-    fprintf(out, "    (void)baga_wvec_at(w, voff, \"wvec_push_bytes\");\n");
-    fprintf(out, "    if (b.len < 0 || (b.len > 0 && !b.data))\n");
-    fprintf(out, "        baga_world_bad(\"wvec_push_bytes\", \"невалиден bytes аргумент\", (long long)b.len, 0);\n");
-    fprintf(out, "    if (b.len > INT64_MAX - 8) { fprintf(stderr, \"baga: wvec_push_bytes: блокът е прекалено голям\\n\"); exit(1); }\n");
-    fprintf(out, "    int in_region = b.len > 0 && (uintptr_t)b.data >= (uintptr_t)w->base &&\n");
-    fprintf(out, "                    (uintptr_t)b.data < (uintptr_t)(w->base + w->used);\n");
-    fprintf(out, "    int64_t b_off = in_region ? (int64_t)((char *)b.data - w->base) : 0;\n");
-    fprintf(out, "    int64_t p = baga_arena_alloc(wh, 8 + b.len);\n");
-    fprintf(out, "    if (in_region) b.data = (unsigned char *)(w->base + b_off);\n");
-    fprintf(out, "    int64_t off = (int64_t)((char *)(intptr_t)p - w->base);\n");
-    fprintf(out, "    memcpy(w->base + off, &b.len, 8);\n");
-    fprintf(out, "    if (b.len > 0) memcpy(w->base + off + 8, b.data, (size_t)b.len);\n");
-    fprintf(out, "    baga_wvec_push(wh, voff, off);\n");
+    fprintf(out, "\n");
+    fprintf(out, "/* ---- W2.10: компакция ----\n");
+    fprintf(out, " * Корените са таблицата на контейнерите, а схемата е в ekind/vkind — затова\n");
+    fprintf(out, " * живите байтове са ИЗБРОИМИ и пренареждането е механично: заглавие + текущ\n");
+    fprintf(out, " * блок + payload-ите на str/bytes елементите. Мъртвите блокове от растеж\n");
+    fprintf(out, " * (стари data/slots) не се копират. id-тата не се променят (таблицата се\n");
+    fprintf(out, " * построява в същия ред), значи променливите на програмата остават валидни.\n");
+    fprintf(out, " * Заеманите указатели (wvec_get_str/get_bytes) НЕ оцеляват — като при растеж. */\n");
+    fprintf(out, "typedef struct { char *base; int64_t used; int64_t cap; } baga_WImg;\n");
+    fprintf(out, "\n");
+    fprintf(out, "static int64_t baga_wimg_init(baga_Arena *t, int64_t hint) {\n");
+    fprintf(out, "    memset(t, 0, sizeof(*t));\n");
+    fprintf(out, "    t->cap = hint > 4096 ? hint : 4096;\n");
+    fprintf(out, "    t->base = malloc((size_t)t->cap);\n");
+    fprintf(out, "    if (!t->base) { fprintf(stderr, \"baga: world_compact: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    pthread_mutex_init(&t->wlock, NULL);\n");
+    fprintf(out, "    t->wcache = NULL; t->links = NULL; t->n_links = 0; t->cap_links = 0; t->linked_by = 0;\n");
+    fprintf(out, "    baga_WHdr *hd = (baga_WHdr *)t->base;\n");
+    fprintf(out, "    hd->magic = BAGA_WORLD_MAGIC; hd->version = BAGA_WORLD_VERSION;\n");
+    fprintf(out, "    hd->tbl_off = 0; hd->tbl_len = 0; hd->tbl_cap = 0;\n");
+    fprintf(out, "    t->used = (int64_t)sizeof(baga_WHdr);\n");
+    fprintf(out, "    return (int64_t)(intptr_t)t;\n");
     fprintf(out, "}\n");
-    fprintf(out, "static baga_bytes baga_wvec_get_bytes(int64_t wh, int64_t voff, int64_t i) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get_bytes\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_get_bytes\");\n");
-    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get_bytes\", i, v->len);\n");
-    fprintf(out, "    int64_t soff = *baga_wvec_data(w, v, i, \"wvec_get_bytes\");\n");
-    fprintf(out, "    if (soff < 0 || soff > w->used - 8)\n");
-    fprintf(out, "        baga_world_bad(\"wvec_get_bytes\", \"елементът не е валиден bytes офсет\", (long long)soff, (long long)w->used);\n");
-    fprintf(out, "    int64_t n;\n");
-    fprintf(out, "    memcpy(&n, w->base + soff, 8);\n");
-    fprintf(out, "    if (n < 0 || n > w->used - (soff + 8))\n");
-    fprintf(out, "        baga_world_bad(\"wvec_get_bytes\", \"дължината на bytes е извън региона\", (long long)n, (long long)w->used);\n");
+    fprintf(out, "static int64_t baga_pow2_at_least(int64_t n) {\n");
+    fprintf(out, "    int64_t c = 16;\n");
+    fprintf(out, "    while (c < n) c *= 2;\n");
+    fprintf(out, "    return c;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_world_compact_build(baga_Arena *src, baga_WImg *out, const char *op) {\n");
+    fprintf(out, "    baga_WHdr *sh = baga_whdr(src);\n");
+    fprintf(out, "    baga_Arena t;\n");
+    fprintf(out, "    int64_t th = baga_wimg_init(&t, src->used / 2);\n");
+    fprintf(out, "    if (sh->tbl_len > 0) {\n");
+    fprintf(out, "        if (sh->tbl_off <= 0 || sh->tbl_off > src->used || sh->tbl_cap < sh->tbl_len ||\n");
+    fprintf(out, "            sh->tbl_cap * (int64_t)sizeof(baga_WEnt) > src->used - sh->tbl_off)\n");
+    fprintf(out, "            baga_world_bad(op, \"повредена таблица на контейнерите\", (long long)sh->tbl_off, (long long)src->used);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    for (int64_t i = 0; i < sh->tbl_len; i++) {\n");
+    fprintf(out, "        baga_WEnt ent = ((baga_WEnt *)(src->base + sh->tbl_off))[i];   /* копие: src не се мести */\n");
+    fprintf(out, "        if (ent.off < 0 || ent.off > src->used)\n");
+    fprintf(out, "            baga_world_bad(op, \"контейнер сочи извън региона\", (long long)ent.off, (long long)src->used);\n");
+    fprintf(out, "        if (ent.kind == 1) {\n");
+    fprintf(out, "            baga_WVec *v = baga_wvec_at(src, ent.off, op);\n");
+    fprintf(out, "            int64_t ncap = v->len > 8 ? v->len : 8;\n");
+    fprintf(out, "            int64_t hp = baga_arena_alloc(th, (int64_t)sizeof(baga_WVec));\n");
+    fprintf(out, "            int64_t hoff = baga_woff(&t, hp);\n");
+    fprintf(out, "            int64_t dp = baga_arena_alloc(th, ncap * 8);\n");
+    fprintf(out, "            int64_t doff = baga_woff(&t, dp);\n");
+    fprintf(out, "            baga_WVec *nv = (baga_WVec *)(t.base + hoff);\n");
+    fprintf(out, "            nv->len = v->len; nv->cap = ncap; nv->data_off = doff; nv->ekind = v->ekind;\n");
+    fprintf(out, "            for (int64_t j = 0; j < v->len; j++) {\n");
+    fprintf(out, "                int64_t val = *baga_wvec_data(src, v, j, op);\n");
+    fprintf(out, "                if (v->ekind == 2) {\n");
+    fprintf(out, "                    int64_t soff = baga_wreg_str_off(src, val, op);\n");
+    fprintf(out, "                    int64_t n = (int64_t)strlen(src->base + soff);\n");
+    fprintf(out, "                    int64_t np = baga_arena_alloc(th, n + 1);\n");
+    fprintf(out, "                    memcpy((char *)(intptr_t)np, src->base + soff, (size_t)n + 1);\n");
+    fprintf(out, "                    val = baga_woff(&t, np);\n");
+    fprintf(out, "                } else if (v->ekind == 3) {\n");
+    fprintf(out, "                    int64_t n = baga_wreg_bytes_off(src, val, op);   /* дължина на payload-а */\n");
+    fprintf(out, "                    int64_t bp = baga_arena_alloc(th, 8 + n);\n");
+    fprintf(out, "                    memcpy((char *)(intptr_t)bp, src->base + val, (size_t)(8 + n));\n");
+    fprintf(out, "                    val = baga_woff(&t, bp);\n");
+    fprintf(out, "                }\n");
+    fprintf(out, "                *baga_wvec_data(&t, (baga_WVec *)(t.base + hoff), j, op) = val;\n");
+    fprintf(out, "            }\n");
+    fprintf(out, "            baga_wtbl_add(th, hoff, 1);\n");
+    fprintf(out, "        } else if (ent.kind == 2) {\n");
+    fprintf(out, "            baga_WMap *m = baga_wmap_at(src, ent.off, op);\n");
+    fprintf(out, "            int64_t ncap = baga_pow2_at_least(m->len * 2);\n");
+    fprintf(out, "            int64_t hp = baga_arena_alloc(th, (int64_t)sizeof(baga_WMap));\n");
+    fprintf(out, "            int64_t hoff = baga_woff(&t, hp);\n");
+    fprintf(out, "            int64_t sp = baga_arena_alloc(th, ncap * (int64_t)sizeof(baga_WSlot));\n");
+    fprintf(out, "            int64_t soff = baga_woff(&t, sp);\n");
+    fprintf(out, "            memset(t.base + soff, 0, (size_t)(ncap * sizeof(baga_WSlot)));\n");
+    fprintf(out, "            baga_WMap *nm = (baga_WMap *)(t.base + hoff);\n");
+    fprintf(out, "            nm->len = 0; nm->cap = ncap; nm->slots_off = soff; nm->vkind = m->vkind;\n");
+    fprintf(out, "            for (int64_t j = 0; j < m->cap; j++) {\n");
+    fprintf(out, "                baga_WSlot *os = baga_wslot(src, m, j, op);\n");
+    fprintf(out, "                if (os->st != 1) continue;\n");
+    fprintf(out, "                int64_t val = os->v;\n");
+    fprintf(out, "                if (m->vkind == 2) {\n");
+    fprintf(out, "                    int64_t poff = baga_wreg_str_off(src, val, op);\n");
+    fprintf(out, "                    int64_t n = (int64_t)strlen(src->base + poff);\n");
+    fprintf(out, "                    int64_t np = baga_arena_alloc(th, n + 1);\n");
+    fprintf(out, "                    memcpy((char *)(intptr_t)np, src->base + poff, (size_t)n + 1);\n");
+    fprintf(out, "                    val = baga_woff(&t, np);\n");
+    fprintf(out, "                }\n");
+    fprintf(out, "                baga_wm_insert(&t, (baga_WMap *)(t.base + hoff), os->k, val, op);\n");
+    fprintf(out, "            }\n");
+    fprintf(out, "            baga_wtbl_add(th, hoff, 2);\n");
+    fprintf(out, "        } else {\n");
+    fprintf(out, "            baga_world_bad(op, \"непознат вид контейнер в таблицата\", (long long)ent.kind, 0);\n");
+    fprintf(out, "        }\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    out->base = t.base; out->used = t.used; out->cap = t.cap;\n");
+    fprintf(out, "    pthread_mutex_destroy(&t.wlock);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_world_compact(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"world_compact\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"world_compact\");\n");
+    fprintf(out, "    baga_WImg img;\n");
+    fprintf(out, "    baga_world_compact_build(w, &img, \"world_compact\");\n");
+    fprintf(out, "    free(w->base);\n");
+    fprintf(out, "    w->base = img.base; w->used = img.used; w->cap = img.cap;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static baga_bytes baga_world_dump_compact(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"world_dump_compact\");\n");
+    fprintf(out, "    baga_WImg img;\n");
+    fprintf(out, "    baga_world_compact_build(w, &img, \"world_dump_compact\");\n");
     fprintf(out, "    baga_bytes r;\n");
-    fprintf(out, "    r.len = n;\n");
-    fprintf(out, "    r.data = (unsigned char *)(w->base + soff + 8);\n");
+    fprintf(out, "    r.len = img.used;\n");
+    fprintf(out, "    r.data = baga_alloc((size_t)(img.used > 0 ? img.used : 1));\n");
+    fprintf(out, "    if (img.used > 0) memcpy(r.data, img.base, (size_t)img.used);\n");
+    fprintf(out, "    free(img.base);\n");
     fprintf(out, "    return r;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "\n");
+    fprintf(out, "/* dump/load: светът е position-independent — dump е memcpy на региона\n");
+    fprintf(out, " * (включително заглавието и таблицата), load го възстановява в НОВА арена и\n");
+    fprintf(out, " * id-тата важат веднага. */\n");
+    fprintf(out, "static baga_bytes baga_world_dump(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"world_dump\");\n");
+    fprintf(out, "    baga_bytes r; r.len = w->used;\n");
+    fprintf(out, "    r.data = baga_alloc((size_t)(w->used > 0 ? w->used : 1));\n");
+    fprintf(out, "    if (w->used > 0) memcpy(r.data, w->base, (size_t)w->used);\n");
+    fprintf(out, "    return r;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_world_load(baga_bytes b) {\n");
+    fprintf(out, "    if (b.len < 0 || (b.len > 0 && !b.data)) { fprintf(stderr, \"baga: world_load: невалиден blob\\n\"); exit(1); }\n");
+    fprintf(out, "    if (b.len < (int64_t)sizeof(baga_WHdr)) { fprintf(stderr, \"baga: world_load: blob-ът не е свят (твърде малък)\\n\"); exit(1); }\n");
+    fprintf(out, "    baga_WHdr *bh = (baga_WHdr *)b.data;\n");
+    fprintf(out, "    if (bh->magic != BAGA_WORLD_MAGIC) { fprintf(stderr, \"baga: world_load: blob-ът не е свят (няма magic)\\n\"); exit(1); }\n");
+    fprintf(out, "    if (bh->version != BAGA_WORLD_VERSION) { fprintf(stderr, \"baga: world_load: неподдържана версия %%lld\\n\", (long long)bh->version); exit(1); }\n");
+    fprintf(out, "    baga_Arena *a = malloc(sizeof(baga_Arena));\n");
+    fprintf(out, "    if (!a) { fprintf(stderr, \"baga: world_load: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    a->used = b.len; a->cap = b.len > 65536 ? b.len : 65536; a->frozen = 0;\n");
+    fprintf(out, "    a->base = malloc((size_t)a->cap);\n");
+    fprintf(out, "    if (!a->base) { fprintf(stderr, \"baga: world_load: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    memcpy(a->base, b.data, (size_t)b.len);\n");
+    fprintf(out, "    pthread_mutex_init(&a->wlock, NULL); a->wcache = NULL;\n");
+    fprintf(out, "    a->links = NULL; a->n_links = 0; a->cap_links = 0; a->linked_by = 0;\n");
+    fprintf(out, "    return (int64_t)(intptr_t)a;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_world_used(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"world_used\");\n");
+    fprintf(out, "    return w->used;\n");
     fprintf(out, "}\n");
     fprintf(out, "\n");
     /* W2.3: вътрешна променяемост — кеш върху замразен свят. НЯМА frozen

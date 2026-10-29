@@ -977,7 +977,9 @@ static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
     }
     /* W2.5: свързан свят не се предава — owner-ът държи capability и разчита
      * целта да е жива, а приемникът (без spec или с друг договор) може да я
-     * освободи или препредаде. Делегиране на capability е W2. */
+     * освободи или препредаде. Проверката е ПРЕДИ заемането (W2.6): дори
+     * договор за четене + join не помага, защото препредаването нататък излиза
+     * извън контрола на owner-а. */
     {
         const char *owner = wlink_owner_of(&st->handles, we->var);
         if (owner) {

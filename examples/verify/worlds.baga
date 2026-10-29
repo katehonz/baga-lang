@@ -330,6 +330,49 @@ fn bad_map_frozen(n: i64) -> i64 {
     return n - n
 }
 
+spec ok_dump_compact_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W2.10: world_dump_compact е ЧЕТЕНЕ — прави компактиран образ, без да пипа
+// региона, затова е легално върху замразен свят (за разлика от world_compact).
+fn ok_dump_compact_frozen(n: i64) -> i64 {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 1)
+    world_freeze(w)
+    let d = world_dump_compact(w)
+    let b = bytes_len(d)
+    world_free(w)
+    return n - n
+}
+
+spec bad_compact_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W2.10: world_compact пренарежда региона — мутатор е, значи върху замразен
+// свят е ОБРОЧЕНО (freeze е в then-клона, checker-ът мълчи, верификаторът не).
+fn bad_compact_frozen(n: i64) -> i64 {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 1)
+    if n > 0 {
+        world_freeze(w)
+    }
+    world_compact(w)
+    world_free(w)
+    return n - n
+}
+
 fn main() {
     print(ok_lifecycle(1))
     print(ok_frozen_read(1))
@@ -341,4 +384,6 @@ fn main() {
     print(bad_push_str_frozen(0))
     print(ok_map_frozen_read(1))
     print(bad_map_frozen(0))
+    print(ok_dump_compact_frozen(1))
+    print(bad_compact_frozen(0))
 }

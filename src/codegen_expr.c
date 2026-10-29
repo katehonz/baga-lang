@@ -1152,6 +1152,8 @@ void emit_expr(Codegen *cg, Node *n) {
                     {"wmap_get_str",   "baga_wmap_get_str"},
                     {"wvec_push_bytes","baga_wvec_push_bytes"},
                     {"wvec_get_bytes", "baga_wvec_get_bytes"},
+                    {"world_compact",      "baga_world_compact"},
+                    {"world_dump_compact", "baga_world_dump_compact"},
                     {"mem_mark",    "baga_mem_mark"},
                     {"mem_rewind",  "baga_mem_rewind"},
                     {"mem_arena_bytes", "baga_mem_arena_bytes"},

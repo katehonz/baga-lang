@@ -66,6 +66,10 @@ fn bench_world(n: i64) -> i64 !Time {
     print(concat("wvec_getsum_us    ", i64_to_str(t2 - t1)))
     print(concat("wvec_checksum     ", i64_to_str(s)))
     print(concat("dump_bytes        ", i64_to_str(bytes_len(dump))))
+    // W2.10: същият свят, но компактиран образ — dump-ът е живите байтове,
+    // без growth garbage. dump_compact е ЧЕТЕНЕ, затова работи и върху
+    // замразен свят (w е замразен по-горе).
+    print(concat("dump_compact_bytes", i64_to_str(bytes_len(world_dump_compact(w)))))
     print(concat("dump_us           ", i64_to_str(t4 - t3)))
     print(concat("load_us           ", i64_to_str(t5 - t4)))
     print(concat("load_last_val     ", i64_to_str(loaded)))
@@ -116,6 +120,15 @@ fn bench_world(n: i64) -> i64 !Time {
     print(concat("wmap_checksum     ", i64_to_str(ms)))
     print(concat("wmap_len          ", i64_to_str(wmap_len(mw, mm))))
     print(concat("wmap_dump_bytes   ", i64_to_str(bytes_len(world_dump(mw)))))
+    // W2.10: компакция на живо — used преди/след и цената във време.
+    let cbefore = world_used(mw)
+    let k0 = monotonic_us()
+    world_compact(mw)
+    let k1 = monotonic_us()
+    print(concat("wmap_used_before  ", i64_to_str(cbefore)))
+    print(concat("wmap_used_after   ", i64_to_str(world_used(mw))))
+    print(concat("wmap_compact_us   ", i64_to_str(k1 - k0)))
+    print(concat("wmap_vals_intact  ", i64_to_str(wmap_get(mw, mm, 199999))))
     world_free(mw)
     world_free(w)
     world_free(w2)

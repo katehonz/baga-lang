@@ -35,12 +35,16 @@ fn main() {
     wmap_del(w, m, 999)
     check("map_del_missing", wmap_len(w, m) == 1)
 
-    // стойност-низ: копира се в региона, елементът е офсет
-    wmap_set_str(w, m, 7, "здравей")
-    check("map_str", wmap_get_str(w, m, 7) == "здравей")
-    check("map_str_len", len(wmap_get_str(w, m, 7)) == 14)
-    wmap_set_str(w, m, 8, wmap_get_str(w, m, 7))
-    check("map_str_region_copy", wmap_get_str(w, m, 8) == "здравей")
+    // стойност-низ: копира се в региона, елементът е офсет. От W2.10
+    // контейнерите са ХОМОГЕННИ (i64 или str, не и двете) — иначе компакцията
+    // не може да знае кои елементи са payload, затова низовете са в отделна
+    // карта (като Vec<i64> срещу Vec<str> в езика).
+    let ms = wmap_new(w)
+    wmap_set_str(w, ms, 7, "здравей")
+    check("map_str", wmap_get_str(w, ms, 7) == "здравей")
+    check("map_str_len", len(wmap_get_str(w, ms, 7)) == 14)
+    wmap_set_str(w, ms, 8, wmap_get_str(w, ms, 7))
+    check("map_str_region_copy", wmap_get_str(w, ms, 8) == "здравей")
 
     // двоични елементи с вграден NUL — дължината е в региона, не strlen
     let v = wvec_new(w)
@@ -60,10 +64,10 @@ fn main() {
         wmap_set(w, m, i + 1000, i * 2)
         i = i + 1
     }
-    check("map_growth_len", wmap_len(w, m) == 503)
+    check("map_growth_len", wmap_len(w, m) == 501)
     check("map_growth_first", wmap_get(w, m, 1000) == 0)
     check("map_growth_last", wmap_get(w, m, 1499) == 998)
-    check("map_growth_survivors", wmap_get(w, m, 1) == 111 && wmap_get(w, m, 7) != 0)
+    check("map_growth_survivors", wmap_get(w, m, 1) == 111 && wmap_has(w, ms, 7) == 1)
 
     // dump/load: wmap и bytes са ЧАСТ от света — оцеляват (wcache не)
     let used = world_used(w)
@@ -71,8 +75,8 @@ fn main() {
     check("dump_covers_used", bytes_len(d) == used)
     world_free(w)
     let w2 = world_load(d)
-    check("map_survives_load", wmap_get(w2, m, 1) == 111 && wmap_len(w2, m) == 503)
-    check("map_str_survives_load", wmap_get_str(w2, m, 7) == "здравей")
+    check("map_survives_load", wmap_get(w2, m, 1) == 111 && wmap_len(w2, m) == 501)
+    check("map_str_survives_load", wmap_get_str(w2, ms, 7) == "здравей")
     check("bytes_survives_load", bytes_len(wvec_get_bytes(w2, v, 0)) == 2)
     check("cache_empty_after_load", wcache_len(w2) == 0)
 
@@ -81,6 +85,52 @@ fn main() {
     check("frozen_map_read", wmap_get(w2, m, 1499) == 998)
     check("frozen_bytes_read", bytes_len(wvec_get_bytes(w2, v, 0)) == 2)
     world_free(w2)
+
+    // W2.10: авто-компакция. Корените са в таблицата на контейнерите (в
+    // региона), схемата е в ekind/vkind — значи runtime-ът може сам да
+    // пренареди живите байтове. id-тата НЕ се променят, затова променливите
+    // на програмата остават валидни.
+    let cw = world_new()
+    let cv = wvec_new(cw)
+    let cm = wmap_new(cw)
+    let mut k: i64 = 0
+    while k < 20000 {
+        wvec_push(cw, cv, k)
+        wmap_set(cw, cm, k, k * 2)
+        k = k + 1
+    }
+    let grew = world_used(cw)
+    world_compact(cw)
+    let compacted = world_used(cw)
+    check("compact_shrinks", compacted < grew)
+    check("compact_keeps_len", wvec_len(cw, cv) == 20000 && wmap_len(cw, cm) == 20000)
+    check("compact_keeps_vals", wvec_get(cw, cv, 19999) == 19999 && wmap_get(cw, cm, 19999) == 39998)
+    check("compact_ids_stable", cv != cm)
+    // compact dump е заредим и равен на live обема
+    let cd = world_dump_compact(cw)
+    check("compact_dump_small", bytes_len(cd) == compacted)
+    let cw2 = world_load(cd)
+    check("compact_dump_loads", wvec_get(cw2, cv, 7) == 7 && wmap_get(cw2, cm, 7) == 14)
+    world_free(cw2)
+    // dump_compact е ЧИТАНЕ — работи и върху замразен свят
+    world_freeze(cw)
+    let fd = world_dump_compact(cw)
+    check("compact_dump_on_frozen", bytes_len(fd) == compacted)
+    // payload-ите (низове/bytes) също се пренареждат
+    let sw = world_new()
+    let sv = wvec_new(sw)
+    let mut j: i64 = 0
+    while j < 200 {
+        wvec_push_str(sw, sv, "низ-в-региона")
+        j = j + 1
+    }
+    let s_before = world_used(sw)
+    world_compact(sw)
+    let s_after = world_used(sw)
+    check("compact_str_shrinks", s_after < s_before)
+    check("compact_str_intact", wvec_get_str(sw, sv, 199) == "низ-в-региона" && wvec_len(sw, sv) == 200)
+    world_free(sw)
+    world_free(cw)
 
     print("wmap_test: all passed")
 }

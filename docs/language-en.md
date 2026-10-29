@@ -1323,6 +1323,17 @@ invalidates nothing:
   region, so embedded NULs are fine; get returns a borrowed view (the same
   contract as `wvec_get_str`). The mutators are check-only: legal in loops,
   `mutate-after-freeze` on a frozen world.
+- W2.10: `world_compact(w)` re-lays out the region in place (a mutator — refused
+  on a frozen world), and `world_dump_compact(w)` returns a compacted image
+  without touching the world (a read — legal on frozen). This is possible
+  because the region carries its own roots and schema: a header with magic and
+  version plus a container table, `wvec_new`/`wmap_new` return an **id** (not a
+  raw offset), and containers are homogeneous (i64 / str / bytes — mixing is an
+  error, and the schema binds readers too: `wvec_get` on a string container is a
+  clean error, not the offset as a number). Ids survive dump/load and
+  compaction; borrowed pointers do not.
+  `world_load` rejects a foreign blob by magic. Measured: dump 4.19 MB → 1.60 MB,
+  wmap region 25.2 → 12.6 MB.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 
