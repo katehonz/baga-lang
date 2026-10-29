@@ -1,0 +1,86 @@
+// wmap_test — W2.9: ключ/стойност и двоични елементи ВЪТРЕ в свят.
+//
+// За разлика от wcache (W2.3), който е прикачен към handle-а и НЕ пътува през
+// dump/load, wmap е offset-адресиран като wvec — значи е част от стойността на
+// света и оцелява през сериализацията. wbytes носи дължината в региона, затова
+// вградените NUL не са проблем (за разлика от регион-низовете).
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let w = world_new()
+    let m = wmap_new(w)
+    check("map_empty", wmap_len(w, m) == 0)
+    check("map_miss_get", wmap_get(w, m, 42) == 0)
+    check("map_miss_has", wmap_has(w, m, 42) == 0)
+
+    wmap_set(w, m, 1, 100)
+    wmap_set(w, m, 2, 200)
+    check("map_len2", wmap_len(w, m) == 2)
+    check("map_get", wmap_get(w, m, 1) == 100 && wmap_get(w, m, 2) == 200)
+    check("map_has", wmap_has(w, m, 2) == 1)
+
+    wmap_set(w, m, 1, 111)
+    check("map_overwrite", wmap_get(w, m, 1) == 111 && wmap_len(w, m) == 2)
+
+    wmap_del(w, m, 2)
+    check("map_del", wmap_has(w, m, 2) == 0 && wmap_len(w, m) == 1)
+    wmap_del(w, m, 999)
+    check("map_del_missing", wmap_len(w, m) == 1)
+
+    // стойност-низ: копира се в региона, елементът е офсет
+    wmap_set_str(w, m, 7, "здравей")
+    check("map_str", wmap_get_str(w, m, 7) == "здравей")
+    check("map_str_len", len(wmap_get_str(w, m, 7)) == 14)
+    wmap_set_str(w, m, 8, wmap_get_str(w, m, 7))
+    check("map_str_region_copy", wmap_get_str(w, m, 8) == "здравей")
+
+    // двоични елементи с вграден NUL — дължината е в региона, не strlen
+    let v = wvec_new(w)
+    let b = bytes_of_str("ab")
+    bytes_set(b, 0, 0)
+    wvec_push_bytes(w, v, b)
+    let g = wvec_get_bytes(w, v, 0)
+    check("bytes_len", bytes_len(g) == 2)
+    check("bytes_embedded_nul", bytes_at(g, 0) == 0 && bytes_at(g, 1) == 98)
+    let empty = bytes_of_str("")
+    wvec_push_bytes(w, v, empty)
+    check("bytes_empty", bytes_len(wvec_get_bytes(w, v, 1)) == 0)
+
+    // растеж на таблицата през няколко удвоявания (0.75 load factor)
+    let mut i: i64 = 0
+    while i < 500 {
+        wmap_set(w, m, i + 1000, i * 2)
+        i = i + 1
+    }
+    check("map_growth_len", wmap_len(w, m) == 503)
+    check("map_growth_first", wmap_get(w, m, 1000) == 0)
+    check("map_growth_last", wmap_get(w, m, 1499) == 998)
+    check("map_growth_survivors", wmap_get(w, m, 1) == 111 && wmap_get(w, m, 7) != 0)
+
+    // dump/load: wmap и bytes са ЧАСТ от света — оцеляват (wcache не)
+    let used = world_used(w)
+    let d = world_dump(w)
+    check("dump_covers_used", bytes_len(d) == used)
+    world_free(w)
+    let w2 = world_load(d)
+    check("map_survives_load", wmap_get(w2, m, 1) == 111 && wmap_len(w2, m) == 503)
+    check("map_str_survives_load", wmap_get_str(w2, m, 7) == "здравей")
+    check("bytes_survives_load", bytes_len(wvec_get_bytes(w2, v, 0)) == 2)
+    check("cache_empty_after_load", wcache_len(w2) == 0)
+
+    // замразен свят: четците са легални
+    world_freeze(w2)
+    check("frozen_map_read", wmap_get(w2, m, 1499) == 998)
+    check("frozen_bytes_read", bytes_len(wvec_get_bytes(w2, v, 0)) == 2)
+    world_free(w2)
+
+    print("wmap_test: all passed")
+}

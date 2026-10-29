@@ -92,6 +92,31 @@ fn bench_world(n: i64) -> i64 !Time {
     print(concat("wcache_checksum   ", i64_to_str(cs)))
     print(concat("wcache_len        ", i64_to_str(wcache_len(w))))
     print(concat("cache_dump_bytes  ", i64_to_str(bytes_len(world_dump(w)))))
+    // W2.9: wmap — ключ/стойност В региона (position-independent, за разлика от
+    // кеша). Същият n: set-овете включват растеж и пре-хеш, get-овете са
+    // сондиране през offset-и.
+    let mw = world_new()
+    let mm = wmap_new(mw)
+    let m0 = monotonic_us()
+    let mut a: i64 = 0
+    while a < n {
+        wmap_set(mw, mm, a, a * 3)
+        a = a + 1
+    }
+    let m1 = monotonic_us()
+    let mut ms: i64 = 0
+    let mut b: i64 = 0
+    while b < n {
+        ms = ms + wmap_get(mw, mm, b)
+        b = b + 1
+    }
+    let m2 = monotonic_us()
+    print(concat("wmap_set_us       ", i64_to_str(m1 - m0)))
+    print(concat("wmap_get_us       ", i64_to_str(m2 - m1)))
+    print(concat("wmap_checksum     ", i64_to_str(ms)))
+    print(concat("wmap_len          ", i64_to_str(wmap_len(mw, mm))))
+    print(concat("wmap_dump_bytes   ", i64_to_str(bytes_len(world_dump(mw)))))
+    world_free(mw)
     world_free(w)
     world_free(w2)
     return 0

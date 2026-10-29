@@ -819,6 +819,66 @@ else
 	exit 1
 fi
 
+echo "=== W2.9 wmap/wbytes: невалиден офсет и сгрешен елемент са чиста грешка ==="
+# Сгрешен wmap офсет (или счупен blob) четеше извън malloc блока преди W2.2
+# дисциплината; сега е чиста грешка.
+printf 'fn main() {\n    let w = world_new()\n    let m = wmap_new(w)\n    wmap_set(w, m, 1, 5)\n    print(wmap_len(w, 99999))\n}\n' > /tmp/baga_wmap_badoff.baga
+RC=0
+run /tmp/baga_wmap_badoff.baga > /tmp/baga_wmap_badoff_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "невалиден wmap офсет" /tmp/baga_wmap_badoff_out.txt; then
+	echo "OK: невалиден wmap офсет — чиста грешка"
+else
+	echo "FAIL: невалидният wmap офсет трябваше да е чиста грешка"
+	cat /tmp/baga_wmap_badoff_out.txt
+	exit 1
+fi
+# i64 елемент, прочетен като bytes — дължината би била произволна.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push(w, v, 12345)\n    let g = wvec_get_bytes(w, v, 0)\n    print(bytes_len(g))\n}\n' > /tmp/baga_wbytes_conf.baga
+RC=0
+run /tmp/baga_wbytes_conf.baga > /tmp/baga_wbytes_conf_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "не е валиден bytes офсет" /tmp/baga_wbytes_conf_out.txt; then
+	echo "OK: wvec_get_bytes върху i64 елемент — чиста грешка"
+else
+	echo "FAIL: type-confusion върху bytes елемент трябваше да е чиста грешка"
+	cat /tmp/baga_wbytes_conf_out.txt
+	exit 1
+fi
+# wvec_push_bytes е check-only мутатор като wvec_push — върху замразен свят е
+# грешка (оркълът не може да го покаже: bytes_of_str е извън верификаторния
+# фрагмент, затова случаят живее тук).
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    world_freeze(w)\n    wvec_push_bytes(w, v, bytes_of_str("ab"))\n}\n' > /tmp/baga_wbytes_frozen.baga
+RC=0
+run /tmp/baga_wbytes_frozen.baga > /tmp/baga_wbytes_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze: wvec_push_bytes" /tmp/baga_wbytes_frozen_out.txt; then
+	echo "OK: wvec_push_bytes върху замразен свят — compile грешка"
+else
+	echo "FAIL: wvec_push_bytes върху замразен свят трябваше да е грешка"
+	cat /tmp/baga_wbytes_frozen_out.txt
+	exit 1
+fi
+# Заеманият регион-низ от wmap умира със света (W2.2 borrow дисциплина).
+printf 'fn main() {\n    let w = world_new()\n    let m = wmap_new(w)\n    wmap_set_str(w, m, 1, "borrowed")\n    let s = wmap_get_str(w, m, 1)\n    world_free(w)\n    print(s)\n}\n' > /tmp/baga_wmap_borrow.baga
+RC=0
+run /tmp/baga_wmap_borrow.baga > /tmp/baga_wmap_borrow_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_wmap_borrow_out.txt; then
+	echo "OK: заеман низ от wmap след world_free — compile грешка"
+else
+	echo "FAIL: borrow-after-free за wmap_get_str трябваше да е compile грешка"
+	cat /tmp/baga_wmap_borrow_out.txt
+	exit 1
+fi
+# wmap_set върху замразен свят е мутатор — същата дисциплина като wvec_push.
+printf 'fn main() {\n    let w = world_new()\n    let m = wmap_new(w)\n    world_freeze(w)\n    wmap_set(w, m, 1, 2)\n}\n' > /tmp/baga_wmap_frozen.baga
+RC=0
+run /tmp/baga_wmap_frozen.baga > /tmp/baga_wmap_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze: wmap_set" /tmp/baga_wmap_frozen_out.txt; then
+	echo "OK: wmap_set върху замразен свят — compile грешка"
+else
+	echo "FAIL: wmap_set върху замразен свят трябваше да е грешка"
+	cat /tmp/baga_wmap_frozen_out.txt
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и
@@ -830,17 +890,19 @@ rm -f /tmp/baga_wvec_asan /tmp/baga_wcache_tsan
 if ! gcc -fsanitize=address -o /tmp/baga_san_probe /tmp/baga_san_probe.c >/dev/null 2>&1; then
 	echo "SKIP: gcc без AddressSanitizer — sanitizer gate-овете са пропуснати"
 else
-	"$BIN" $BAGAIFLAGS --emit-c tests/wvec_test.baga > /tmp/baga_wvec_asan.c 2>/tmp/baga_wvec_asan_err.txt
-	gcc -g -O1 -fsanitize=address -o /tmp/baga_wvec_asan /tmp/baga_wvec_asan.c -lm -pthread 2>>/tmp/baga_wvec_asan_err.txt
-	RC=0
-	ASAN_OPTIONS=detect_leaks=0 /tmp/baga_wvec_asan > /tmp/baga_wvec_asan_out.txt 2>&1 || RC=$?
-	if [[ $RC -eq 0 ]] && grep -q "wvec_test: all passed" /tmp/baga_wvec_asan_out.txt; then
-		echo "OK: wvec_test под ASan (region copy при растеж — UAF регресията)"
-	else
-		echo "FAIL: ASan прогонът на wvec_test трябваше да е чист"
-		cat /tmp/baga_wvec_asan_out.txt /tmp/baga_wvec_asan_err.txt
-		exit 1
-	fi
+	for ASAN_T in wvec_test wmap_test; do
+		"$BIN" $BAGAIFLAGS --emit-c "tests/$ASAN_T.baga" > "/tmp/baga_$ASAN_T.asan.c" 2>/tmp/baga_wvec_asan_err.txt
+		gcc -g -O1 -fsanitize=address -o "/tmp/baga_$ASAN_T.asan" "/tmp/baga_$ASAN_T.asan.c" -lm -pthread 2>>/tmp/baga_wvec_asan_err.txt
+		RC=0
+		ASAN_OPTIONS=detect_leaks=0 "/tmp/baga_$ASAN_T.asan" > "/tmp/baga_$ASAN_T.asan.out" 2>&1 || RC=$?
+		if [[ $RC -eq 0 ]] && grep -q "$ASAN_T: all passed" "/tmp/baga_$ASAN_T.asan.out"; then
+			echo "OK: $ASAN_T под ASan (region copy при растеж, wmap растеж/преhash, bytes офсети)"
+		else
+			echo "FAIL: ASan прогонът на $ASAN_T трябваше да е чист"
+			cat "/tmp/baga_$ASAN_T.asan.out" /tmp/baga_wvec_asan_err.txt
+			exit 1
+		fi
+	done
 	if gcc -fsanitize=thread -pthread -o /tmp/baga_san_probe /tmp/baga_san_probe.c >/dev/null 2>&1; then
 		# 4 работника пълнят ЕДИН замразен свят; без mutex-а на кеша TSan
 		# дава 15 race-а, без атомното четене на detached — още 4.

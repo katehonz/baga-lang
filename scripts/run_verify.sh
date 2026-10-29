@@ -223,16 +223,18 @@ grep -q "ok_seq:" /tmp/baga_verify_out.txt && grep -q "ok_map:" /tmp/baga_verify
 grep -q "ok_lifecycle:" /tmp/baga_verify_out.txt && grep -q "ok_shared_frozen:" /tmp/baga_verify_out.txt \
 	&& grep -q "ok_frozen_read:" /tmp/baga_verify_out.txt && grep -q "ok_frozen_read_str:" /tmp/baga_verify_out.txt \
 	&& grep -q "bad_go_move:" /tmp/baga_verify_out.txt \
-	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^13$' \
+	&& grep -q "ok_map_frozen_read:" /tmp/baga_verify_out.txt && grep -q "bad_map_frozen:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^15$' \
 	&& grep -q "протокол (mutate-after-freeze: world_alloc.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (повторен world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (използване след world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (freeze след move.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (mutate-after-freeze: wvec_push върху.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (mutate-after-freeze: wvec_push_str.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (mutate-after-freeze: wmap_set.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& [ "$(grep -c 'протокол (wvec_push след move.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 2 ] \
 	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
-	&& echo "OK: worlds — W0/W1/W1.5/W1.6: жизнен цикъл, замразено споделяне, четци (i64+str); mutate-after-freeze (alloc/push/push_str), двоен free, use-after-free и use-after-move (chan_send И go) са оброчени с контрапримери (оркълът е path-sensitive — праволинейните версии ги хваща W1.6 seatbelt-ът на компилация)" \
+	&& echo "OK: worlds — W0/W1/W1.5/W1.6/W2.9: жизнен цикъл, замразено споделяне, четци (i64+str); mutate-after-freeze (alloc/push/push_str), двоен free, use-after-free и use-after-move (chan_send И go) са оброчени с контрапримери (оркълът е path-sensitive — праволинейните версии ги хваща W1.6 seatbelt-ът на компилация); W2.9 wmap/wbytes са check-only мутатори като wvec_push — четци върху замразен свят са чисти, запис е обречен" \
 	|| { echo "FAIL: worlds"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/worlds_cap.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "ok_shared_reader:" /tmp/baga_verify_out.txt && grep -q "bad_shared_writer:" /tmp/baga_verify_out.txt \

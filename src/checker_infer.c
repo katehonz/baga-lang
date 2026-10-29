@@ -847,6 +847,16 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             {"world_unlink",  TYPE_VOID, "ii", 0, 0},
             {"world_links",   TYPE_I64, "i", 0, 0},
             {"world_linked",  TYPE_I64, "ii", 0, 0},
+            {"wmap_new",      TYPE_I64, "i", 0, 0},
+            {"wmap_set",      TYPE_VOID, "iiii", 0, 0},
+            {"wmap_get",      TYPE_I64, "iii", 0, 0},
+            {"wmap_has",      TYPE_I64, "iii", 0, 0},
+            {"wmap_del",      TYPE_VOID, "iii", 0, 0},
+            {"wmap_len",      TYPE_I64, "ii", 0, 0},
+            {"wmap_set_str",  TYPE_VOID, "iiis", 0, 0},
+            {"wmap_get_str",  TYPE_STR, "iii", 0, 0},
+            {"wvec_push_bytes", TYPE_VOID, "iib", 0, 0},
+            {"wvec_get_bytes", TYPE_BYTES, "iii", 0, 0},
             {"mem_mark",    TYPE_I64, "", 0, 0},
             {"mem_rewind",  TYPE_VOID, "i", 0, 0},
             {"mem_arena_bytes", TYPE_I64, "", 0, 0},
@@ -1043,7 +1053,10 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
         if ((strcmp(name, "world_free") == 0 || strcmp(name, "world_freeze") == 0 ||
              strcmp(name, "world_alloc") == 0 || strcmp(name, "wvec_new") == 0 ||
              strcmp(name, "wvec_push") == 0 || strcmp(name, "wvec_push_str") == 0 ||
-             strcmp(name, "world_link") == 0 || strcmp(name, "world_unlink") == 0) &&
+             strcmp(name, "world_link") == 0 || strcmp(name, "world_unlink") == 0 ||
+             strcmp(name, "wmap_new") == 0 || strcmp(name, "wmap_set") == 0 ||
+             strcmp(name, "wmap_del") == 0 || strcmp(name, "wmap_set_str") == 0 ||
+             strcmp(name, "wvec_push_bytes") == 0) &&
             !env_lookup(ctx, name) && !ck_find_fn(ctx, name)) {
             int is_free = strcmp(name, "world_free") == 0;
             int is_freeze = strcmp(name, "world_freeze") == 0;
@@ -1178,6 +1191,9 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                 "wcache_set", "wcache_get", "wcache_has", "wcache_del",
                 "wcache_clear", "wcache_len",
                 "world_link", "world_unlink", "world_links", "world_linked",
+                "wmap_new", "wmap_set", "wmap_get", "wmap_has", "wmap_del",
+                "wmap_len", "wmap_set_str", "wmap_get_str",
+                "wvec_push_bytes", "wvec_get_bytes",
             };
             int nb = (int)(sizeof builtins / sizeof builtins[0]);
             int ns = (int)(sizeof special / sizeof special[0]);

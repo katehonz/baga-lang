@@ -1314,6 +1314,15 @@ invalidates nothing:
   `chan_send` only if the payload really is such a world; otherwise it is
   dropped and the receiver honestly gets nothing. `world_mutable(c[*])` is a
   compile error — a channel hand-off is not synchronous.
+- W2.9: `wmap_new(w)` / `wmap_set(w, m, k, v)` / `wmap_get(w, m, k)` (0 on a
+  miss) / `wmap_has(w, m, k)` (1/0) / `wmap_del(w, m, k)` / `wmap_len(w, m)`,
+  plus `wmap_set_str` / `wmap_get_str` (a missing key is a clean error) — a
+  key/value map INSIDE the region, offset-addressed, so it survives
+  `dump`/`load` (unlike `wcache_*`). `wvec_push_bytes(w, v, b)` /
+  `wvec_get_bytes(w, v, i)` — binary elements with the length stored in the
+  region, so embedded NULs are fine; get returns a borrowed view (the same
+  contract as `wvec_get_str`). The mutators are check-only: legal in loops,
+  `mutate-after-freeze` on a frozen world.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

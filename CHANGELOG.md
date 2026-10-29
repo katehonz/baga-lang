@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### W2.9 — светове: wmap и wbytes (индекс и двоични елементи в региона)
+- `wmap_new(w)` → офсет на заглавие `{len, cap, slots_off}`; слотовете са
+  `{k, v, st}` тройки, ВСИЧКО на офсети спрямо `base` — значи картата е
+  position-independent и оцелява през `dump`/`load` (за разлика от `wcache_*`,
+  който е прикачен към handle-а и е производна). API: `wmap_set/get/has/del/len`
+  (i64→i64, get връща 0 при липса, has 1/0 — като `map_*`) и
+  `wmap_set_str`/`wmap_get_str` (стойност-низ, копиран в региона; липсващ ключ
+  е чиста грешка, защото низ няма неутрална стойност).
+- `wvec_push_bytes(w, v, b)` / `wvec_get_bytes(w, v, i)` — двоични елементи:
+  елементът е офсет към `[8 байта дължина][данни]`, дължината се чете с memcpy
+  (без изискване за подравняване), затова вградените NUL не са проблем. Get
+  връща ЗАЕМАН изглед в региона — същият договор като `wvec_get_str` (и checker-ът
+  го тагва като payload на региона: `world_free` убива и него, W2.2).
+- Отворено адресиране, load factor ≤ 0.75, tombstone при del, растеж с пре-хеш
+  (старият блок остава в региона като growth garbage). Инвариантът за
+  терминиране е същият като при wcache: put предпочита дупка пред празен слот,
+  растежът държи живите под 0.75·cap ⇒ празен слот винаги остава.
+- W2.2 дисциплината важи изцяло: `baga_wmap_at` (офсет + заглавие, вкл. cap да е
+  степен на двойката), `baga_wslot` (слотът в региона), проверка на
+  bytes-дължината срещу `used`, и източник от самия регион се бележи като офсет
+  ПРЕДИ alloc (иначе растежът прави указателя висящ — същият клас като
+  W2.2 UAF-а). Сгрешен wmap офсет или i64 елемент, прочетен като bytes, е чиста
+  грешка, не out-of-bounds.
+- Мутаторите са check-only като `wvec_push`: `wmap_new/set/del/set_str` и
+  `wvec_push_bytes` са легални в цикли, но `mutate-after-freeze` върху замразен
+  свят (W1.6 seatbelt праволинейно, ОБРОЧЕНО по пътищата); четците
+  (`wmap_get/has/len/get_str`, `wvec_get_bytes`) върху frozen са чисти.
+- `tests/wmap_test.baga`: 26 проверки — CRUD, overwrite, del (вкл. липсващ),
+  низ-стойности и копие от региона, bytes с вграден NUL и празен bytes, растеж
+  до 503 ключа, **dump/load roundtrip** (картата, низовете и bytes оцеляват;
+  кешът е празен), четци върху замразен свят. ASan прогонът в run_tests.sh вече
+  минава и през wmap_test; 5 нови проби (невалиден wmap офсет, type-confusion
+  върху bytes, borrow-after-free за wmap_get_str, wmap_set и wvec_push_bytes
+  върху замразен свят).
+- Оркълът `worlds.baga` расте на 15 ensures + 9 протокола (`ok_map_frozen_read`,
+  `bad_map_frozen`); случай за `wvec_push_bytes` върху замразен свят е в
+  run_tests.sh, защото `bytes_of_str` е извън верификаторния фрагмент (честно
+  ПРОПУСНАТО, не измислено обвинение). Bench: wmap_set ~74 ns/оп, get ~19 ns/оп,
+  dump 25.2 MB за 200k ключа (слотове + growth garbage).
+- Docs: worlds-bg.md §2 (W2.9 subsection) + §4 bench + §5 (две граници) + §6,
+  language-bg/en.
+
 ### W2.8 — светове: канален договор (discharge при chan_recv)
 - M16 rely–guarantee, приложен към светове: светът, получен през канал, вече не
   е извън модела. Изпращачът декларира `invariant world_frozen(c[*])` (или

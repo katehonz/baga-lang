@@ -1318,6 +1318,14 @@ print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
   при `chan_send` само ако payload-ът наистина е такъв свят, иначе отпада и
   получателят честно не получава нищо. `world_mutable(c[*])` е compile грешка —
   предаването през канал не е синхронно.
+- W2.9: `wmap_new(w)` / `wmap_set(w, m, k, v)` / `wmap_get(w, m, k)` (0 при
+  липса) / `wmap_has(w, m, k)` (1/0) / `wmap_del(w, m, k)` / `wmap_len(w, m)` и
+  `wmap_set_str` / `wmap_get_str` (липсващ ключ е чиста грешка) — ключ/стойност
+  В региона, offset-адресирани, затова оцеляват през `dump`/`load` (за разлика
+  от `wcache_*`). `wvec_push_bytes(w, v, b)` / `wvec_get_bytes(w, v, i)` —
+  двоични елементи с дължина в региона, значи вградените NUL не са проблем;
+  get връща заеман изглед (същият договор като `wvec_get_str`). Мутаторите са
+  check-only: легални в цикли, `mutate-after-freeze` върху замразен свят.
 - Пълният дизайн-документ — модел, сравнение с Verona/Pony/Cyclone, bench,
   честни граници и пътна карта: `docs/worlds-bg.md`.
 

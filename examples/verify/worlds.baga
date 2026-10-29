@@ -284,6 +284,52 @@ fn bad_go_move(n: i64) -> i64 !Par {
     return r - r
 }
 
+spec ok_map_frozen_read {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W2.9: wmap е offset-адресиран като wvec — част е от стойността на света и
+// оцелява през dump/load (за разлика от wcache). Четците върху замразен свят
+// са легални.
+fn ok_map_frozen_read(n: i64) -> i64 {
+    let w = world_new()
+    let m = wmap_new(w)
+    wmap_set(w, m, 1, 10)
+    wmap_set_str(w, m, 2, "индекс")
+    world_freeze(w)
+    let x = wmap_get(w, m, 1)
+    let h = wmap_has(w, m, 2)
+    let l = wmap_len(w, m)
+    world_free(w)
+    return n - n
+}
+
+spec bad_map_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W2.9: wmap_set е check-only мутатор като wvec_push — върху замразен свят е
+// ОБРОЧЕНО. Freeze-ът е само в then-клона, затова checker-ът (W1.6) мълчи, а
+// верификаторът оборва пътя n = 1.
+fn bad_map_frozen(n: i64) -> i64 {
+    let w = world_new()
+    let m = wmap_new(w)
+    if n > 0 {
+        world_freeze(w)
+    }
+    wmap_set(w, m, 1, 10)
+    world_free(w)
+    return n - n
+}
+
 fn main() {
     print(ok_lifecycle(1))
     print(ok_frozen_read(1))
@@ -293,4 +339,6 @@ fn main() {
     print(bad_use_after_free(0))
     print(bad_push_frozen(0))
     print(bad_push_str_frozen(0))
+    print(ok_map_frozen_read(1))
+    print(bad_map_frozen(0))
 }

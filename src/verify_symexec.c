@@ -568,7 +568,10 @@ int is_world_op_call(Node *n) {
     int is_op = strcmp(nm, "world_alloc") == 0 || strcmp(nm, "world_freeze") == 0 ||
                 strcmp(nm, "world_free") == 0 || strcmp(nm, "wvec_push") == 0 ||
                 strcmp(nm, "wvec_push_str") == 0 || is_world_scratch_call(n) ||
-                strcmp(nm, "world_link") == 0 || strcmp(nm, "world_unlink") == 0;   /* W2.5 */
+                strcmp(nm, "world_link") == 0 || strcmp(nm, "world_unlink") == 0 ||   /* W2.5 */
+                strcmp(nm, "wmap_new") == 0 || strcmp(nm, "wmap_set") == 0 ||
+                strcmp(nm, "wmap_del") == 0 || strcmp(nm, "wmap_set_str") == 0 ||
+                strcmp(nm, "wvec_push_bytes") == 0;   /* W2.9: check-only мутатори */
     if (!is_op || world_builtin_shadowed(nm)) return 0;
     return n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT;
 }
@@ -591,6 +594,11 @@ int is_world_expr_call(Node *n) {
                   strcmp(nm, "wvec_push_str") == 0 || strcmp(nm, "wvec_get_str") == 0 ||
                   strcmp(nm, "world_link") == 0 || strcmp(nm, "world_unlink") == 0 ||
                   strcmp(nm, "world_links") == 0 || strcmp(nm, "world_linked") == 0 ||   /* W2.5 */
+                  strcmp(nm, "wmap_new") == 0 || strcmp(nm, "wmap_set") == 0 ||
+                  strcmp(nm, "wmap_get") == 0 || strcmp(nm, "wmap_has") == 0 ||
+                  strcmp(nm, "wmap_del") == 0 || strcmp(nm, "wmap_len") == 0 ||
+                  strcmp(nm, "wmap_set_str") == 0 || strcmp(nm, "wmap_get_str") == 0 ||
+                  strcmp(nm, "wvec_push_bytes") == 0 || strcmp(nm, "wvec_get_bytes") == 0 ||   /* W2.9 */
                   is_world_scratch_call(n);   /* W2.3: wcache_* са изразни и statement-ни */
     return is_expr && !world_builtin_shadowed(nm);
 }
