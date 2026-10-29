@@ -240,7 +240,7 @@ grep -q "ok_shared_reader:" /tmp/baga_verify_out.txt && grep -q "bad_shared_writ
 	&& grep -q "conj_reader:" /tmp/baga_verify_out.txt && grep -q "ok_pass_conj:" /tmp/baga_verify_out.txt \
 	&& grep -q "cached_reader:" /tmp/baga_verify_out.txt && grep -q "bad_cache_after_move:" /tmp/baga_verify_out.txt \
 	&& grep -q "ok_shared_many:" /tmp/baga_verify_out.txt && grep -q "bad_move_twice:" /tmp/baga_verify_out.txt \
-	&& grep -q "bad_reader_frees:" /tmp/baga_verify_out.txt && grep -q "bad_reader_delegates:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_reader_frees:" /tmp/baga_verify_out.txt && grep -q "ok_reader_delegates:" /tmp/baga_verify_out.txt \
 	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^19$' \
 	&& grep -q "извикване (requires world_frozen.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (mutate-after-freeze: world_alloc върху замразен 'ctx'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
@@ -269,6 +269,20 @@ grep -q "ok_graph:" /tmp/baga_verify_out.txt && grep -q "ok_unlink_then_free:" /
 	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 	&& echo "OK: worlds_graph — W2.5: capability връзки между светове (ацикличен граф) — четене през връзка след freeze и free по обратния ред са чисти; free на свързан свят, цикъл (вкл. самовръзка), link върху замразен свят и предаване на свързан свят са обречени с контрапримери" \
 	|| { echo "FAIL: worlds_graph"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/worlds_deleg.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "leaf_reader:" /tmp/baga_verify_out.txt && grep -q "mid_reader:" /tmp/baga_verify_out.txt \
+	&& grep -q "deep_reader:" /tmp/baga_verify_out.txt && grep -q "ok_delegate_chain:" /tmp/baga_verify_out.txt \
+	&& grep -q "ok_delegate_wide:" /tmp/baga_verify_out.txt && grep -q "ok_delegate_branch:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_delegate_no_contract:" /tmp/baga_verify_out.txt && grep -q "bad_delegate_bg:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^11$' \
+	&& [ "$(grep -c 'протокол (делегиран свят.*не е join-нат.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 2 ] \
+	&& grep -q "протокол (предаване на заеман свят.*няма договор за четене.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (предаване на заеман свят.*не може да се join-ва.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (chan_send на заеман свят.*не може да се join-ва.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& ! grep -q "извикване.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& echo "OK: worlds_deleg — W2.6: делегиране на capability с транзитивно отчитане — веригата owner→deep→mid→leaf с join на всяко ниво е чиста (и три успоредни делегации), а делегиране без join, с частичен join, на работник без договор, през канал или go_bg е обречено" \
+	|| { echo "FAIL: worlds_deleg"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
 	&& grep -q "контрапример: n = 9223372036854775807" /tmp/baga_verify_out.txt \

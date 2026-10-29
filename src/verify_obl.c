@@ -605,8 +605,40 @@ static void bind_sym(SEnv *env, const char *name, Sym v) {
     else env_bind(env, name, v.lin, 0);
 }
 
-static void drain_returns(States *states, Obligations *ob, Node *val_expr) {
-    for (int i = 0; i < states->n; i++) {
+/* W2.6: транзитивно отчитане на делегираните споделби. Работник, получил
+ * ЗАЕМАН свят (requires: world_frozen) и делегирал го надолу, дължи join преди
+ * края си — иначе внук-читателят надживява join-а на извикващия и неговият
+ * world_free съблича региона под все още работещия внук. Проверката е на всеки
+ * изход и per-state, значи е path-sensitive и не измисля: join само в един клон
+ * ⇒ само другият клон е обречен. */
+static void check_unjoined_delegations(State *st, Obligations *ob) {
+    if (st->bad) return;
+    for (int k = 0; k < st->handles.n; k++) {
+        HandleEntry *h = &st->handles.h[k];
+        if (h->kind != HK_WORLD || !h->borrowed || h->n_shared <= 0) continue;
+        char label[300];
+        snprintf(label, sizeof label,
+            "делегиран свят '%s' не е join-нат преди края на работника — внук-читател може да го надживее",
+            h->var);
+        push_protocol_violation(st, ob, label);
+        return;   /* едно обвинение на изход е достатъчно */
+    }
+}
+
+/* W2.6: предпазна мрежа за състояния, които НЕ са минали през return —
+ * drain_returns нулира states->n, значи тук остават само пътищата, където
+ * функцията пада от края (void тяло). Днес е недоказуемо необходима: всяка
+ * делегираща функция е non-void, защото `go`/`go_bg` носят !Par, а ефект без
+ * return тип не се парсва — значи изходът винаги минава през drain_returns
+ * (изричен return или последен израз). Оставяме я, за да не зависи
+ * инвариантът „делегацията е отчетена на всеки изход" от това случайно
+ * ограничение на парсера. */
+void push_unjoined_delegation_obls(States *states, Obligations *ob) {
+    for (int i = 0; i < states->n; i++) check_unjoined_delegations(&states->s[i], ob);
+}
+
+static void drain_returns(States *states, Obligations *ob, Node *val_expr) {    for (int i = 0; i < states->n; i++) {
+        check_unjoined_delegations(&states->s[i], ob);   /* W2.6 */
         Sym r = se_from_ast(val_expr, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads);
         inject_prod_axioms(&states->s[i]);   /* M8b: преди snapshot на path */
         ConsList nobound; cl_init(&nobound);

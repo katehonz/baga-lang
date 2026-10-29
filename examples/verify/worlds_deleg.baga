@@ -1,0 +1,240 @@
+// worlds_deleg.baga — W2.6: делегиране на capability с транзитивно отчитане.
+//
+// W2.4 направи замразения свят споделена read-only capability, но W2.5
+// забрани на получател със `requires: world_frozen(ctx)` да го препредава —
+// защото извикващият join-ва САМО своя работник и после free-ва, така че
+// внук-читател би останал върху освободен регион.
+//
+// W2.6 разрешава делегирането при две условия, които правят веригата
+// индуктивна:
+//   1. получателят има ДОГОВОР за четене (`requires: world_frozen`) — без него
+//      отсрещната страна е sound silence и може да освободи или препредаде;
+//   2. делегиращият join-ва под-работника ПРЕДИ края си — тогава животът на
+//      внука е строго вложен в живота на родителската споделба и
+//      `world_free` на owner-а след неговия join е безопасно.
+// Отчитането е транзитивно: делегирането вдига n_shared на заемания свят в
+// състоянието на делегиращия, join-ът го сваля, а изходът на функцията с
+// n_shared > 0 е ОБРОЧЕНО (проверката е в drain_returns, per-state ⇒
+// path-sensitive). Канал, `go_bg` и cell2 пакет не са joinable ⇒ не се
+// делегират.
+//
+//   ./baga --verify examples/verify/worlds_deleg.baga
+
+spec leaf_reader {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Най-долното ниво: чете и връща. Никакви мутатори на региона — договорът
+// world_frozen се разтоваря от извикващия и се доказва тук (W2.1).
+fn leaf_reader(ctx: i64) -> i64 {
+    let u = world_used(ctx)
+    return ctx - ctx
+}
+
+spec mid_reader {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Средно ниво: делегира на leaf и JOIN-ва преди да върне — легално (W2.6).
+fn mid_reader(ctx: i64) -> i64 !Par {
+    let h = go(leaf_reader, ctx)
+    let r = join(h)
+    return r - r
+}
+
+spec deep_reader {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Още едно ниво: mid_reader сам делегира на leaf, тук делегираме на mid —
+// правилото е индуктивно, защото всяко ниво join-ва своето преди края си.
+fn deep_reader(ctx: i64) -> i64 !Par {
+    let h = go(mid_reader, ctx)
+    let r = join(h)
+    return r - r
+}
+
+spec ok_delegate_chain {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Цялата верига owner → deep → mid → leaf, всички join-нати отдолу нагоре,
+// после free. Чисто: n_shared на owner-а е 0 в момента на free.
+fn ok_delegate_chain(n: i64) -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 3)
+    world_freeze(w)
+    let h = go(deep_reader, w)
+    let r = join(h)
+    world_free(w)
+    return r - r
+}
+
+spec ok_delegate_wide {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Три успоредни делегации в едно ниво — всичките join-нати преди free.
+fn ok_delegate_wide(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let h1 = go(mid_reader, w)
+    let h2 = go(mid_reader, w)
+    let h3 = go(mid_reader, w)
+    let a = join(h1)
+    let b = join(h2)
+    let c = join(h3)
+    world_free(w)
+    return n - n
+}
+
+spec bad_delegate_no_join {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Делегира и връща БЕЗ join: извикващият join-ва само своя работник и free-ва,
+// а leaf_reader още чете региона — ОБРОЧЕНО на изхода.
+fn bad_delegate_no_join(ctx: i64) -> i64 !Par {
+    let h = go(leaf_reader, ctx)
+    return ctx - ctx
+}
+
+spec bad_delegate_join_one {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Две делегации, join-ната само едната: n_shared остава 1 на изхода —
+// ОБРОЧЕНО (частичното join-ване не покрива втория внук).
+fn bad_delegate_join_one(ctx: i64) -> i64 !Par {
+    let h1 = go(leaf_reader, ctx)
+    let h2 = go(leaf_reader, ctx)
+    let a = join(h1)
+    return a - a
+}
+
+fn no_contract_worker(ctx: i64) -> i64 !Par {
+    return ctx - ctx
+}
+
+spec bad_delegate_no_contract {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Делегиране на работник БЕЗ договор: не виждаме тялото му като ghost, значи
+// може да освободи или препредаде света — ОБРОЧЕНО, дори с join.
+fn bad_delegate_no_contract(ctx: i64) -> i64 !Par {
+    let h = go(no_contract_worker, ctx)
+    let r = join(h)
+    return r - r
+}
+
+spec bad_delegate_chan {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Каналният приемник не може да се join-ва ⇒ делегирането не е транзитивно
+// отчетено — ОБРОЧЕНО.
+fn bad_delegate_chan(ctx: i64) -> i64 !Par {
+    let ch = chan_new(1)
+    chan_send(ch, ctx)
+    chan_close(ch)
+    return ctx - ctx
+}
+
+spec bad_delegate_bg {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// go_bg е detached at birth — няма join, значи няма и транзитивно отчитане.
+fn bad_delegate_bg(ctx: i64) -> i64 !Par {
+    let z = go_bg(leaf_reader, ctx)
+    return ctx - ctx
+}
+
+spec ok_delegate_branch {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 0
+}
+
+// Path-sensitivity в двете посоки: и в двата клона делегира, но join-ва само
+// в един. Чистият клон не бива да бъде обвиняван заради другия.
+fn ok_delegate_branch(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let h = go(mid_reader, w)
+    if n > 0 {
+        let r = join(h)
+        world_free(w)
+        return r - r
+    }
+    let r2 = join(h)
+    return r2 - r2
+}
+
+fn main() {
+    // Всички функции тук са !Par (делегиране/ join), а main не може да носи
+    // ефект — оркълът се проверява с --verify, не се изпълнява.
+    print("worlds_deleg: verify-only oracle")
+}

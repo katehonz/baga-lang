@@ -250,6 +250,7 @@ void path_push_le(ConsList *path, const char *pv, int64_t K);   /* 2361 */
 void inject_prod_axioms(State *st);   /* 2395 */
 Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *caller_name);   /* 2797 */
 void push_protocol_violation(State *st, Obligations *ob, const char *label);   /* 2926 */
+void push_unjoined_delegation_obls(States *states, Obligations *ob);   /* W2.6: изход без return */
 void push_protocol_ok(State *st, Obligations *ob, const char *label);   /* 2936 */
 Sym eval_par_call(Node *call, State *st, Obligations *ob);   /* 3588 */
 void eval_drop_call(Node *call, State *st, Obligations *ob);   /* 3817 */

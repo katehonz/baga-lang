@@ -760,6 +760,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     int is_nonvoid = (fn->ret_type != NULL);
     push_term_entry_obl(fn, spec, &states.s[0], &ob);   /* M6: D >= 0 при входа */
     symexec_stmts(&fn->fn_body->stmts, &states, &ob, is_nonvoid, spec);
+    push_unjoined_delegation_obls(&states, &ob);   /* W2.6: изход без return */
     for (int i = 0; i < states.n; i++) state_free(&states.s[i]);
     free(states.s);
 
@@ -1033,6 +1034,7 @@ static int verify_fn(Node *prog, Node *fn) {
         states_push(&st2, init2);
         push_term_entry_obl(fn, spec, &st2.s[0], &ob2);   /* M6: за отчета */
         symexec_stmts(&fn->fn_body->stmts, &st2, &ob2, (fn->ret_type != NULL), spec);
+        push_unjoined_delegation_obls(&st2, &ob2);   /* W2.6: и в отчета */
         for (int i = 0; i < st2.n; i++) state_free(&st2.s[i]);
         free(st2.s);
         /* call-site requires obligations (M5, kind 2) */

@@ -1287,6 +1287,14 @@ invalidates nothing:
   world is an error — `unlink`, or freeing the owner, releases it), the graph is
   acyclic (a self-link counts as a cycle), links are built before freeze, and a
   linked world is not handed to `go`/`chan_send`.
+- W2.6: capability delegation with transitive accounting — a receiver with
+  `requires: world_frozen(ctx)` MAY pass the world down, but only to a worker
+  with the same contract and only if it joins that worker before returning. The
+  chain owner → deep → mid → leaf is provably safe by induction: each level
+  joins its own child, so when the owner joins the top, every descendant has
+  finished and `world_free` is legal. Delegating without a join, with a partial
+  join, to a worker without a contract, through a channel or via `go_bg` is
+  REFUTED.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

@@ -398,7 +398,7 @@ fn bad_reader_frees(ctx: i64) -> i64 {
     return 0
 }
 
-spec bad_reader_delegates {
+spec ok_reader_delegates {
     input:
         ctx: i64
     output: i64
@@ -408,10 +408,11 @@ spec bad_reader_delegates {
         output >= 0
 }
 
-// Правото не се препредава: извикващият join-ва САМО своя работник и после
-// free-ва, докато внук-читателят още държи региона. Транзитивно отчитане на
-// споделбите е W2 (връзките между светове) — дотогава е ОБРОЧЕНО, не тихо.
-fn bad_reader_delegates(ctx: i64) -> i64 !Par {
+// W2.6: заеманото право МОЖЕ да се делегира на работник с договор за четене
+// (`requires: world_frozen`), стига делегиращият да го join-не преди края си —
+// тогава животът на внука е вложен в родителската споделба и owner-ът може да
+// free-не след своя join. Без join или без договор — ОБРОЧЕНО (worlds_deleg).
+fn ok_reader_delegates(ctx: i64) -> i64 !Par {
     let h = go(ok_shared_reader, ctx)
     let r = join(h)
     return r - r
