@@ -1139,6 +1139,16 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             n->callee->type = type_new(TYPE_VOID);
             if (n->args.len != 1)
                 check_error(ctx, n->pos, "'%s' очаква 1 аргумент, получих %d", name, n->args.len);
+            /* W2.8: `world_frozen(c[*])` / `world_owned(c[*])` са КАНАЛНИ
+             * аксиоми (rely–guarantee за светове). `world_mutable` през канал
+             * няма смисъл: договорът е „запис по време на повикването", а
+             * предаването през канал не е синхронно — изпращачът не знае кога
+             * приемникът ще го получи. */
+            if (n->args.len == 1 && n->args.data[0]->kind == NODE_ELEM_REF &&
+                strcmp(name, "world_mutable") == 0)
+                check_error(ctx, n->pos,
+                    "'world_mutable' не важи за канал (c[*]) — предаването не е синхронно; "
+                    "използвай world_frozen (четене) или world_owned (прехвърляне)");
             Type *wt = n->args.len > 0 ? n->args.data[0]->type : NULL;
             if (!wt || (wt->kind != TYPE_I64 && wt->kind != TYPE_ERROR))
                 check_error(ctx, n->pos,

@@ -11,20 +11,20 @@
 
 void ax_init(AxiomList *l) { l->a = NULL; l->n = 0; l->cap = 0; }
 void ax_free(AxiomList *l) { for (int i = 0; i < l->n; i++) { free(l->a[i].vec); lin_free(&l->a[i].rhs); } free(l->a); l->a = NULL; l->n = l->cap = 0; }
-void ax_push(AxiomList *l, const char *vec, ElemCmp cmp, Lin rhs, int is_sorted) {
+void ax_push(AxiomList *l, const char *vec, ElemCmp cmp, Lin rhs, int is_sorted, int world_kind) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->a = realloc(l->a, (size_t)l->cap * sizeof(ElemAxiom)); }
-    l->a[l->n].vec = strdup(vec); l->a[l->n].cmp = cmp; l->a[l->n].rhs = rhs; l->a[l->n].is_sorted = is_sorted; l->n++;
+    l->a[l->n].vec = strdup(vec); l->a[l->n].cmp = cmp; l->a[l->n].rhs = rhs; l->a[l->n].is_sorted = is_sorted; l->a[l->n].world_kind = world_kind; l->n++;
 }
 void ax_clone_into(AxiomList *dst, AxiomList *src) {
     ax_init(dst);
-    for (int i = 0; i < src->n; i++) ax_push(dst, src->a[i].vec, src->a[i].cmp, lin_clone(&src->a[i].rhs), src->a[i].is_sorted);
+    for (int i = 0; i < src->n; i++) ax_push(dst, src->a[i].vec, src->a[i].cmp, lin_clone(&src->a[i].rhs), src->a[i].is_sorted, src->a[i].world_kind);
 }
 
 /* Copy the axioms of vector `from` (in `src`) into `dst`, re-anchored on `to`. */
 void ax_copy_renamed(AxiomList *dst, AxiomList *src, const char *from, const char *to) {
     for (int i = 0; i < src->n; i++)
         if (strcmp(src->a[i].vec, from) == 0)
-            ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs), src->a[i].is_sorted);
+            ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs), src->a[i].is_sorted, src->a[i].world_kind);
 }
 
 /* vec_concat result: keep only the axioms BOTH operands share (same cmp+rhs),
@@ -33,13 +33,16 @@ static int lin_equal(Lin *a, Lin *b);
 void ax_intersect_two(AxiomList *dst, AxiomList *src, const char *v, const char *w, const char *to) {
     for (int i = 0; i < src->n; i++) {
         if (strcmp(src->a[i].vec, v) != 0) continue;
-        /* sorted(v) ∧ sorted(w) does not imply sorted(v ++ w) — never transfer */
-        if (src->a[i].is_sorted) continue;
+        /* sorted(v) ∧ sorted(w) does not imply sorted(v ++ w) — never transfer.
+         * W2.8: световните аксиоми също (concat на handle-и не е световна
+         * операция — по-добре пропуснато знание, отколкото измислено). */
+        if (src->a[i].is_sorted || src->a[i].world_kind) continue;
         for (int j = 0; j < src->n; j++)
             if (strcmp(src->a[j].vec, w) == 0 && !src->a[j].is_sorted &&
+                !src->a[j].world_kind &&
                 src->a[j].cmp == src->a[i].cmp &&
                 lin_equal(&src->a[i].rhs, &src->a[j].rhs)) {
-                ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs), 0);
+                ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs), 0, 0);
                 break;
             }
     }
@@ -379,6 +382,10 @@ Node *g_prog = NULL;
 const char *g_caller_name = NULL;
 int g_call_ctr = 0;
 int g_handle_ctr = 0;    /* M14: fresh __hN / __chN handle vars */
+int g_recv_world_kind = 0;   /* W2.8: договор за свят, получен през chan_recv —
+                              * 0=няма, 1=frozen, 3=owned. eval_par_call го
+                              * слага, LET-вързането го консумира и регистрира
+                              * HK_WORLD под името на променливата. */
 int g_partial = 0;        /* direct self-recursion seen during symexec */
 int g_term = 0;           /* spec carries a decreases measure (M6) */
 int g_term_failed = 0;    /* some termination obligation is not PROVEN */
@@ -659,6 +666,11 @@ static int has_unsupported_rec(Node *n, int flat, int in_expr) {
             for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
             return 0;
         }
+        /* W2.8: ghost договорът за свят е АНОТАЦИЯ, не извикване —
+         * `world_frozen(c[*])` в invariant/requires и `world_frozen(p)` в
+         * requires минават като sorted(v) (vacuous TRUE в скаларния фрагмент,
+         * а смисълът им е в extract_elem_axiom / extract_world_ghost). */
+        if (is_world_contract_call(n) && !world_builtin_shadowed(n->callee->name)) return 0;
         /* W0: world_freeze/world_free — statement-level дисциплина като drop
          * (никога в цикъл или вложен в израз). */
         if (is_world_stmt_call(n)) {

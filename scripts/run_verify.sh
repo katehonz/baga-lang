@@ -300,6 +300,19 @@ grep -q "ok_mutable_fill:" /tmp/baga_verify_out.txt && grep -q "ok_fill_caller:"
 	&& ! grep -q "извикване.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 	&& echo "OK: worlds_contract — W2.7: задължителен договор за world-параметър — world_mutable дава запис без промяна на собствеността (freeze/free/handoff са обречени), world_owned прехвърля собствеността (sink-ът е легален, употребата след това е use-after-move), предаване на свят без договор и на заеман свят като owned са обречени" \
 	|| { echo "FAIL: worlds_contract"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/worlds_chan.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "chan_reader:" /tmp/baga_verify_out.txt && grep -q "ok_chan_frozen:" /tmp/baga_verify_out.txt \
+	&& grep -q "chan_sink:" /tmp/baga_verify_out.txt && grep -q "ok_chan_owned:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_chan_reader_writes:" /tmp/baga_verify_out.txt && grep -q "bad_use_after_chan_owned:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^7$' \
+	&& grep -q "извикване (елементен/канален инвариант на 'chan_reader' при извикване): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "извикване (елементен/канален инвариант на 'chan_sink' при извикване): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (mutate-after-freeze: world_alloc върху замразен 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (world_free на заеман свят 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (използване след move на 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "елементен/канален инвариант на 'chan_reader' при извикване): НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& echo "OK: worlds_chan — W2.8: канален договор за свят (M16 rely–guarantee) — инвариантът на изпращача се разтоваря при spawn, а chan_recv регистрира получения свят като HK_WORLD (frozen → заемане за четене, owned → собственост); запис или free в получен замразен свят е обречен, лъжлив инвариант дава честен UNKNOWN, не ДОКАЗАНО" \
+	|| { echo "FAIL: worlds_chan"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
 	&& grep -q "контрапример: n = 9223372036854775807" /tmp/baga_verify_out.txt \

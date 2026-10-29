@@ -637,6 +637,7 @@ static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
 
 Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     const char *nm = call->callee->name;
+    g_recv_world_kind = 0;   /* W2.8: само този recv може да го сложи */
 
     /* M17: pair-returning channel APIs */
     if (strncmp(nm, "chan_select2", 12) == 0 || strcmp(nm, "chan_recv2") == 0 ||
@@ -851,6 +852,14 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
         if (key)
             for (int i = 0; i < st->ax.n; i++) {
                 if (st->ax.a[i].is_sorted || strcmp(st->ax.a[i].vec, key) != 0) continue;
+                if (st->ax.a[i].world_kind) {
+                    /* W2.8: договорът от канала се предава на let-името, под
+                     * което ще се регистрира HK_WORLD (виж g_recv_world_kind в
+                     * symexec_stmts) — ghost-ите са по ИМЕ на променливата, а
+                     * recv връща вътрешна __cN стойност. */
+                    g_recv_world_kind = st->ax.a[i].world_kind;
+                    continue;
+                }
                 cl_push(&st->path, axiom_instantiate(&st->ax.a[i], rv));
             }
         wf_check_recv(st, ob, e);   /* M19: wait-for */
@@ -858,16 +867,6 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     }
     /* chan_send */
     if (e) { wf_check_send(st, ob, e); e->n_send++; }   /* M24: full-buffer */
-    /* W0/W2.4: изпращане на свят през канал. Mutable = прехвърляне на
-     * собствеността (move, Pony iso) — всяка по-нататъшна локална употреба е
-     * use-after-move. Frozen = споделена read-only capability: локалните
-     * четения остават легални, но приемникът не може да се join-ва, затова
-     * споделбата е перманентна и `world_free` след това е ОБРОЧЕНО. */
-    if (call->args.len >= 2 && call->args.data[1] && call->args.data[1]->kind == NODE_IDENT) {
-        HandleEntry *we = handles_find(&st->handles, call->args.data[1]->name);
-        if (we && we->kind == HK_WORLD)
-            world_handoff(st, ob, we, "chan_send", 0, 0);   /* W2.6: каналът не се join-ва */
-    }
     Sym v = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
     /* M16: the payload must provably satisfy every content axiom anchored on
      * this channel; an axiom that cannot be discharged is dropped (M3 rule —
@@ -878,12 +877,19 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
         if (key && st->ax.n > 0) {
             AxiomList kept; ax_init(&kept);
             for (int i = 0; i < st->ax.n; i++) {
-                if (!st->ax.a[i].is_sorted && strcmp(st->ax.a[i].vec, key) == 0) {
-                    if (axiom_holds_for_value(&st->ax.a[i], &v, st))
-                        ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), 0);
+                ElemAxiom *a = &st->ax.a[i];
+                if (strcmp(a->vec, key) == 0 && !a->is_sorted) {
+                    /* W2.8: каналният договор за свят оцелява само ако
+                     * payload-ът НАИСТИНА е такъв свят; иначе отпада и
+                     * получателят честно не получава нищо (M16 drop rule). */
+                    int survives = a->world_kind
+                        ? world_axiom_holds(st, call->args.data[1], a->world_kind)
+                        : axiom_holds_for_value(a, &v, st);
+                    if (survives)
+                        ax_push(&kept, a->vec, a->cmp, lin_clone(&a->rhs), a->is_sorted, a->world_kind);
                     /* else: dropped (sound) */
                 } else {
-                    ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
+                    ax_push(&kept, a->vec, a->cmp, lin_clone(&a->rhs), a->is_sorted, a->world_kind);
                 }
             }
             ax_free(&st->ax);
@@ -891,6 +897,19 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
         }
     }
     lin_free(&v.lin);
+    /* W0/W2.4: изпращане на свят през канал. Mutable = прехвърляне на
+     * собствеността (move, Pony iso) — всяка по-нататъшна локална употреба е
+     * use-after-move. Frozen = споделена read-only capability: локалните
+     * четения остават легални, но приемникът не може да се join-ва, затова
+     * споделбата е перманентна и `world_free` след това е ОБРОЧЕНО.
+     * W2.8: ръчката минава СЛЕД аксиомния филтър — `world_owned(c[*])` се
+     * проверява върху състоянието ПРЕДИ предаването (иначе move-ът вече е
+     * направил света state 3 и договорът отпада, макар да е спазен). */
+    if (call->args.len >= 2 && call->args.data[1] && call->args.data[1]->kind == NODE_IDENT) {
+        HandleEntry *we = handles_find(&st->handles, call->args.data[1]->name);
+        if (we && we->kind == HK_WORLD)
+            world_handoff(st, ob, we, "chan_send", 0, 0);   /* W2.6: каналът не се join-ва */
+    }
     char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
     if (e && e->state == 1) {
         /* known closed: send definitely fails → s == -1 */

@@ -551,6 +551,19 @@ int world_contract_of(Node *e) {
     return 0;
 }
 
+/* W2.8: име на договор за свят без значение от вида на аргумента —
+ * `world_frozen(p)` е договор за параметър (W2.1/W2.7), а
+ * `world_frozen(c[*])` е КАНАЛНА аксиома (M16 rely–guarantee за светове).
+ * И двете са ghost, значи в скаларния фрагмент са vacuous TRUE (или UNKNOWN
+ * под отрицание), а не линейно ограничение. */
+int is_world_contract_call(Node *e) {
+    if (!e || e->kind != NODE_CALL || !e->callee || e->callee->kind != NODE_IDENT ||
+        e->args.len != 1) return 0;
+    const char *nm = e->callee->name;
+    return strcmp(nm, "world_frozen") == 0 || strcmp(nm, "world_mutable") == 0 ||
+           strcmp(nm, "world_owned") == 0;
+}
+
 int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated, Formula *out) {
     if (!e) return 0;
     if (e->kind == NODE_BOOL_LIT) {
@@ -566,8 +579,9 @@ int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated
         if (negated) return 0;   /* ¬sorted is outside the scalar fragment */
         f_init(out); ConsList cl; cl_init(&cl); f_push_branch(out, cl); return 1;
     }
-    /* W2.1: world_frozen(w) е ghost (HK_WORLD), не скаларно ограничение */
-    if (is_world_ghost_call(e)) {
+    /* W2.1/W2.8: договорът за свят е ghost (HK_WORLD или канална аксиома), не
+     * скаларно ограничение — положително → TRUE, отрицание → UNKNOWN */
+    if (is_world_contract_call(e)) {
         if (negated) return 0;   /* ¬world_frozen is outside the fragment */
         f_init(out); ConsList cl; cl_init(&cl); f_push_branch(out, cl); return 1;
     }

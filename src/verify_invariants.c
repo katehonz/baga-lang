@@ -28,8 +28,7 @@ const char *resolve_key(Node *act, State *st, char *buf, size_t n) {
 }
 
 /* Does the caller state hold an axiom on `key` entailing (cmp, rhs)? */
-static int axiom_entailed(State *st, const char *key, ElemCmp cmp, Lin *rhs, int is_sorted) {
-    for (int i = 0; i < st->ax.n; i++) {
+static int axiom_entailed(State *st, const char *key, ElemCmp cmp, Lin *rhs, int is_sorted) {    for (int i = 0; i < st->ax.n; i++) {
         ElemAxiom *a = &st->ax.a[i];
         if (strcmp(a->vec, key) != 0) continue;
         if (is_sorted) { if (a->is_sorted) return 1; continue; }
@@ -48,11 +47,40 @@ static int axiom_entailed(State *st, const char *key, ElemCmp cmp, Lin *rhs, int
     return 0;
 }
 
+/* W2.8: дали извикващият държи канална аксиома за свят със същия договор.
+ * Точното съвпадение е съзнателно: frozen не следва от owned и обратно —
+ * правата са различни, няма импликация, която да не измисляме. */
+int axiom_world_entailed(State *st, const char *key, int kind) {
+    for (int i = 0; i < st->ax.n; i++) {
+        ElemAxiom *a = &st->ax.a[i];
+        if (a->world_kind == kind && strcmp(a->vec, key) == 0) return 1;
+    }
+    return 0;
+}
+
+/* W2.8: дали payload-ът наистина удовлетворява каналния договор за свят.
+ * Проверява се ghost състоянието на ИМЕНТО (светът не е Lin стойност):
+ *   frozen(1) — замразен, жив свят;
+ *   owned(3)  — жив, мутабелен, НЕзаеман, без читатели и без входящи връзки
+ *               (приемащият става единствен собственик и може да free-не).
+ * Неспазването НЕ е обвинение — аксиомата просто отпада (M16 drop rule) и
+ * получателят честно не получава никакъв договор. */
+int world_axiom_holds(State *st, Node *payload, int kind) {
+    if (!payload || payload->kind != NODE_IDENT) return 0;
+    HandleEntry *we = handles_find(&st->handles, payload->name);
+    if (!we || we->kind != HK_WORLD) return 0;
+    if (kind == 1) return we->state == 1;
+    if (kind == 3)
+        return we->state == 0 && !we->borrowed && we->n_shared == 0 &&
+               !wlink_owner_of(&st->handles, we->var);
+    return 0;
+}
+
 void ax_drop_key(AxiomList *ax, const char *key) {
     AxiomList kept; ax_init(&kept);
     for (int i = 0; i < ax->n; i++)
         if (strcmp(ax->a[i].vec, key) != 0)
-            ax_push(&kept, ax->a[i].vec, ax->a[i].cmp, lin_clone(&ax->a[i].rhs), ax->a[i].is_sorted);
+            ax_push(&kept, ax->a[i].vec, ax->a[i].cmp, lin_clone(&ax->a[i].rhs), ax->a[i].is_sorted, ax->a[i].world_kind);
     ax_free(ax);
     *ax = kept;
 }
@@ -65,6 +93,12 @@ static int elem_req_mentions(Node *e, const char *name) {
     if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
         strcmp(e->callee->name, "sorted") == 0 && e->args.len == 1)
         return e->args.data[0]->kind == NODE_IDENT && strcmp(e->args.data[0]->name, name) == 0;
+    /* W2.8: `world_frozen(c[*])` споменава параметъра c (каналната аксиома
+     * се разтоварва срещу аксиомите на извикващия за същия канал) */
+    if (is_world_contract_call(e) && e->args.data[0]->kind == NODE_ELEM_REF) {
+        Node *eo = e->args.data[0]->elem_obj;
+        return eo && eo->kind == NODE_IDENT && strcmp(eo->name, name) == 0;
+    }
     if (e->kind == NODE_BINARY) return elem_req_mentions(e->left, name) || elem_req_mentions(e->right, name);
     if (e->kind == NODE_UNARY) return elem_req_mentions(e->operand, name);
     return 0;
@@ -76,6 +110,22 @@ void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax);
  * anchoring on the object's RESOLVED symbolic var; falls back to the M3
  * source-name extraction (local vecs). Returns 0 if not extractable. */
 int extract_axiom_resolved(Node *e, State *st) {
+    /* W2.8: канална аксиома за свят (`invariant world_frozen(c[*])`). Ключът се
+     * РЕЗОЛВИРА — каналът е ghost handle (__chN), не името от източника, точно
+     * както при скаларните инварианти по-долу; иначе send-ът и spawn-ът търсят
+     * аксиомата под различни имена и договорът никога не се разтоваря. */
+    if (is_world_contract_call(e) && e->args.data[0]->kind == NODE_ELEM_REF) {
+        Node *eo = e->args.data[0]->elem_obj;
+        const char *fn = e->callee->name;
+        int kind = strcmp(fn, "world_frozen") == 0 ? 1 :
+                   strcmp(fn, "world_owned") == 0 ? 3 : 0;
+        char kbuf[64];
+        const char *key = (eo && kind) ? resolve_key(eo, st, kbuf, sizeof kbuf) : NULL;
+        if (!key) return 0;
+        Lin dummy; lin_init(&dummy);
+        ax_push(&st->ax, key, EC_LE, dummy, 0, kind);
+        return 1;
+    }
     if (e && e->kind == NODE_BINARY) {
         BinOp op = e->bin_op;
         if (op == OP_LT || op == OP_LE || op == OP_GT || op == OP_GE) {
@@ -98,7 +148,7 @@ int extract_axiom_resolved(Node *e, State *st) {
                             switch (op) { case OP_LT: cmp = EC_GT; break; case OP_LE: cmp = EC_GE; break;
                                           case OP_GT: cmp = EC_LT; break; default: cmp = EC_LE; break; }
                         }
-                        ax_push(&st->ax, key, cmp, s.lin, 0);
+                        ax_push(&st->ax, key, cmp, s.lin, 0, 0);
                         return 1;
                     }
                     lin_free(&s.lin);
@@ -152,15 +202,17 @@ void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
             for (int i = 0; i < st->ax.n; i++) {
                 if (strcmp(st->ax.a[i].vec, vname) == 0) {
                     int survives;
-                    if (st->ax.a[i].is_sorted)
+                    if (st->ax.a[i].world_kind)
+                        survives = world_axiom_holds(st, e->args.data[1], st->ax.a[i].world_kind);   /* W2.8 */
+                    else if (st->ax.a[i].is_sorted)
                         survives = state_proves_all_le(st, vname, &val);   /* sorted: need all old <= val */
                     else
                         survives = axiom_holds_for_value(&st->ax.a[i], &val, st);
                     if (survives)
-                        ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
+                        ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted, st->ax.a[i].world_kind);
                     /* else: dropped (sound — we no longer know it holds) */
                 } else {
-                    ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
+                    ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted, st->ax.a[i].world_kind);
                 }
             }
             lin_free(&val.lin);
@@ -233,15 +285,18 @@ void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
             if (strcmp(st->ax.a[i].vec, vname) == 0) {
                 int survives = 0;
                 /* sorted: a mid-vector write can break order; drop (sound).
-                 * Element axioms: keep iff the new value still satisfies P. */
-                if (!st->ax.a[i].is_sorted && e->args.len >= 3) {
+                 * Element axioms: keep iff the new value still satisfies P.
+                 * W2.8: световните аксиоми — по ghost състоянието на payload-а. */
+                if (st->ax.a[i].world_kind && e->args.len >= 3) {
+                    survives = world_axiom_holds(st, e->args.data[2], st->ax.a[i].world_kind);
+                } else if (!st->ax.a[i].is_sorted && e->args.len >= 3) {
                     Sym val = se_from_ast(e->args.data[2], &st->env, &st->vlen, &st->reads);
                     survives = axiom_holds_for_value(&st->ax.a[i], &val, st);
                     lin_free(&val.lin);
                 }
-                if (survives) ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
+                if (survives) ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted, st->ax.a[i].world_kind);
             } else {
-                ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
+                ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted, st->ax.a[i].world_kind);
             }
         }
         ax_free(&st->ax);
@@ -956,7 +1011,9 @@ Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *caller_na
                     if (!elem_req_mentions(req, cfn->params.data[j]->param_name)) continue;
                     char kbuf[64];
                     const char *key = resolve_key(call->args.data[j], st, kbuf, sizeof kbuf);
-                    if (key) ok = axiom_entailed(st, key, tmp.a[0].cmp, &tmp.a[0].rhs, tmp.a[0].is_sorted);
+                    if (key) ok = tmp.a[0].world_kind
+                        ? axiom_world_entailed(st, key, tmp.a[0].world_kind)   /* W2.8 */
+                        : axiom_entailed(st, key, tmp.a[0].cmp, &tmp.a[0].rhs, tmp.a[0].is_sorted);
                 }
             }
             ax_free(&tmp);

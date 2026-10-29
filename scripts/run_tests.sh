@@ -623,6 +623,17 @@ else
 	exit 1
 fi
 
+# W2.8: world_mutable през канал няма смисъл — предаването не е синхронно.
+printf 'spec r1 {\n    input:\n        c: i64\n    output: i64\n    requires:\n        world_mutable(c[*])\n    ensures:\n        output >= 0\n}\n\nfn r1(c: i64) -> i64 !Par {\n    let w = chan_recv(c)\n    return c - c\n}\n\nfn main() {\n    print("x")\n}\n' > /tmp/baga_w28_mutchan.baga
+RC=0
+run --check /tmp/baga_w28_mutchan.baga > /tmp/baga_w28_mutchan_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "не важи за канал" /tmp/baga_w28_mutchan_out.txt; then
+	echo "OK: world_mutable(c[*]) — compile грешка (каналът не е синхронен)"
+else
+	echo "FAIL: world_mutable през канал трябваше да е compile грешка"
+	cat /tmp/baga_w28_mutchan_out.txt
+	exit 1
+fi
 # Два различни договора за един параметър правят функцията неизвикваема (всеки
 # аргумент е обречен от някой от двата discharge-а) — затова е compile грешка.
 printf 'spec two {\n    input:\n        ctx: i64\n    output: i64\n    requires:\n        world_frozen(ctx) && world_owned(ctx)\n    ensures:\n        output >= 0\n}\n\nfn two(ctx: i64) -> i64 {\n    return ctx - ctx\n}\n\nfn main() {\n    print("x")\n}\n' > /tmp/baga_w27_conflict.baga

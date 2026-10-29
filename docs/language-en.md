@@ -1306,6 +1306,14 @@ invalidates nothing:
   calls and `go`/`go_bg`); `chan_send` is the exception — its receiver is outside
   the model. `--test-specs` skips specs with a world contract (a random i64 is
   not a handle).
+- W2.8: a channel contract for worlds — the sender declares
+  `invariant world_frozen(c[*])` (or `world_owned(c[*])`), the worker requires
+  `requires: world_frozen(c[*])`, and `let w = chan_recv(c)` registers `w` as a
+  world with that contract (frozen → borrowed read access: writes and free are
+  REFUTED; owned → ownership: the sink may freeze and free). The axiom survives
+  `chan_send` only if the payload really is such a world; otherwise it is
+  dropped and the receiver honestly gets nothing. `world_mutable(c[*])` is a
+  compile error — a channel hand-off is not synchronous.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

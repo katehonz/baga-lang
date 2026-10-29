@@ -42,7 +42,14 @@ typedef struct { IBind *b; int n; } IEnv;
 typedef struct { ConsList path; ConsList bound; ConsList read_cons; Sym ret; VLenMap vlen; ProdList prods; int bad; int kind; char *label; int akind; Lin aux1, aux2; } Obligation;
 typedef struct { Obligation *o; int n, cap; } Obligations;
 typedef enum { EC_LT, EC_LE, EC_GT, EC_GE } ElemCmp;
-typedef struct { char *vec; ElemCmp cmp; Lin rhs; int is_sorted; } ElemAxiom;
+typedef struct {
+    char *vec; ElemCmp cmp; Lin rhs; int is_sorted;
+    /* W2.8: 0 = скаларна/sorted аксиома; 1 = world_frozen(елемента);
+     * 3 = world_owned(елемента). Светът не е скалар, затова аксиомата не
+     * става Constraint — при recv регистрира HK_WORLD за получената стойност,
+     * а при send оцелява само ако payload-ът наистина е такъв свят. */
+    int world_kind;
+} ElemAxiom;
 typedef struct { ElemAxiom *a; int n, cap; } AxiomList;
 typedef struct {
     char *var; int kind; int state; Lin result;
@@ -122,6 +129,7 @@ extern int * g_inv_proven;
 extern int g_inv_n;
 extern int g_inv_cap;
 extern int g_havoc_ctr;
+extern int g_recv_world_kind;   /* W2.8 */
 extern int g_json;
 extern int g_json_first;
 
@@ -199,7 +207,10 @@ void obl_free(Obligation *o);   /* 1099 */
 int find_bound_witness(Obligation *obl, IBind **witness, int *wn);   /* 1110 */
 void ax_init(AxiomList *l);   /* 1227 */
 void ax_free(AxiomList *l);   /* 1228 */
-void ax_push(AxiomList *l, const char *vec, ElemCmp cmp, Lin rhs, int is_sorted);   /* 1229 */
+void ax_push(AxiomList *l, const char *vec, ElemCmp cmp, Lin rhs, int is_sorted, int world_kind);   /* 1229 */
+int axiom_world_entailed(State *st, const char *key, int kind);   /* W2.8 */
+int world_axiom_holds(State *st, Node *payload, int kind);   /* W2.8 */
+int is_world_contract_call(Node *e);   /* W2.8: име на договор, без значение аргументът */
 void ax_clone_into(AxiomList *dst, AxiomList *src);   /* 1233 */
 void ax_copy_renamed(AxiomList *dst, AxiomList *src, const char *from, const char *to);   /* 1239 */
 void ax_intersect_two(AxiomList *dst, AxiomList *src, const char *v, const char *w, const char *to);   /* 1248 */

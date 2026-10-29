@@ -574,6 +574,11 @@ int has_elem_ref(Node *e) {
     if (!e) return 0;
     if (e->kind == NODE_ELEM_REF) return 1;
     if (is_sorted_call(e)) return 1;   /* relational axiom, not a scalar inv */
+    /* W2.8: `world_frozen(c[*])` / `world_owned(c[*])` е канална аксиома за
+     * свят, не скаларно твърдение — иначе invariant-ът минава по скаларния път
+     * (vacuous TRUE) и аксиомата изобщо не се регистрира, а requires-ът се
+     * „доказва" празно. */
+    if (is_world_contract_call(e) && e->args.data[0]->kind == NODE_ELEM_REF) return 1;
     if (e->kind == NODE_BINARY) return has_elem_ref(e->left) || has_elem_ref(e->right);
     if (e->kind == NODE_UNARY) return has_elem_ref(e->operand);
     return 0;
@@ -583,12 +588,27 @@ int has_elem_ref(Node *e) {
  * Also recognizes the relational predicate `sorted(v)`. */
 void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax) {
     if (!e) return;
+    /* W2.8: world_frozen(c[*]) / world_owned(c[*]) — канална аксиома за свят
+     * (rely–guarantee: изпращачът я доказва при send, получателят я получава
+     * при recv като HK_WORLD договор). world_mutable през канал няма смисъл —
+     * предаването не е синхронно; checker-ът го отказва. */
+    if (is_world_contract_call(e) && e->args.data[0]->kind == NODE_ELEM_REF) {
+        Node *eo = e->args.data[0]->elem_obj;
+        if (!eo || eo->kind != NODE_IDENT) return;
+        const char *fn = e->callee->name;
+        int kind = strcmp(fn, "world_frozen") == 0 ? 1 :
+                   strcmp(fn, "world_owned") == 0 ? 3 : 0;
+        if (!kind) return;   /* world_mutable през канал: checker-ът го отказва */
+        Lin dummy; lin_init(&dummy);
+        ax_push(ax, eo->name, EC_LE, dummy, 0, kind);
+        return;
+    }
     /* sorted(v) — relational axiom */
     if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
         strcmp(e->callee->name, "sorted") == 0 && e->args.len == 1 &&
         e->args.data[0]->kind == NODE_IDENT) {
         Lin dummy; lin_init(&dummy);
-        ax_push(ax, e->args.data[0]->name, EC_LE, dummy, 1);
+        ax_push(ax, e->args.data[0]->name, EC_LE, dummy, 1, 0);
         return;
     }
     if (e->kind != NODE_BINARY) return;
@@ -609,7 +629,7 @@ void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax) {
         switch (op) { case OP_LT: cmp = EC_GT; break; case OP_LE: cmp = EC_GE; break;
                       case OP_GT: cmp = EC_LT; break; default: cmp = EC_LE; break; }
     }
-    ax_push(ax, eref->elem_obj->name, cmp, s.lin, 0);
+    ax_push(ax, eref->elem_obj->name, cmp, s.lin, 0, 0);
 }
 
 /* W2.1: `requires: world_frozen(p)` — p влиза в тялото като HK_WORLD в

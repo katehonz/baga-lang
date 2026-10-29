@@ -1,0 +1,191 @@
+// worlds_chan.baga — W2.8: канален договор за свят (discharge при chan_recv).
+//
+// Механизмът е M16 rely–guarantee, приложен към светове:
+//   • изпращачът декларира `invariant world_frozen(c[*])` (или world_owned) —
+//     аксиомата оцелява при `chan_send` САМО ако payload-ът наистина е такъв
+//     свят; иначе отпада (M16 drop rule) и получателят честно не получава
+//     нищо;
+//   • работникът декларира `requires: world_frozen(c[*])` — при spawn
+//     изискването се разтоваря срещу аксиомите на извикващия за същия канал;
+//   • `chan_recv` инстанцира аксиомата: получената стойност става HK_WORLD с
+//     договора от канала. frozen → заемане за четене (без free, без
+//     препредаване без join — W2.4/W2.6); owned → прехвърлена собственост
+//     (sink-ът може да freeze-не и free-не — W2.7).
+//
+// `world_mutable` през канал няма смисъл (предаването не е синхронно) и е
+// compile грешка. Приемникът е една функция — много потребители на един свят
+// през канал остават извън модела (W2).
+//
+//   ./baga --verify examples/verify/worlds_chan.baga
+
+spec chan_reader {
+    input:
+        c: i64
+    output: i64
+    requires:
+        world_frozen(c[*])
+    ensures:
+        output >= 0
+}
+
+// Получателят чете: договорът от канала регистрира получения свят като
+// замразен, значи четците са легални и ensure-ът е доказуем.
+fn chan_reader(c: i64) -> i64 !Par {
+    let w = chan_recv(c)
+    let s = world_state(w)
+    let u = world_used(w)
+    let n = wcache_len(w)
+    return c - c
+}
+
+spec ok_chan_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Легалният поток: замрази → декларирай → изпрати → работник-читател → join.
+fn ok_chan_frozen(n: i64) -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 5)
+    world_freeze(w)
+    let c = chan_new(1)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    chan_close(c)
+    let h = go(chan_reader, c)
+    let r = join(h)
+    return r - r
+}
+
+spec bad_chan_reader_writes {
+    input:
+        c: i64
+    output: i64
+    requires:
+        world_frozen(c[*])
+    ensures:
+        output >= 0
+}
+
+// Полученият свят е замразен по договор — запис в него е mutate-after-freeze,
+// ОБРОЧЕНО в тялото на получателя (преди W2.8 тук нямаше никакъв ghost).
+fn bad_chan_reader_writes(c: i64) -> i64 !Par {
+    let w = chan_recv(c)
+    let p = world_alloc(w, 16)
+    return c - c
+}
+
+spec bad_chan_reader_frees {
+    input:
+        c: i64
+    output: i64
+    requires:
+        world_frozen(c[*])
+    ensures:
+        output >= 0
+}
+
+// Договорът е за ЧЕТЕНЕ: free на получения свят е ОБРОЧЕНО (заеман е —
+// изпращачът или друг читател може още да го държи).
+fn bad_chan_reader_frees(c: i64) -> i64 !Par {
+    let w = chan_recv(c)
+    world_free(w)
+    return 0
+}
+
+spec bad_chan_mutable_sent {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Лъжлив инвариант: декларира frozen, а по пътя n = 0 изпраща МУТАБЕЛЕН свят.
+// Аксиомата отпада при send, изискването на работника не се разтоваря —
+// НЕ МОГА ДА РЕША (честно), не ДОКАЗАНО.
+fn bad_chan_mutable_sent(n: i64) -> i64 !Par {
+    let w = world_new()
+    if n > 0 {
+        world_freeze(w)
+    }
+    let c = chan_new(1)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    chan_close(c)
+    let h = go(chan_reader, c)
+    let r = join(h)
+    return r - r
+}
+
+spec chan_sink {
+    input:
+        c: i64
+    output: i64
+    requires:
+        world_owned(c[*])
+    ensures:
+        output >= 0
+}
+
+// Получател със собственост: sink-ът freeze-ва и освобождава света — легално,
+// защото договорът е world_owned (изпращачът го е изгубил при send).
+fn chan_sink(c: i64) -> i64 !Par {
+    let w = chan_recv(c)
+    world_freeze(w)
+    world_free(w)
+    return 0
+}
+
+spec ok_chan_owned {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Прехвърляне на собственост през канал: мутабелен свят, world_owned аксиома,
+// sink-ът го поема. Изпращачът не пипа handle-а повече.
+fn ok_chan_owned(n: i64) -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 7)
+    let c = chan_new(1)
+    invariant world_owned(c[*])
+    chan_send(c, w)
+    chan_close(c)
+    let h = go(chan_sink, c)
+    let r = join(h)
+    return r - r
+}
+
+spec bad_use_after_chan_owned {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// След като собствеността е прехвърлена, локалният handle е мъртъв — четене
+// след send е use-after-move, ОБРОЧЕНО.
+fn bad_use_after_chan_owned(n: i64) -> i64 !Par {
+    let w = world_new()
+    let c = chan_new(1)
+    invariant world_owned(c[*])
+    chan_send(c, w)
+    chan_close(c)
+    let s = world_state(w)
+    let h = go(chan_sink, c)
+    let r = join(h)
+    return r - r
+}
+
+fn main() {
+    print("worlds_chan: verify-only oracle")
+}

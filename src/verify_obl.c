@@ -668,6 +668,21 @@ void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvo
                 if (is_par_builtin_call(st->let_init)) {   /* M14: !Par */
                     Sym r = eval_par_call(st->let_init, &states->s[i], ob);
                     bind_sym(&states->s[i].env, st->let_name, r);
+                    /* W2.8: свят, получен през канал с договор от аксиомата на
+                     * изпращача — регистрира се под ИМЕТО НА ЛОКАЛА (ghost-ите
+                     * са по име, recv връща вътрешна __cN стойност). frozen е
+                     * заемане за четене (без free, делегиране само с join —
+                     * W2.4/W2.6), owned е прехвърлена собственост (sink-ът може
+                     * да freeze-не и free-не — W2.7). Аксиомата е оцеляла при
+                     * send-а, значи изпращачът я е доказал: не е допускане. */
+                    if (g_recv_world_kind) {
+                        int kind = g_recv_world_kind;
+                        g_recv_world_kind = 0;
+                        handles_set(&states->s[i].handles, st->let_name, HK_WORLD,
+                                    kind == 1 ? 1 : 0, NULL);
+                        HandleEntry *hw = handles_find(&states->s[i].handles, st->let_name);
+                        if (hw) { hw->wcontract = kind; hw->borrowed = kind == 1; }
+                    }
                     continue;
                 }
                 bind_sym(&states->s[i].env, st->let_name, se_from_ast(st->let_init, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads));

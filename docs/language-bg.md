@@ -1310,6 +1310,14 @@ print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
   през `go`/`go_bg`); `chan_send` е изключение — приемникът е извън модела.
   `--test-specs` пропуска spec-ове с договор за свят (произволен i64 не е
   handle).
+- W2.8: канален договор за свят — изпращачът декларира
+  `invariant world_frozen(c[*])` (или `world_owned(c[*])`), работникът изисква
+  `requires: world_frozen(c[*])`, а `let w = chan_recv(c)` регистрира `w` като
+  свят с този договор (frozen → заемане за четене: запис и free са ОБРОЧЕНИ;
+  owned → собственост: sink-ът може да freeze-не и free-не). Аксиомата оцелява
+  при `chan_send` само ако payload-ът наистина е такъв свят, иначе отпада и
+  получателят честно не получава нищо. `world_mutable(c[*])` е compile грешка —
+  предаването през канал не е синхронно.
 - Пълният дизайн-документ — модел, сравнение с Verona/Pony/Cyclone, bench,
   честни граници и пътна карта: `docs/worlds-bg.md`.
 
