@@ -964,7 +964,11 @@ static int expr_is_world(CheckCtx *ctx, Node *n) {
     if (n->kind == NODE_CALL && n->callee && n->callee->kind == NODE_IDENT &&
         !find_fn_rec(ctx, n->callee->name)) {
         const char *f = n->callee->name;
-        return (strcmp(f, "world_new") == 0 || strcmp(f, "world_load") == 0) ? 1 : 0;
+        /* W2.5: `world_linked(p, i)` връща handle на ЦЕЛТА — първокласен свят
+         * за seatbelt-а (двоен free, mutate-after-freeze, borrow-и). Кой точно
+         * свят е, статично не се знае, затова получава собствен region id. */
+        return (strcmp(f, "world_new") == 0 || strcmp(f, "world_load") == 0 ||
+                strcmp(f, "world_linked") == 0) ? 1 : 0;
     }
     return 0;
 }

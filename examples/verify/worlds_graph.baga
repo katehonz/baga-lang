@@ -1,0 +1,200 @@
+// worlds_graph.baga — W2.5: capability връзки между светове (ацикличен граф).
+//
+// `world_link(owner, target)` дава на owner способност към target — насочена
+// връзка, която се пази ИЗВЪН региона (handle-ите са указатели, не офсети),
+// затова dump/load не я носи и зареденият свят няма връзки.
+//
+// Правилата (ghost граф в HK_WORLD, path-sensitive):
+//   • целта НАДЖИВЯВА връзката: `world_free` на свързан свят е ОБРОЧЕНО
+//     (owner-ът остава с висящ handle → use-after-free); `world_unlink` или
+//     free на owner-а освобождава целта;
+//   • графът е АЦИКЛИЧЕН: `world_link` затварящ цикъл е ОБРОЧЕНО (цикълът
+//     прави и двата свята неосвободими — leak, не UB, затова при изчерпан
+//     бюджет за обхождане верификаторът мълчи, никога не измисля);
+//   • връзките се строят преди freeze: `world_link`/`world_unlink` върху
+//     замразен свят е ОБРОЧЕНО (таблицата не се пипа от две нишки);
+//   • свързан свят не се предава на друг изпълнител: приемникът може да го
+//     освободи или препредаде, а owner-ът разчита, че целта е жива.
+//
+// Runtime-ът спазва същите правила с чисти грешки (linked_by брояч и bounded
+// DFS за цикъла) — виж probes в scripts/run_tests.sh.
+//
+//   ./baga --verify examples/verify/worlds_graph.baga
+
+spec ok_graph {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Чист граф: родител-индекс сочещ към дете-данни, четене през връзката след
+// freeze, после free на родителя (връзките му умират с него) и на детето.
+fn ok_graph(n: i64) -> i64 {
+    let p = world_new()
+    let c = world_new()
+    let vc = wvec_new(c)
+    wvec_push(c, vc, 7)
+    world_link(p, c)
+    world_freeze(c)
+    world_freeze(p)
+    let x = wvec_get(world_linked(p, 0), vc, 0)
+    world_free(p)
+    world_free(c)
+    return n - n
+}
+
+spec ok_unlink_then_free {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// unlink освобождава целта — после free на детето е легален.
+fn ok_unlink_then_free(n: i64) -> i64 {
+    let p = world_new()
+    let c = world_new()
+    world_link(p, c)
+    world_unlink(p, c)
+    world_free(c)
+    world_free(p)
+    return n - n
+}
+
+spec ok_deep_chain {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Верига p → c → g (не цикъл). Освобождаването върви по обратния ред: free на
+// родител освобождава децата му, така че p → c → g се разпада без unlink.
+fn ok_deep_chain(n: i64) -> i64 {
+    let p = world_new()
+    let c = world_new()
+    let g = world_new()
+    world_link(p, c)
+    world_link(c, g)
+    world_free(p)
+    world_free(c)
+    world_free(g)
+    return n - n
+}
+
+spec bad_free_linked_child {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Целта надживява връзката: free на свързано дете оставя родителския handle
+// висящ (world_linked/wvec_* → use-after-free). ОБРОЧЕНО по пътя n > 0.
+fn bad_free_linked_child(n: i64) -> i64 {
+    let p = world_new()
+    let c = world_new()
+    world_link(p, c)
+    if n > 0 {
+        world_free(c)
+    }
+    world_free(p)
+    return n - n
+}
+
+spec bad_link_cycle {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Цикъл: след a → b и b → a нито един свят не може да бъде освободен.
+// ОБРОЧЕНО по пътя n > 0 (ацикличността е инвариант на графа, не на пътя).
+fn bad_link_cycle(n: i64) -> i64 {
+    let a = world_new()
+    let b = world_new()
+    world_link(a, b)
+    if n > 0 {
+        world_link(b, a)
+    }
+    return n - n
+}
+
+spec bad_self_link {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Самовръзката е цикъл с дължина 1 — също ОБРОЧЕНО.
+fn bad_self_link(n: i64) -> i64 {
+    let a = world_new()
+    if n > 0 {
+        world_link(a, a)
+    }
+    return n - n
+}
+
+spec bad_link_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Графът се строи преди freeze: връзка върху замразен свят е ОБРОЧЕНО
+// (таблицата би се пипала от две нишки без заключване). Freeze е в then-клона,
+// затова checker-ът (W1.6) мълчи, а верификаторът оборва пътя n > 0.
+fn bad_link_frozen(n: i64) -> i64 {
+    let p = world_new()
+    let c = world_new()
+    if n > 0 {
+        world_freeze(p)
+    }
+    world_link(p, c)
+    return n - n
+}
+
+spec bad_handoff_linked {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Свързан свят не се предава: приемникът може да го освободи или препредаде, а
+// owner-ът разчита, че целта е жива. ОБРОЧЕНО (дори светът да е замразен).
+fn bad_handoff_linked(n: i64) -> i64 !Par {
+    let p = world_new()
+    let c = world_new()
+    world_link(p, c)
+    world_freeze(c)
+    let h = go(graph_worker, c)
+    let r = join(h)
+    return r - r
+}
+
+fn graph_worker(ctx: i64) -> i64 !Par {
+    return ctx - ctx
+}
+
+fn main() {
+    print(ok_graph(1))
+    print(ok_unlink_then_free(1))
+    print(ok_deep_chain(1))
+    print(bad_free_linked_child(0))
+    print(bad_link_cycle(0))
+    print(bad_self_link(0))
+    print(bad_link_frozen(0))
+}

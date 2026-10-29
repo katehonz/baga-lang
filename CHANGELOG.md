@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### W2.5 — светове: capability връзки между светове (ацикличен граф)
+- `world_link(owner, target)` / `world_unlink(o, t)` / `world_links(o)` /
+  `world_linked(o, i)` — насочена способност от един свят към друг. Таблицата е
+  ИЗВЪН региона (прикачена към handle-а като wcache), защото handle-ите са
+  указатели, не офсети: dump/load не я носи и зареденият свят няма връзки
+  (съзнателно — позиционната независимост на региона е по-ценна).
+- Четири правила, проверени и статично, и в runtime-а:
+  1. **Целта надживява връзката** — `world_free` на свързан свят е ОБРОЧЕНО
+     (owner-ът остава с висящ handle → use-after-free при world_linked/wvec_*);
+     runtime-ът пази `linked_by` брояч и дава чиста грешка. `unlink` или free
+     на owner-а освобождава целта (free на родител разпада веригата p → c → g).
+  2. **Графът е ацикличен** — `world_link` затварящ цикъл (вкл. самовръзка) е
+     ОБРОЧЕНО; runtime-ът прави bounded DFS и дава чиста грешка. Цикълът е
+     leak, не UB — затова при изчерпан бюджет верификаторът МЪЛЧИ (M8: никога
+     измислено обвинение).
+  3. **Връзките се строят преди freeze** — link/unlink върху замразен свят е
+     ОБРОЧЕНО и праволинейно compile грешка (W1.6 seatbelt-ът ги брои за
+     мутатори). Таблицата не е под mutex, защото при mutable owner той е
+     единствен.
+  4. **Свързан свят не се предава** — `go`/`chan_send` на сочен от някого свят е
+     ОБРОЧЕНО (приемникът може да го освободи или препредаде). Делегиране с
+     транзитивно отчитане е W2.
+- Верификатор: ghost граф в HandleEntry (`links[]`, deep-clone/free с
+  state-ите), `wlink_owner_of` за обратна връзка и `wlink_reaches` за цикъла
+  (bounded, path-sensitive); `world_link/unlink` влизат в op/expr/stmt
+  категориите, `world_links/linked` са четци.
+- `let c = world_linked(p, i)` е първокласен world handle за seatbelt-а
+  (`expr_is_world` го разпознава): двоен free, use-after-free и
+  mutate-after-freeze върху цел на връзката са compile грешки, а заеман низ от
+  нея умира с нея (W2.2). Кой точно свят е — статично не се знае, затова
+  получава собствен region id.
+- Оркъл `examples/verify/worlds_graph.baga`: 8 доказани ensures + 5 оброчени
+  протокола (ok_graph — четене през връзка след freeze и free по обратния ред,
+  ok_unlink_then_free, ok_deep_chain; bad_free_linked_child, bad_link_cycle,
+  bad_self_link, bad_link_frozen, bad_handoff_linked) + gate в run_verify.sh.
+  `tests/worlds_test.baga` расте с 8 проверки (links_zero/one, linked_handle,
+  read_through_link, loaded_no_links, graph_released). Пет runtime проби в
+  run_tests.sh (free на свързан свят, цикъл, самовръзка, link върху замразен,
+  world_linked out-of-bounds).
+- Docs: worlds-bg.md §3 (W2.5 subsection) + §5 (три нови граници) + §6,
+  language-bg/en.
+
 ### W2.4 — светове: замразен свят като споделена capability (N читателя)
 - Състоянието вече решава семантиката на предаването: **mutable свят = move**
   (изключителна собственост, Pony iso), **frozen свят = share** (read-only

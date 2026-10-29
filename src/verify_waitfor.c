@@ -923,6 +923,18 @@ static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
         push_protocol_violation(st, ob, label);
         return NULL;
     }
+    /* W2.5: свързан свят не се предава — owner-ът държи capability и разчита
+     * целта да е жива, а приемникът (без spec или с друг договор) може да я
+     * освободи или препредаде. Делегиране на capability е W2. */
+    {
+        const char *owner = wlink_owner_of(&st->handles, we->var);
+        if (owner) {
+            snprintf(label, sizeof label,
+                "%s на свързан свят '%s' — capability държи '%s'", op, we->var, owner);
+            push_protocol_violation(st, ob, label);
+            return NULL;
+        }
+    }
     if (we->state == 1) {
         /* W2.4: заеманото право на четене не се препредава — извикващият
          * join-ва САМО своя работник и после free-ва; внук-читател би останал
@@ -994,6 +1006,7 @@ void eval_world_call(Node *call, State *st, Obligations *ob) {
         }
     } else if (strcmp(op, "world_free") == 0) {
         if (e->state == 0 || e->state == 1) {
+            const char *owner = wlink_owner_of(&st->handles, e->var);   /* W2.5 */
             /* W2.4: получател с `requires: world_frozen` държи ЗАЕМАН свят —
              * собствеността е у извикващия, значи free тук би съблякъл региона
              * под останалите читатели (и под самия извикващ). */
@@ -1007,13 +1020,58 @@ void eval_world_call(Node *call, State *st, Obligations *ob) {
                     "world_free на споделен свят '%s' с %d незавършен(и) читател(и) — join преди free",
                     e->var, e->n_shared);
                 viol = label;
+            } else if (owner) {
+                /* W2.5: целта на връзката трябва да я надживее — иначе owner-ът
+                 * остава с висящ handle (world_linked/wvec_* → use-after-free). */
+                snprintf(label, sizeof label,
+                    "world_free на свързан свят '%s' — capability държи '%s' (unlink преди free)",
+                    e->var, owner);
+                viol = label;
             } else {
                 e->state = 2;
+                wlink_clear(e);   /* връзките на освободения owner умират с него */
             }
         } else if (e->state == 2) {
             snprintf(label, sizeof label, "повторен world_free на '%s'", wn); viol = label;
         } else {
             snprintf(label, sizeof label, "world_free след move на '%s'", wn); viol = label;
+        }
+    } else if (strcmp(op, "world_link") == 0 || strcmp(op, "world_unlink") == 0) {
+        /* W2.5: capability връзка owner → target. Owner-ът трябва да е жив и
+         * МУТАБЕЛЕН (графът се строи преди freeze — така таблицата не се пипа
+         * от две нишки); target-ът — жив (не free, не move). Цикъл е ОБРОЧЕНО:
+         * прави и двата свята неосвободими (leak, не UB — затова при изчерпан
+         * бюджет за обхождане мълчим, никога не измисляме). */
+        Node *ta = call->args.len > 1 ? call->args.data[1] : NULL;
+        HandleEntry *t = (ta && ta->kind == NODE_IDENT) ? handles_find(&st->handles, ta->name) : NULL;
+        if (t && t->kind != HK_WORLD) t = NULL;
+        if (strcmp(op, "world_unlink") == 0) {
+            if (e->state != 0) {
+                snprintf(label, sizeof label,
+                    "world_unlink върху %s свят '%s' — графът се строи преди freeze",
+                    e->state == 1 ? "замразен" : e->state == 2 ? "освободен" : "преместен", wn);
+                viol = label;
+            } else if (t) {
+                wlink_del(e, t->var);
+            }
+        } else if (e->state != 0) {
+            snprintf(label, sizeof label,
+                "world_link върху %s свят '%s' — графът се строи преди freeze",
+                e->state == 1 ? "замразен" : e->state == 2 ? "освободен" : "преместен", wn);
+            viol = label;
+        } else if (!t) {
+            /* неследен target (параметър или израз) — честно мълчание */
+        } else if (t->state == 2 || t->state == 3) {
+            snprintf(label, sizeof label, "world_link към %s свят '%s'",
+                     t->state == 2 ? "освободен" : "преместен", t->var);
+            viol = label;
+        } else if (t == e || wlink_reaches(&st->handles, t->var, e->var)) {
+            snprintf(label, sizeof label,
+                "цикъл между светове: '%s' и '%s' — графът трябва да е ацикличен",
+                e->var, t->var);
+            viol = label;
+        } else {
+            wlink_add(e, t->var);
         }
     } else if (is_world_scratch_call(call)) {
         /* W2.3: вътрешна променяемост — кешът е прикачен към handle-а, не към

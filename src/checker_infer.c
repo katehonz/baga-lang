@@ -843,6 +843,10 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             {"wcache_del",    TYPE_VOID, "ii", 0, 0},
             {"wcache_clear",  TYPE_VOID, "i", 0, 0},
             {"wcache_len",    TYPE_I64, "i", 0, 0},
+            {"world_link",    TYPE_VOID, "ii", 0, 0},
+            {"world_unlink",  TYPE_VOID, "ii", 0, 0},
+            {"world_links",   TYPE_I64, "i", 0, 0},
+            {"world_linked",  TYPE_I64, "ii", 0, 0},
             {"mem_mark",    TYPE_I64, "", 0, 0},
             {"mem_rewind",  TYPE_VOID, "i", 0, 0},
             {"mem_arena_bytes", TYPE_I64, "", 0, 0},
@@ -1038,7 +1042,8 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
          * от потребителска fn, остават неследени (MEM-1 граница). */
         if ((strcmp(name, "world_free") == 0 || strcmp(name, "world_freeze") == 0 ||
              strcmp(name, "world_alloc") == 0 || strcmp(name, "wvec_new") == 0 ||
-             strcmp(name, "wvec_push") == 0 || strcmp(name, "wvec_push_str") == 0) &&
+             strcmp(name, "wvec_push") == 0 || strcmp(name, "wvec_push_str") == 0 ||
+             strcmp(name, "world_link") == 0 || strcmp(name, "world_unlink") == 0) &&
             !env_lookup(ctx, name) && !ck_find_fn(ctx, name)) {
             int is_free = strcmp(name, "world_free") == 0;
             int is_freeze = strcmp(name, "world_freeze") == 0;
@@ -1153,6 +1158,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                 "go", "go_bg", "pool_map",
                 "wcache_set", "wcache_get", "wcache_has", "wcache_del",
                 "wcache_clear", "wcache_len",
+                "world_link", "world_unlink", "world_links", "world_linked",
             };
             int nb = (int)(sizeof builtins / sizeof builtins[0]);
             int ns = (int)(sizeof special / sizeof special[0]);

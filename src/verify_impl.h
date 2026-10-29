@@ -59,6 +59,11 @@ typedef struct {
     int borrowed;     /* HK_WORLD: W2.4 handle-ът е ЗАЕМАН (получател с
                        * `requires: world_frozen`) — право на четене, не
                        * собственост: world_free и препредаване са ОБРОЧЕНИ. */
+    char **links;     /* HK_WORLD: W2.5 capability връзки owner → target
+                       * (ghost имена, owned). Целта надживява връзката: free
+                       * или предаване на свързан свят е ОБРОЧЕНО; цикъл също. */
+    int n_links;
+    int cap_links;
     int wf_recv;      /* HK_JOIN: worker recvs param before send/return */
     int wf_send;      /* HK_JOIN: worker sends param before recv */
     int wf_complex;   /* HK_JOIN: scan inconclusive (if/loop/nested) */
@@ -211,6 +216,11 @@ void handles_free(HandleList *l);   /* 1481 */
 HandleEntry *handles_find(HandleList *l, const char *var);   /* 1489 */
 void handles_set(HandleList *l, const char *var, int kind, int state, Lin *result);   /* 1494 */
 void handles_clone_into(HandleList *dst, HandleList *src);   /* 1519 */
+void wlink_add(HandleEntry *o, const char *target);   /* W2.5 */
+void wlink_del(HandleEntry *o, const char *target);   /* W2.5 */
+void wlink_clear(HandleEntry *o);   /* W2.5: връзките на освободен owner */
+const char *wlink_owner_of(HandleList *l, const char *target);   /* W2.5: обратна връзка */
+int wlink_reaches(HandleList *l, const char *from, const char *to);   /* W2.5: цикъл */
 void state_free(State *s);   /* 1543 */
 void states_push(States *ss, State s);   /* 1546 */
 void expr_render(Node *e, char *b, size_t n, size_t *o);   /* 1571 */

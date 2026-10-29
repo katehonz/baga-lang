@@ -1474,13 +1474,30 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    free(c->k); free(c->v); free(c->st); free(c);\n");
     fprintf(out, "}\n");
     fprintf(out, "\n/* arena allocator: bump allocation, free-all-at-once */\n");
-    fprintf(out, "typedef struct { char *base; int64_t used; int64_t cap; int64_t frozen; pthread_mutex_t wlock; baga_WCache *wcache; } baga_Arena;\n");
+    /* W2.5: връзки между светове — насочена capability (owner → target).
+     * Таблицата е ИЗВЪН региона, защото handle-ите са указатели, не офсети:
+     * dump/load не я носи (зареден свят няма връзки — графът се построява
+     * наново). Правилото е „целта надживява връзката": free на свързан свят е
+     * чиста грешка (linked_by брояч), free на owner освобождава връзките му.
+     * Цикли се проверяват при link (bounded DFS) — иначе графът става
+     * неосвободим. Връзките се строят преди freeze: замразен свят не пипа
+     * таблицата, затова споделянето между нишки не нуждае от заключване тук. */
+    fprintf(out, "typedef struct baga_Arena { char *base; int64_t used; int64_t cap; int64_t frozen; pthread_mutex_t wlock; baga_WCache *wcache; struct baga_Arena **links; int64_t n_links; int64_t cap_links; int64_t linked_by; } baga_Arena;\n");
+    fprintf(out, "static int baga_world_reaches(baga_Arena *a, baga_Arena *t, int depth, int *steps) {\n");
+    fprintf(out, "    if (depth > 64 || --(*steps) < 0) return 1;   /* изчерпан бюджет/дълбочина — консервативно „цикъл\" */\n");
+    fprintf(out, "    for (int64_t i = 0; i < a->n_links; i++) {\n");
+    fprintf(out, "        baga_Arena *c = a->links[i];\n");
+    fprintf(out, "        if (c == t || baga_world_reaches(c, t, depth + 1, steps)) return 1;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_arena_new(void) {\n");
     fprintf(out, "    baga_Arena *a = malloc(sizeof(baga_Arena));\n");
     fprintf(out, "    if (!a) { fprintf(stderr, \"baga: arena_new: oom\\n\"); exit(1); }\n");
     fprintf(out, "    a->cap = 65536; a->used = 0; a->frozen = 0; a->base = malloc((size_t)a->cap);\n");
     fprintf(out, "    if (!a->base) { fprintf(stderr, \"baga: arena_new: oom\\n\"); exit(1); }\n");
     fprintf(out, "    pthread_mutex_init(&a->wlock, NULL); a->wcache = NULL;\n");
+    fprintf(out, "    a->links = NULL; a->n_links = 0; a->cap_links = 0; a->linked_by = 0;\n");
     fprintf(out, "    return (int64_t)(intptr_t)a;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_arena_alloc(int64_t h, int64_t size) {\n");
@@ -1507,6 +1524,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_arena_free(int64_t h) {\n");
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
     fprintf(out, "    if (!a) return;\n");
+    /* W2.5: целта на връзката трябва да я надживее — иначе owner-ът остава с
+     * висящ handle (use-after-free при world_linked/wvec_*). */
+    fprintf(out, "    if (a->linked_by > 0) { fprintf(stderr, \"baga: world_free на свят, свързан от %%lld друг(и) — unlink преди free\\n\", (long long)a->linked_by); exit(1); }\n");
+    fprintf(out, "    for (int64_t i = 0; i < a->n_links; i++) a->links[i]->linked_by--;\n");
+    fprintf(out, "    free(a->links);\n");
     fprintf(out, "    baga_wc_free(a->wcache); a->wcache = NULL;   /* W2.3: кешът е извън региона */\n");
     fprintf(out, "    pthread_mutex_destroy(&a->wlock);\n");
     fprintf(out, "    free(a->base); free(a);\n");
@@ -1642,8 +1664,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (b.len > 0) memcpy(a->base, b.data, (size_t)b.len);\n");
     /* W2.3: зареденият свят стартира с ПРАЗЕН кеш — вътрешната променяемост
      * не е част от стойността на света (dump-ът не я носи), затова lazy
-     * индексите се построяват наново при нужда. */
+     * индексите се построяват наново при нужда. W2.5: същото важи за
+     * връзките — те са handle-и, не офсети, значи dump-ът не ги носи. */
     fprintf(out, "    pthread_mutex_init(&a->wlock, NULL); a->wcache = NULL;\n");
+    fprintf(out, "    a->links = NULL; a->n_links = 0; a->cap_links = 0; a->linked_by = 0;\n");
     fprintf(out, "    return (int64_t)(intptr_t)a;\n");
     fprintf(out, "}\n");
     /* W1.5: текущият bump обем на света — метрика за growth garbage
@@ -1733,6 +1757,49 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    int64_t n = w->wcache ? w->wcache->n : 0;\n");
     fprintf(out, "    pthread_mutex_unlock(&w->wlock);\n");
     fprintf(out, "    return n;\n");
+    fprintf(out, "}\n");
+    /* W2.5: връзки между светове — насочена capability owner → target.
+     * Правилото е „целта надживява връзката": free на свързан свят е чиста
+     * грешка, free на owner освобождава връзките му (децата стават свободни).
+     * Графът е ацикличен — проверява се при link, защото цикълът прави и двата
+     * свята неосвободими. Връзки се добавят само към МУТАБЕЛЕН owner: графът
+     * се строи преди freeze, затова таблицата не се пипа от две нишки. */
+    fprintf(out, "static void baga_world_link(int64_t oh, int64_t th) {\n");
+    fprintf(out, "    baga_Arena *o = baga_world_a(oh, \"world_link\");\n");
+    fprintf(out, "    baga_Arena *t = baga_world_a(th, \"world_link\");\n");
+    fprintf(out, "    if (o->frozen) { fprintf(stderr, \"baga: world_link върху замразен свят — графът се строи преди freeze\\n\"); exit(1); }\n");
+    fprintf(out, "    if (o == t) { fprintf(stderr, \"baga: world_link към самия свят — цикъл\\n\"); exit(1); }\n");
+    fprintf(out, "    int steps = 10000;\n");
+    fprintf(out, "    if (baga_world_reaches(t, o, 0, &steps)) { fprintf(stderr, \"baga: world_link създава цикъл между светове (или графът е твърде голям за проверка)\\n\"); exit(1); }\n");
+    fprintf(out, "    for (int64_t i = 0; i < o->n_links; i++) if (o->links[i] == t) return;   /* вече свързан */\n");
+    fprintf(out, "    if (o->n_links == o->cap_links) {\n");
+    fprintf(out, "        int64_t nc = o->cap_links ? o->cap_links * 2 : 4;\n");
+    fprintf(out, "        o->links = realloc(o->links, (size_t)nc * sizeof(baga_Arena *));\n");
+    fprintf(out, "        if (!o->links) { fprintf(stderr, \"baga: world_link: oom\\n\"); exit(1); }\n");
+    fprintf(out, "        o->cap_links = nc;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    o->links[o->n_links++] = t;\n");
+    fprintf(out, "    t->linked_by++;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_world_unlink(int64_t oh, int64_t th) {\n");
+    fprintf(out, "    baga_Arena *o = baga_world_a(oh, \"world_unlink\");\n");
+    fprintf(out, "    baga_Arena *t = baga_world_a(th, \"world_unlink\");\n");
+    fprintf(out, "    if (o->frozen) { fprintf(stderr, \"baga: world_unlink върху замразен свят — графът се строи преди freeze\\n\"); exit(1); }\n");
+    fprintf(out, "    for (int64_t i = 0; i < o->n_links; i++) {\n");
+    fprintf(out, "        if (o->links[i] != t) continue;\n");
+    fprintf(out, "        o->links[i] = o->links[--o->n_links];   /* swap-remove: редът не е смислов */\n");
+    fprintf(out, "        t->linked_by--;\n");
+    fprintf(out, "        return;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_world_links(int64_t oh) {\n");
+    fprintf(out, "    baga_Arena *o = baga_world_a(oh, \"world_links\");\n");
+    fprintf(out, "    return o->n_links;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_world_linked(int64_t oh, int64_t i) {\n");
+    fprintf(out, "    baga_Arena *o = baga_world_a(oh, \"world_linked\");\n");
+    fprintf(out, "    if (i < 0 || i >= o->n_links) baga_bounds_fail(\"world_linked\", i, o->n_links);\n");
+    fprintf(out, "    return (int64_t)(intptr_t)o->links[i];\n");
     fprintf(out, "}\n");
     fprintf(out, "\n");
     /* ---- concurrency (!Par): OS threads + i64 channels (CSP) ---- */

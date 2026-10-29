@@ -1279,6 +1279,14 @@ invalidates nothing:
   receiver with `requires: world_frozen(ctx)` holds a BORROWED world:
   `world_free(ctx)` and handing it on are both REFUTED (the right is to read,
   not to own).
+- W2.5: capability links between worlds — `world_link(owner, target)` /
+  `world_unlink(o, t)` / `world_links(o)` / `world_linked(o, i)` (returns the
+  handle of the i-th target). The table lives OUTSIDE the region (handles are
+  pointers, not offsets), so dump/load does not carry it. Rules enforced by both
+  the verifier and the runtime: the target outlives the link (freeing a linked
+  world is an error — `unlink`, or freeing the owner, releases it), the graph is
+  acyclic (a self-link counts as a cycle), links are built before freeze, and a
+  linked world is not handed to `go`/`chan_send`.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

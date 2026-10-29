@@ -237,6 +237,7 @@ void handles_free(HandleList *l) {
     for (int i = 0; i < l->n; i++) {
         free(l->h[i].var); lin_free(&l->h[i].result);
         free(l->h[i].worker); free(l->h[i].chan_arg); free(l->h[i].world_arg);
+        wlink_clear(&l->h[i]);
     }
     free(l->h);
     handles_init(l);
@@ -257,6 +258,7 @@ void handles_set(HandleList *l, const char *var, int kind, int state, Lin *resul
         e->worker = NULL; e->chan_arg = NULL; e->world_arg = NULL;
         e->n_shared = 0;
         e->borrowed = 0;
+        e->links = NULL; e->n_links = 0; e->cap_links = 0;
         e->wf_recv = e->wf_send = e->wf_complex = 0;
         e->wf_n_send = e->wf_n_recv = 0;
         e->wf_child_cons = 0;
@@ -295,12 +297,74 @@ void handles_clone_into(HandleList *dst, HandleList *src) {
         d->world_arg = src->h[i].world_arg ? strdup(src->h[i].world_arg) : NULL;
         d->n_shared = src->h[i].n_shared;
         d->borrowed = src->h[i].borrowed;
+        for (int k = 0; k < src->h[i].n_links; k++) wlink_add(d, src->h[i].links[k]);
     }
+}
+
+/* W2.5: capability връзки между светове (ghost граф owner → target).
+ * Правилото е „целта надживява връзката": free или предаване на свързан свят е
+ * ОБРОЧЕНО, защото owner-ът остава с висящ handle. Графът е ацикличен — цикъл
+ * би направил и двата свята неосвободими. Имената са ghost променливите на
+ * handle-ите (като HK_DROP/HK_WORLD), не Lin стойности. */
+void wlink_add(HandleEntry *o, const char *target) {
+    if (!o || !target) return;
+    for (int i = 0; i < o->n_links; i++)
+        if (strcmp(o->links[i], target) == 0) return;   /* вече свързан */
+    if (o->n_links == o->cap_links) {
+        o->cap_links = o->cap_links ? o->cap_links * 2 : 4;
+        o->links = realloc(o->links, (size_t)o->cap_links * sizeof(char *));
+    }
+    o->links[o->n_links++] = strdup(target);
+}
+
+void wlink_del(HandleEntry *o, const char *target) {
+    if (!o || !target) return;
+    for (int i = 0; i < o->n_links; i++) {
+        if (strcmp(o->links[i], target) != 0) continue;
+        free(o->links[i]);
+        o->links[i] = o->links[--o->n_links];
+        return;
+    }
+}
+
+void wlink_clear(HandleEntry *o) {
+    if (!o) return;
+    for (int i = 0; i < o->n_links; i++) free(o->links[i]);
+    free(o->links);
+    o->links = NULL; o->n_links = 0; o->cap_links = 0;
+}
+
+/* кой държи capability към target (NULL ако никой) */
+const char *wlink_owner_of(HandleList *l, const char *target) {
+    for (int i = 0; i < l->n; i++)
+        for (int j = 0; j < l->h[i].n_links; j++)
+            if (strcmp(l->h[i].links[j], target) == 0) return l->h[i].var;
+    return NULL;
+}
+
+static int wlink_reaches_rec(HandleList *l, const char *from, const char *to,
+                             int depth, int *steps) {
+    /* Бюджетът и дълбочината гарантират терминиране. При изчерпване връщаме 0
+     * („не достига") — M8 дисциплината е „пропусната грешка, никога измислена":
+     * цикълът е leak (неосвободими светове), не UB, и runtime-ът пак го хваща
+     * при link със собствения си bounded DFS. */
+    if (depth > 64 || --(*steps) < 0) return 0;
+    HandleEntry *e = handles_find(l, from);
+    if (!e) return 0;
+    for (int i = 0; i < e->n_links; i++) {
+        if (strcmp(e->links[i], to) == 0) return 1;
+        if (wlink_reaches_rec(l, e->links[i], to, depth + 1, steps)) return 1;
+    }
+    return 0;
+}
+
+int wlink_reaches(HandleList *l, const char *from, const char *to) {
+    int steps = 10000;
+    return wlink_reaches_rec(l, from, to, 0, &steps);
 }
 
 
 void state_free(State *s) { env_free(&s->env); vlen_free(&s->vlen); ax_free(&s->ax); cl_free(&s->path); cl_free(&s->read_cons); reads_free(&s->reads); handles_free(&s->handles); }
-
 void states_push(States *ss, State s) {
     if (ss->n == ss->cap) { ss->cap = ss->cap ? ss->cap * 2 : 4; ss->s = realloc(ss->s, (size_t)ss->cap * sizeof(State)); }
     ss->s[ss->n++] = s;
@@ -494,7 +558,8 @@ int is_world_op_call(Node *n) {
     const char *nm = n->callee->name;
     int is_op = strcmp(nm, "world_alloc") == 0 || strcmp(nm, "world_freeze") == 0 ||
                 strcmp(nm, "world_free") == 0 || strcmp(nm, "wvec_push") == 0 ||
-                strcmp(nm, "wvec_push_str") == 0 || is_world_scratch_call(n);
+                strcmp(nm, "wvec_push_str") == 0 || is_world_scratch_call(n) ||
+                strcmp(nm, "world_link") == 0 || strcmp(nm, "world_unlink") == 0;   /* W2.5 */
     if (!is_op || world_builtin_shadowed(nm)) return 0;
     return n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT;
 }
@@ -515,13 +580,16 @@ int is_world_expr_call(Node *n) {
                   strcmp(nm, "wvec_len") == 0 || strcmp(nm, "world_dump") == 0 ||
                   strcmp(nm, "world_load") == 0 || strcmp(nm, "world_used") == 0 ||
                   strcmp(nm, "wvec_push_str") == 0 || strcmp(nm, "wvec_get_str") == 0 ||
+                  strcmp(nm, "world_link") == 0 || strcmp(nm, "world_unlink") == 0 ||
+                  strcmp(nm, "world_links") == 0 || strcmp(nm, "world_linked") == 0 ||   /* W2.5 */
                   is_world_scratch_call(n);   /* W2.3: wcache_* са изразни и statement-ни */
     return is_expr && !world_builtin_shadowed(nm);
 }
 int is_world_stmt_call(Node *n) {
     if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
     const char *nm = n->callee->name;
-    int is_stmt = strcmp(nm, "world_freeze") == 0 || strcmp(nm, "world_free") == 0;
+    int is_stmt = strcmp(nm, "world_freeze") == 0 || strcmp(nm, "world_free") == 0 ||
+                  strcmp(nm, "world_link") == 0 || strcmp(nm, "world_unlink") == 0;   /* W2.5 */
     return is_stmt && !world_builtin_shadowed(nm);
 }
 

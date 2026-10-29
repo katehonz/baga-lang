@@ -705,6 +705,62 @@ else
 	exit 1
 fi
 
+echo "=== W2.5 връзки между светове: целта надживява връзката, графът е ацикличен ==="
+# free на свързан свят би оставил висящ handle у owner-а — чиста грешка.
+printf 'fn main() {\n    let p = world_new()\n    let c = world_new()\n    world_link(p, c)\n    world_free(c)\n    world_free(p)\n}\n' > /tmp/baga_wlink_free.baga
+RC=0
+run /tmp/baga_wlink_free.baga > /tmp/baga_wlink_free_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "свързан от 1 друг" /tmp/baga_wlink_free_out.txt; then
+	echo "OK: world_free на свързан свят — чиста грешка (unlink преди free)"
+else
+	echo "FAIL: free на свързан свят трябваше да е чиста грешка"
+	cat /tmp/baga_wlink_free_out.txt
+	exit 1
+fi
+# Цикъл между светове ⇒ и двата са неосвободими — чиста грешка при link.
+printf 'fn main() {\n    let a = world_new()\n    let b = world_new()\n    world_link(a, b)\n    world_link(b, a)\n}\n' > /tmp/baga_wlink_cycle.baga
+RC=0
+run /tmp/baga_wlink_cycle.baga > /tmp/baga_wlink_cycle_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "цикъл между светове" /tmp/baga_wlink_cycle_out.txt; then
+	echo "OK: цикъл между светове — чиста грешка"
+else
+	echo "FAIL: цикълът трябваше да е чиста грешка"
+	cat /tmp/baga_wlink_cycle_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let a = world_new()\n    world_link(a, a)\n}\n' > /tmp/baga_wlink_self.baga
+RC=0
+run /tmp/baga_wlink_self.baga > /tmp/baga_wlink_self_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "към самия свят" /tmp/baga_wlink_self_out.txt; then
+	echo "OK: самовръзка — чиста грешка"
+else
+	echo "FAIL: самовръзката трябваше да е чиста грешка"
+	cat /tmp/baga_wlink_self_out.txt
+	exit 1
+fi
+# Графът се строи преди freeze: link/unlink върху замразен свят е compile грешка.
+printf 'fn main() {\n    let p = world_new()\n    let c = world_new()\n    world_freeze(p)\n    world_link(p, c)\n}\n' > /tmp/baga_wlink_frozen.baga
+RC=0
+run /tmp/baga_wlink_frozen.baga > /tmp/baga_wlink_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze: world_link" /tmp/baga_wlink_frozen_out.txt; then
+	echo "OK: world_link върху замразен свят — compile грешка (W1.6 seatbelt)"
+else
+	echo "FAIL: link върху замразен свят трябваше да е compile грешка"
+	cat /tmp/baga_wlink_frozen_out.txt
+	exit 1
+fi
+# world_linked е bounds-checked като всеки четящ builtin.
+printf 'fn main() {\n    let p = world_new()\n    print(world_linked(p, 0))\n}\n' > /tmp/baga_wlink_oob.baga
+RC=0
+run /tmp/baga_wlink_oob.baga > /tmp/baga_wlink_oob_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -qi "index out of bounds\|извън\|bounds" /tmp/baga_wlink_oob_out.txt; then
+	echo "OK: world_linked извън таблицата — чиста грешка"
+else
+	echo "FAIL: world_linked трябваше да е bounds-checked"
+	cat /tmp/baga_wlink_oob_out.txt
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

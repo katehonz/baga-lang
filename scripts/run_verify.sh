@@ -257,6 +257,18 @@ grep -q "ok_shared_reader:" /tmp/baga_verify_out.txt && grep -q "bad_shared_writ
 	&& ! grep -q "извикване.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 	&& echo "OK: worlds_cap — W2.1/W2.3/W2.4: двустранен протокол (worker с requires world_frozen ДОКАЗВА, че не пише; предаден мутабелен/освободен свят е обречен, и като конюнкт), вътрешна променяемост (wcache върху замразен свят е легален, след free/move е обречен), и споделена capability (N читателя на замразен свят са чисти; free преди join, второ предаване на mutable свят, free на заеман свят и препредаване на заемано право са обречени)" \
 	|| { echo "FAIL: worlds_cap"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/worlds_graph.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "ok_graph:" /tmp/baga_verify_out.txt && grep -q "ok_unlink_then_free:" /tmp/baga_verify_out.txt \
+	&& grep -q "ok_deep_chain:" /tmp/baga_verify_out.txt && grep -q "bad_link_cycle:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_handoff_linked:" /tmp/baga_verify_out.txt && grep -q "bad_self_link:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^8$' \
+	&& grep -q "протокол (world_free на свързан свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& [ "$(grep -c 'протокол (цикъл между светове.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 2 ] \
+	&& grep -q "протокол (world_link върху замразен свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (предаване на свързан свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& echo "OK: worlds_graph — W2.5: capability връзки между светове (ацикличен граф) — четене през връзка след freeze и free по обратния ред са чисти; free на свързан свят, цикъл (вкл. самовръзка), link върху замразен свят и предаване на свързан свят са обречени с контрапримери" \
+	|| { echo "FAIL: worlds_graph"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
 	&& grep -q "контрапример: n = 9223372036854775807" /tmp/baga_verify_out.txt \

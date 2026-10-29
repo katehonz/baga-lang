@@ -47,5 +47,29 @@ fn main() {
     check("second_frozen", world_state(w2) == 1)
     world_free(w2)
 
+    // W2.5: capability връзки между светове — насочен ацикличен граф.
+    // Таблицата е ИЗВЪН региона (handle-ите са указатели, не офсети), затова
+    // dump/load не я носи: зареденият свят няма връзки.
+    let p = world_new()
+    let c = world_new()
+    let vc = wvec_new(c)
+    wvec_push(c, vc, 77)
+    check("links_zero", world_links(p) == 0)
+    world_link(p, c)
+    check("links_one", world_links(p) == 1)
+    check("linked_handle", world_linked(p, 0) == c)
+    check("read_through_link", wvec_get(world_linked(p, 0), vc, 0) == 77)
+    world_freeze(c)
+    let dp = world_dump(p)
+    let gp2 = world_load(dp)
+    check("loaded_no_links", world_links(gp2) == 0)
+    world_free(gp2)
+    // free на owner освобождава връзките му ⇒ детето вече може да се free-не
+    world_free(p)
+    world_free(c)
+    let gafter = world_new()
+    check("graph_released", world_links(gafter) == 0)
+    world_free(gafter)
+
     print("worlds_test: all passed")
 }
