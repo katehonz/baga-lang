@@ -317,6 +317,21 @@ grep -q "chan_reader:" /tmp/baga_verify_out.txt && grep -q "ok_chan_frozen:" /tm
 	&& grep -q "елементен/канален инвариант на 'chan_reader' при извикване): НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 	&& echo "OK: worlds_chan — W2.8: канален договор за свят (M16 rely–guarantee) — инвариантът на изпращача се разтоваря при spawn, а chan_recv регистрира получения свят като HK_WORLD (frozen → заемане за четене, owned → собственост); запис или free в получен замразен свят е обречен, лъжлив инвариант дава честен UNKNOWN, не ДОКАЗАНО" \
 	|| { echo "FAIL: worlds_chan"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/worlds_rec.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "rec_reader:" /tmp/baga_verify_out.txt && grep -q "ok_rec_frozen_read:" /tmp/baga_verify_out.txt \
+	&& grep -q "ok_rec_nested:" /tmp/baga_verify_out.txt && grep -q "ok_rec_dump_compact:" /tmp/baga_verify_out.txt \
+	&& grep -q "ok_rec_shared:" /tmp/baga_verify_out.txt && grep -q "bad_rec_writer:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_rec_set_frozen:" /tmp/baga_verify_out.txt && grep -q "bad_rec_str_frozen:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_rec_after_free:" /tmp/baga_verify_out.txt && grep -q "bad_rec_reader_mutable:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^10$' \
+	&& grep -q "протокол (mutate-after-freeze: wrec_set върху замразен 'ctx'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (mutate-after-freeze: wrec_set върху замразен 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (mutate-after-freeze: wrec_set_str върху замразен 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wrec_set след world_free на 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (requires world_frozen на 'rec_reader': предаден мутабелен свят 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -c "извикване (requires world_frozen на 'rec_reader' при извикване): ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^2$' \
+	&& echo "OK: worlds_rec — W2.11: структурни стойности в региона (wrec) — мутаторите са check-only като wvec_push (запис върху замразен/освободен свят е обречен с контрапример, включително в тялото на читател с договор world_frozen), четците на полета са легални върху замразен свят и не пречат на споделянето (двама join-нати читателя, после free), подаване на мутабелен свят на читател е обречено; поле-контейнер е просто id, значи вложени структури са позиционно независими" \
+	|| { echo "FAIL: worlds_rec"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
 	&& grep -q "контрапример: n = 9223372036854775807" /tmp/baga_verify_out.txt \

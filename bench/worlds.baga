@@ -129,6 +129,43 @@ fn bench_world(n: i64) -> i64 !Time {
     print(concat("wmap_used_after   ", i64_to_str(world_used(mw))))
     print(concat("wmap_compact_us   ", i64_to_str(k1 - k0)))
     print(concat("wmap_vals_intact  ", i64_to_str(wmap_get(mw, mm, 199999))))
+    // W2.11: wrec — запис с пер-поле схема. Полетата са фиксиран брой (8: четири
+    // i64 и четири str), затова n записa са ПРЕЗАПИСИ — точно случаят, в който
+    // регионът яде garbage и компакцията го прибира.
+    let rw = world_new()
+    let rr = wrec_new(rw, 8)
+    let r0 = monotonic_us()
+    let mut q: i64 = 0
+    while q < n {
+        wrec_set(rw, rr, q % 4, q)
+        q = q + 1
+    }
+    let r1 = monotonic_us()
+    let mut rs: i64 = 0
+    let mut e: i64 = 0
+    while e < n {
+        rs = rs + wrec_get(rw, rr, e % 4)
+        e = e + 1
+    }
+    let r2 = monotonic_us()
+    let mut p: i64 = 0
+    while p < n / 4 {
+        wrec_set_str(rw, rr, 4 + (p % 4), "низ в региона")
+        p = p + 1
+    }
+    let r3 = monotonic_us()
+    let rbefore = world_used(rw)
+    world_compact(rw)
+    let r4 = monotonic_us()
+    print(concat("wrec_set_us       ", i64_to_str(r1 - r0)))
+    print(concat("wrec_get_us       ", i64_to_str(r2 - r1)))
+    print(concat("wrec_checksum     ", i64_to_str(rs)))
+    print(concat("wrec_str_set_us   ", i64_to_str(r3 - r2)))
+    print(concat("wrec_used_before  ", i64_to_str(rbefore)))
+    print(concat("wrec_used_after   ", i64_to_str(world_used(rw))))
+    print(concat("wrec_compact_us   ", i64_to_str(r4 - r3)))
+    print(concat("wrec_vals_intact  ", i64_to_str(wrec_get(rw, rr, 3))))
+    world_free(rw)
     world_free(mw)
     world_free(w)
     world_free(w2)

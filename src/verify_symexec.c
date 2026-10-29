@@ -572,6 +572,8 @@ int is_world_op_call(Node *n) {
                 strcmp(nm, "wmap_new") == 0 || strcmp(nm, "wmap_set") == 0 ||
                 strcmp(nm, "wmap_del") == 0 || strcmp(nm, "wmap_set_str") == 0 ||
                 strcmp(nm, "wvec_push_bytes") == 0 ||   /* W2.9: check-only мутатори */
+                strcmp(nm, "wrec_new") == 0 || strcmp(nm, "wrec_set") == 0 ||
+                strcmp(nm, "wrec_set_str") == 0 || strcmp(nm, "wrec_set_bytes") == 0 ||   /* W2.11 */
                 strcmp(nm, "world_compact") == 0;   /* W2.10 */
     if (!is_op || world_builtin_shadowed(nm)) return 0;
     return n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT;
@@ -601,6 +603,11 @@ int is_world_expr_call(Node *n) {
                   strcmp(nm, "wmap_set_str") == 0 || strcmp(nm, "wmap_get_str") == 0 ||
                   strcmp(nm, "wvec_push_bytes") == 0 || strcmp(nm, "wvec_get_bytes") == 0 ||   /* W2.9 */
                   strcmp(nm, "world_compact") == 0 || strcmp(nm, "world_dump_compact") == 0 ||   /* W2.10 */
+                  strcmp(nm, "wrec_new") == 0 || strcmp(nm, "wrec_len") == 0 ||
+                  strcmp(nm, "wrec_has") == 0 || strcmp(nm, "wrec_set") == 0 ||
+                  strcmp(nm, "wrec_set_str") == 0 || strcmp(nm, "wrec_set_bytes") == 0 ||
+                  strcmp(nm, "wrec_get") == 0 || strcmp(nm, "wrec_get_str") == 0 ||
+                  strcmp(nm, "wrec_get_bytes") == 0 ||   /* W2.11 */
                   is_world_scratch_call(n);   /* W2.3: wcache_* са изразни и statement-ни */
     return is_expr && !world_builtin_shadowed(nm);
 }

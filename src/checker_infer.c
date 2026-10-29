@@ -859,6 +859,15 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             {"wvec_get_bytes", TYPE_BYTES, "iii", 0, 0},
             {"world_compact",      TYPE_VOID, "i", 0, 0},
             {"world_dump_compact", TYPE_BYTES, "i", 0, 0},
+            {"wrec_new",       TYPE_I64, "ii", 0, 0},
+            {"wrec_len",       TYPE_I64, "ii", 0, 0},
+            {"wrec_has",       TYPE_I64, "iii", 0, 0},
+            {"wrec_set",       TYPE_VOID, "iiii", 0, 0},
+            {"wrec_set_str",   TYPE_VOID, "iiis", 0, 0},
+            {"wrec_set_bytes", TYPE_VOID, "iiib", 0, 0},
+            {"wrec_get",       TYPE_I64, "iii", 0, 0},
+            {"wrec_get_str",   TYPE_STR, "iii", 0, 0},
+            {"wrec_get_bytes", TYPE_BYTES, "iii", 0, 0},
             {"mem_mark",    TYPE_I64, "", 0, 0},
             {"mem_rewind",  TYPE_VOID, "i", 0, 0},
             {"mem_arena_bytes", TYPE_I64, "", 0, 0},
@@ -1059,6 +1068,8 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
              strcmp(name, "wmap_new") == 0 || strcmp(name, "wmap_set") == 0 ||
              strcmp(name, "wmap_del") == 0 || strcmp(name, "wmap_set_str") == 0 ||
              strcmp(name, "wvec_push_bytes") == 0 ||
+             strcmp(name, "wrec_new") == 0 || strcmp(name, "wrec_set") == 0 ||
+             strcmp(name, "wrec_set_str") == 0 || strcmp(name, "wrec_set_bytes") == 0 ||
              strcmp(name, "world_compact") == 0) &&
             !env_lookup(ctx, name) && !ck_find_fn(ctx, name)) {
             int is_free = strcmp(name, "world_free") == 0;
@@ -1165,6 +1176,16 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                 check_error(ctx, n->pos,
                     "'world_mutable' не важи за канал (c[*]) — предаването не е синхронно; "
                     "използвай world_frozen (четене) или world_owned (прехвърляне)");
+            /* Договорът се разпознава само върху ГОЛО име на параметър или върху
+             * канален елемент (c[*]). Всеки друг аргумент — например
+             * `world_frozen(cell2_0(ctx))` — минаваше тихо: spec-ът изглеждаше
+             * като договор, а верификаторът не поемаше нищо (нито го разтоварваше
+             * при извикване). Чиста грешка, не мълчание. */
+            if (n->args.len == 1 && n->args.data[0]->kind != NODE_IDENT &&
+                n->args.data[0]->kind != NODE_ELEM_REF)
+                check_error(ctx, n->pos,
+                    "'%s' важи само върху име на параметър или канален елемент (c[*]) — "
+                    "друг израз не се регистрира като договор за свят", name);
             Type *wt = n->args.len > 0 ? n->args.data[0]->type : NULL;
             if (!wt || (wt->kind != TYPE_I64 && wt->kind != TYPE_ERROR))
                 check_error(ctx, n->pos,
@@ -1198,6 +1219,9 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                 "wmap_len", "wmap_set_str", "wmap_get_str",
                 "wvec_push_bytes", "wvec_get_bytes",
                 "world_compact", "world_dump_compact",
+                "wrec_new", "wrec_len", "wrec_has", "wrec_set",
+                "wrec_set_str", "wrec_set_bytes", "wrec_get",
+                "wrec_get_str", "wrec_get_bytes",
             };
             int nb = (int)(sizeof builtins / sizeof builtins[0]);
             int ns = (int)(sizeof special / sizeof special[0]);

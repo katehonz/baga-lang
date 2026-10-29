@@ -1,0 +1,255 @@
+// worlds_rec.baga — W2.11: структурни стойности в региона (wrec).
+//
+// Записът е хетерогенен контейнер с пер-поле схема (i64 / str / bytes), която
+// живее В региона до стойностите. Това не отслабва протокола: мутаторите
+// (wrec_new/set/set_str/set_bytes) са check-only като wvec_push — легални в
+// цикли, ОБРОЧЕНИ върху замразен/освободен/преместен свят, — а четците
+// (wrec_get/get_str/get_bytes/has/len) са легални върху замразен свят.
+//
+// Договорите от W2.1/W2.4/W2.7 важат без промяна: работник с
+// `requires: world_frozen(ctx)` може да ЧЕТЕ полетата, но запис в тялото му е
+// ОБРОЧЕНО там (не sound silence), а подаване на мутабелен свят на такъв
+// работник е ОБРОЧЕНО у извикващия.
+//
+// bytes полетата липсват съзнателно: `bytes_of_str` е извън верификаторния
+// фрагмент (както в W2.9), затова двоичният път се покрива от
+// tests/wrec_test.baga и пробите в run_tests.sh — тук би бил ПРОПУСНАТ, не
+// доказан.
+//
+//   ./baga --verify examples/verify/worlds_rec.baga
+
+// ---------------------------------------------------------------------------
+// Читател с договор: полетата се четат, записът не се пипа.
+// ---------------------------------------------------------------------------
+
+spec rec_reader {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Id-тата са 1-базиран индекс в таблицата на региона и са стабилни (W2.10),
+// затова работникът чете запис 1 — първият контейнер в света, който получава.
+// `go` носи ЕДИН аргумент, а пакет (cell2) не върши работа тук: договорът
+// world_frozen се разпознава само върху голо име на параметър.
+fn rec_reader(ctx: i64) -> i64 {
+    let l = wrec_len(ctx, 1)
+    let x = wrec_get(ctx, 1, 0)
+    let s = wrec_get_str(ctx, 1, 1)
+    let h = wrec_has(ctx, 1, 1)
+    return ctx - ctx
+}
+
+spec bad_rec_writer {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Запис в тялото на читател с договор world_frozen — ghost състоянието на ctx е
+// frozen от изискването, значи wrec_set е ОБРОЧЕНО ТУК (преди W2.1 това беше
+// sound silence: параметърът изобщо не се регистрираше като свят).
+fn bad_rec_writer(ctx: i64) -> i64 {
+    wrec_set(ctx, 1, 0, 1)
+    return ctx - ctx
+}
+
+// ---------------------------------------------------------------------------
+// Собственикът: жизнен цикъл на запис в регион.
+// ---------------------------------------------------------------------------
+
+spec ok_rec_frozen_read {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Четене на хетерогенен запис върху замразен свят — i64 и str поле, заедно с
+// wrec_has/wrec_len. Незададено поле не се чете (би било runtime грешка).
+fn ok_rec_frozen_read(n: i64) -> i64 {
+    let w = world_new()
+    let r = wrec_new(w, 3)
+    wrec_set(w, r, 0, 42)
+    wrec_set_str(w, r, 1, "софия")
+    world_freeze(w)
+    let x = wrec_get(w, r, 0)
+    let s = wrec_get_str(w, r, 1)
+    let h = wrec_has(w, r, 2)
+    let l = wrec_len(w, r)
+    world_free(w)
+    return n - n
+}
+
+spec ok_rec_nested {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Поле-контейнер: id-тата са позиционно независими, значи „запис, който сочи
+// към индекс" е изразим без нов вид и без fixup при dump/load.
+fn ok_rec_nested(n: i64) -> i64 {
+    let w = world_new()
+    let m = wmap_new(w)
+    wmap_set(w, m, 7, 700)
+    let r = wrec_new(w, 2)
+    wrec_set(w, r, 0, m)
+    world_freeze(w)
+    let y = wmap_get(w, wrec_get(w, r, 0), 7)
+    world_free(w)
+    return n - n
+}
+
+spec ok_rec_dump_compact {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Записите са в таблицата на региона, значи компактираният образ ги носи:
+// world_dump_compact е ЧЕТЕНЕ и е легален върху замразен свят (W2.10).
+fn ok_rec_dump_compact(n: i64) -> i64 {
+    let w = world_new()
+    let r = wrec_new(w, 2)
+    wrec_set(w, r, 0, 1)
+    wrec_set_str(w, r, 1, "низ")
+    world_freeze(w)
+    let d = world_dump_compact(w)
+    world_free(w)
+    return n - n
+}
+
+spec ok_rec_shared {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Двама читатели на един замразен свят със запис вътре: share (W2.4), join-нати
+// преди free. Работникът има договор, затова разтоварването е ДОКАЗАНО, а
+// четците на полета не променят ghost състоянието.
+fn ok_rec_shared(n: i64) -> i64 !Par {
+    let w = world_new()
+    let r = wrec_new(w, 2)
+    wrec_set(w, r, 0, 5)
+    wrec_set_str(w, r, 1, "споделен")
+    world_freeze(w)
+    let h1 = go(rec_reader, w)
+    let h2 = go(rec_reader, w)
+    let a = join(h1)
+    let b = join(h2)
+    world_free(w)
+    return n - n
+}
+
+// ---------------------------------------------------------------------------
+// Обречени: запис върху замразен/освободен свят и читател с мутабелен свят.
+// ---------------------------------------------------------------------------
+
+spec bad_rec_set_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Freeze-ът е само в then-клона ⇒ checker-ът (W1.6) мълчи, верификаторът оборва
+// пътя n = 1: wrec_set е check-only мутатор като wvec_push.
+fn bad_rec_set_frozen(n: i64) -> i64 {
+    let w = world_new()
+    let r = wrec_new(w, 2)
+    if n > 0 {
+        world_freeze(w)
+    }
+    wrec_set(w, r, 0, 1)
+    world_free(w)
+    return n - n
+}
+
+spec bad_rec_str_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Същото за низово поле — payload-ът се копира в региона, значи е запис.
+fn bad_rec_str_frozen(n: i64) -> i64 {
+    let w = world_new()
+    let r = wrec_new(w, 2)
+    if n > 0 {
+        world_freeze(w)
+    }
+    wrec_set_str(w, r, 1, "низ")
+    world_free(w)
+    return n - n
+}
+
+spec bad_rec_after_free {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+fn bad_rec_after_free(n: i64) -> i64 {
+    let w = world_new()
+    let r = wrec_new(w, 2)
+    wrec_set(w, r, 0, 1)
+    if n > 0 {
+        world_free(w)
+    }
+    wrec_set(w, r, 1, 2)
+    return n - n
+}
+
+spec bad_rec_reader_mutable {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W2.1/W2.7: извикващият дава МУТАБЕЛЕН свят на читател с договор
+// world_frozen — разтоварването е ОБРОЧЕНО с witness (пътят n = 1 не замразява).
+fn bad_rec_reader_mutable(n: i64) -> i64 {
+    let w = world_new()
+    let r = wrec_new(w, 2)
+    wrec_set(w, r, 0, 1)
+    if n > 0 {
+        rec_reader(w)
+    }
+    world_free(w)
+    return n - n
+}
+
+fn main() {
+    print(ok_rec_frozen_read(1))
+    print(ok_rec_nested(1))
+    print(ok_rec_dump_compact(1))
+    print(bad_rec_set_frozen(0))
+    print(bad_rec_str_frozen(0))
+    print(bad_rec_after_free(0))
+    print(bad_rec_reader_mutable(0))
+    print(bad_rec_writer(0))
+}

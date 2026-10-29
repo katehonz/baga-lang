@@ -869,6 +869,8 @@ int region_of_expr(CheckCtx *ctx, Node *n) {
             if (n->callee && n->callee->kind == NODE_IDENT &&
                 (strcmp(n->callee->name, "wvec_get_str") == 0 ||
                  strcmp(n->callee->name, "wvec_get_bytes") == 0 ||
+                 strcmp(n->callee->name, "wrec_get_str") == 0 ||
+                 strcmp(n->callee->name, "wrec_get_bytes") == 0 ||
                  strcmp(n->callee->name, "wmap_get_str") == 0) &&
                 n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT) {
                 EnvEntry *h = ck_env_find(ctx, n->args.data[0]->name);

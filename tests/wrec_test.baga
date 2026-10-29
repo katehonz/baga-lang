@@ -1,0 +1,134 @@
+// wrec_test — W2.11: структурни стойности в регион (запис с пер-поле схема).
+//
+// wvec/wmap са хомогенни (един вид за всички елементи) — нужно е на компакцията,
+// за да знае кои думи са офсети към payload. Записът носи схемата СИ до
+// стойностите (масив от видове), затова е хетерогенен по дизайн и пак е
+// компактируем: i64, низ, bytes и id на вложен контейнер в един запис.
+//
+// Идиоми, които тестът покрива:
+//   • поле-контейнер е просто i64 id — id-тата са позиционно независими, значи
+//     вложени структури оцеляват през dump/load и през компакция без fixup;
+//   • незададено поле е чиста грешка при четене (wrec_has пита без да чете);
+//   • повторен запис на низово поле оставя стария payload като growth garbage —
+//     world_compact го прибира (W2.10) без да пипа данните и id-тата.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// Читател на замразен запис от нишка. Записът е първият контейнер в света,
+// значи id-то му е 1 (go носи един аргумент — света). Четците не пишат нищо в
+// региона, затова споделянето не иска заключване (за разлика от wcache).
+fn rec_reader(w: i64) -> i64 !Par {
+    let mut acc: i64 = 0
+    let mut i: i64 = 0
+    while i < 500 {
+        acc = acc + wrec_get(w, 1, 0)
+        if wrec_get_str(w, 1, 1) == "общ запис" {
+            acc = acc + 1
+        }
+        i = i + 1
+    }
+    return acc
+}
+
+fn main() -> i64 !Par {
+    let w = world_new()
+    let r = wrec_new(w, 4)
+    check("rec_len", wrec_len(w, r) == 4)
+    check("rec_unset_has", wrec_has(w, r, 0) == 0)
+
+    wrec_set(w, r, 0, 42)
+    wrec_set_str(w, r, 1, "софия")
+    check("rec_i64", wrec_get(w, r, 0) == 42)
+    check("rec_str", wrec_get_str(w, r, 1) == "софия")
+    check("rec_has_after_set", wrec_has(w, r, 0) == 1 && wrec_has(w, r, 1) == 1)
+    check("rec_hetero", wrec_get(w, r, 0) == 42 && wrec_get_str(w, r, 1) == "софия")
+
+    // bytes поле: дължината е в региона, значи вграден NUL не е проблем.
+    let b = bytes_new(4)
+    bytes_set(b, 0, 65)
+    bytes_set(b, 1, 0)
+    bytes_set(b, 2, 66)
+    bytes_set(b, 3, 67)
+    wrec_set_bytes(w, r, 2, b)
+    let g = wrec_get_bytes(w, r, 2)
+    check("rec_bytes_len", bytes_len(g) == 4)
+    check("rec_bytes_embedded_nul", bytes_at(g, 0) == 65 && bytes_at(g, 1) == 0 && bytes_at(g, 3) == 67)
+
+    // Поле-контейнер: id на вложен wmap, използван директно през записа.
+    let kid = wmap_new(w)
+    wmap_set(w, kid, 7, 700)
+    wrec_set(w, r, 3, kid)
+    check("rec_nested_id", wmap_get(w, wrec_get(w, r, 3), 7) == 700)
+
+    // Презапис на поле от същия вид е легален (старият payload става garbage).
+    wrec_set(w, r, 0, 43)
+    wrec_set_str(w, r, 1, "варна")
+    check("rec_overwrite", wrec_get(w, r, 0) == 43 && wrec_get_str(w, r, 1) == "варна")
+
+    // dump/load: записът е част от стойността на света, id-тата важат веднага.
+    let d = world_dump(w)
+    let w2 = world_load(d)
+    check("rec_dump_i64", wrec_get(w2, r, 0) == 43)
+    check("rec_dump_str", wrec_get_str(w2, r, 1) == "варна")
+    check("rec_dump_bytes", bytes_len(wrec_get_bytes(w2, r, 2)) == 4)
+    check("rec_dump_nested", wmap_get(w2, wrec_get(w2, r, 3), 7) == 700)
+
+    // Компакция: много презаписи на низово поле ядат региона; compact прибира
+    // мъртвите payload-и и запазва всичко живо (и вложения контейнер).
+    let cw = world_new()
+    let cr = wrec_new(cw, 2)
+    wrec_set(cw, cr, 1, 9)
+    let mut i: i64 = 0
+    while i < 2000 {
+        wrec_set_str(cw, cr, 0, "повтарящ се низ в региона")
+        i = i + 1
+    }
+    let grew = world_used(cw)
+    world_compact(cw)
+    let shrunk = world_used(cw)
+    check("rec_compact_shrinks", shrunk < grew)
+    check("rec_compact_str_intact", wrec_get_str(cw, cr, 0) == "повтарящ се низ в региона")
+    check("rec_compact_i64_intact", wrec_get(cw, cr, 1) == 9)
+    check("rec_compact_dump_small", bytes_len(world_dump_compact(cw)) == shrunk)
+
+    // Компактираният образ се зарежда и id-тата не са се променили.
+    let cw2 = world_load(world_dump_compact(cw))
+    check("rec_compact_loads", wrec_get_str(cw2, cr, 0) == "повтарящ се низ в региона" && wrec_get(cw2, cr, 1) == 9)
+
+    // Замразен свят: четците работят, записът не (compile грешка — в run_tests).
+    world_freeze(cw)
+    check("rec_frozen_read", wrec_get_str(cw, cr, 0) == "повтарящ се низ в региона" && wrec_has(cw, cr, 0) == 1)
+
+    // Споделен замразен запис: четирима читатели в четири нишки, всички join-нати
+    // преди free (W2.4). Всеки чете 500 пъти i64 полето (3) и низовото поле.
+    let sw = world_new()
+    let sr = wrec_new(sw, 2)
+    check("rec_shared_id_first", sr == 1)
+    wrec_set(sw, sr, 0, 3)
+    wrec_set_str(sw, sr, 1, "общ запис")
+    world_freeze(sw)
+    let h1 = go(rec_reader, sw)
+    let h2 = go(rec_reader, sw)
+    let h3 = go(rec_reader, sw)
+    let h4 = go(rec_reader, sw)
+    let a1 = join(h1)
+    let a2 = join(h2)
+    let a3 = join(h3)
+    let a4 = join(h4)
+    check("rec_shared_readers", a1 == 2000 && a2 == 2000 && a3 == 2000 && a4 == 2000)
+
+    world_free(w)
+    world_free(w2)
+    world_free(cw)
+    world_free(cw2)
+    world_free(sw)
+    print("wrec_test: all passed")
+    return 0
+}

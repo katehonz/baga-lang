@@ -1334,6 +1334,20 @@ invalidates nothing:
   compaction; borrowed pointers do not.
   `world_load` rejects a foreign blob by magic. Measured: dump 4.19 MB → 1.60 MB,
   wmap region 25.2 → 12.6 MB.
+- W2.11: `wrec_new(w, n)` creates a record with `n` fields in the region and
+  returns an id. `wrec_set` / `wrec_set_str` / `wrec_set_bytes` write a field
+  (its kind is fixed on the first write and cannot change), `wrec_get` /
+  `wrec_get_str` / `wrec_get_bytes` read one, `wrec_has` asks whether the field
+  is set, `wrec_len` returns the field count. A record is **heterogeneous** — a
+  per-field schema lives next to the values, so i64, string and bytes coexist in
+  one container and stay compactable. A container field is just an i64 id:
+  nested structures survive dump/load and `world_compact` with no fixup. Reading
+  an unset field is a clean error (not 0); overwriting a string field leaves the
+  old payload as garbage that compaction reclaims (measured: 1.25 MB → 548 B).
+  The mutators are check-only like `wvec_push` (writing a frozen world is an
+  error), the readers are legal on a frozen world and do not block sharing.
+  Access is ~9 ns — cheaper than `wmap_get` (~22 ns, no hashing or probing),
+  comparable to `wvec` (~7 ns).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

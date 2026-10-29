@@ -955,6 +955,80 @@ else
 	exit 1
 fi
 
+echo "=== W2.11 wrec: структурни стойности в региона (пер-поле схема) ==="
+# Записът е check-only мутатор като wvec_push: легален в цикли, но върху
+# замразен свят е compile грешка (W1.6), а четците остават легални.
+printf 'fn main() {\n    let w = world_new()\n    let r = wrec_new(w, 2)\n    world_freeze(w)\n    wrec_set(w, r, 0, 1)\n}\n' > /tmp/baga_wrec_frozen.baga
+RC=0
+run /tmp/baga_wrec_frozen.baga > /tmp/baga_wrec_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze: wrec_set" /tmp/baga_wrec_frozen_out.txt; then
+	echo "OK: wrec_set върху замразен свят — compile грешка (wrec_get_str е четене)"
+else
+	echo "FAIL: wrec_set върху замразен свят трябваше да е грешка"
+	cat /tmp/baga_wrec_frozen_out.txt
+	exit 1
+fi
+# Хетерогенността е ПО ПОЛЕ, не в един контейнер: видът на полето се фиксира при
+# първия запис и компакцията разчита на него.
+printf 'fn main() {\n    let w = world_new()\n    let r = wrec_new(w, 2)\n    wrec_set(w, r, 0, 1)\n    wrec_set_str(w, r, 0, "x")\n}\n' > /tmp/baga_wrec_mix.baga
+RC=0
+run /tmp/baga_wrec_mix.baga > /tmp/baga_wrec_mix_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "полето вече е от друг вид" /tmp/baga_wrec_mix_out.txt; then
+	echo "OK: смяна на вида на поле — чиста грешка (схемата на записа)"
+else
+	echo "FAIL: смесването на i64 и str в едно поле трябваше да е грешка"
+	cat /tmp/baga_wrec_mix_out.txt
+	exit 1
+fi
+# Записът е схема, не рядък map: четене на незададено поле е грешка, не 0.
+printf 'fn main() {\n    let w = world_new()\n    let r = wrec_new(w, 2)\n    wrec_set(w, r, 0, 1)\n    print(wrec_get(w, r, 1))\n}\n' > /tmp/baga_wrec_unset.baga
+RC=0
+run /tmp/baga_wrec_unset.baga > /tmp/baga_wrec_unset_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "полето не е зададено" /tmp/baga_wrec_unset_out.txt; then
+	echo "OK: четене на незададено поле — чиста грешка (wrec_has пита без да чете)"
+else
+	echo "FAIL: незададеното поле трябваше да е грешка, не 0"
+	cat /tmp/baga_wrec_unset_out.txt
+	exit 1
+fi
+# Заеман низ от запис умира със света (MEM-3, W2.2) — като wvec_get_str.
+printf 'fn main() {\n    let w = world_new()\n    let r = wrec_new(w, 1)\n    wrec_set_str(w, r, 0, "borrowed")\n    let s = wrec_get_str(w, r, 0)\n    world_free(w)\n    print(s)\n}\n' > /tmp/baga_wrec_borrow.baga
+RC=0
+run /tmp/baga_wrec_borrow.baga > /tmp/baga_wrec_borrow_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_wrec_borrow_out.txt; then
+	echo "OK: заеман низ от wrec след world_free — compile грешка"
+else
+	echo "FAIL: borrow-after-free за wrec_get_str трябваше да е compile грешка"
+	cat /tmp/baga_wrec_borrow_out.txt
+	exit 1
+fi
+# Id-тата са видово проверени: wvec id като запис е чиста грешка.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    print(wrec_get(w, v, 0))\n}\n' > /tmp/baga_wrec_id.baga
+RC=0
+run /tmp/baga_wrec_id.baga > /tmp/baga_wrec_id_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "id не е wrec" /tmp/baga_wrec_id_out.txt; then
+	echo "OK: wvec id като запис — чиста грешка (видът е в таблицата)"
+else
+	echo "FAIL: id от друг вид трябваше да е грешка"
+	cat /tmp/baga_wrec_id_out.txt
+	exit 1
+fi
+
+# Договорът за свят не важи върху произволен израз: `world_frozen(cell2_0(ctx))`
+# минаваше тихо — spec-ът изглеждаше като гарантия, а верификаторът нито я
+# поемаше, нито я разтоварваше. Намерено при оркъла за wrec (работникът получава
+# света в пакет, защото go носи един аргумент).
+printf 'spec pk {\n    input:\n        ctx: i64\n    output: i64\n    requires:\n        world_frozen(cell2_0(ctx))\n    ensures:\n        output >= 0\n}\n\nfn pk(ctx: i64) -> i64 {\n    return ctx - ctx\n}\n\nfn main() {\n    print(pk(0))\n}\n' > /tmp/baga_wcontract_expr.baga
+RC=0
+run --check /tmp/baga_wcontract_expr.baga > /tmp/baga_wcontract_expr_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "важи само върху име на параметър" /tmp/baga_wcontract_expr_out.txt; then
+	echo "OK: договор за свят върху израз (cell2_0(ctx)) — compile грешка, не мълчание"
+else
+	echo "FAIL: договорът за свят върху произволен израз трябваше да е compile грешка"
+	cat /tmp/baga_wcontract_expr_out.txt
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и
@@ -966,13 +1040,13 @@ rm -f /tmp/baga_wvec_asan /tmp/baga_wcache_tsan
 if ! gcc -fsanitize=address -o /tmp/baga_san_probe /tmp/baga_san_probe.c >/dev/null 2>&1; then
 	echo "SKIP: gcc без AddressSanitizer — sanitizer gate-овете са пропуснати"
 else
-	for ASAN_T in wvec_test wmap_test; do
+	for ASAN_T in wvec_test wmap_test wrec_test; do
 		"$BIN" $BAGAIFLAGS --emit-c "tests/$ASAN_T.baga" > "/tmp/baga_$ASAN_T.asan.c" 2>/tmp/baga_wvec_asan_err.txt
 		gcc -g -O1 -fsanitize=address -o "/tmp/baga_$ASAN_T.asan" "/tmp/baga_$ASAN_T.asan.c" -lm -pthread 2>>/tmp/baga_wvec_asan_err.txt
 		RC=0
 		ASAN_OPTIONS=detect_leaks=0 "/tmp/baga_$ASAN_T.asan" > "/tmp/baga_$ASAN_T.asan.out" 2>&1 || RC=$?
 		if [[ $RC -eq 0 ]] && grep -q "$ASAN_T: all passed" "/tmp/baga_$ASAN_T.asan.out"; then
-			echo "OK: $ASAN_T под ASan (region copy при растеж, wmap растеж/преhash, bytes офсети)"
+			echo "OK: $ASAN_T под ASan (region copy при растеж, wmap растеж/преhash, bytes офсети, wrec payload-и през компакция)"
 		else
 			echo "FAIL: ASan прогонът на $ASAN_T трябваше да е чист"
 			cat "/tmp/baga_$ASAN_T.asan.out" /tmp/baga_wvec_asan_err.txt
