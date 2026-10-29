@@ -623,6 +623,30 @@ else
 	exit 1
 fi
 
+# Два различни договора за един параметър правят функцията неизвикваема (всеки
+# аргумент е обречен от някой от двата discharge-а) — затова е compile грешка.
+printf 'spec two {\n    input:\n        ctx: i64\n    output: i64\n    requires:\n        world_frozen(ctx) && world_owned(ctx)\n    ensures:\n        output >= 0\n}\n\nfn two(ctx: i64) -> i64 {\n    return ctx - ctx\n}\n\nfn main() {\n    print("x")\n}\n' > /tmp/baga_w27_conflict.baga
+RC=0
+run --check /tmp/baga_w27_conflict.baga > /tmp/baga_w27_conflict_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "има два договора за свят" /tmp/baga_w27_conflict_out.txt; then
+	echo "OK: два договора за един параметър — compile грешка, избира се един"
+else
+	echo "FAIL: конфликтът на договори трябваше да е compile грешка"
+	cat /tmp/baga_w27_conflict_out.txt
+	exit 1
+fi
+# Повторение на ЕДИН И СЪЩ договор е излишно, но безвредно — не е грешка.
+printf 'spec dup {\n    input:\n        ctx: i64\n    output: i64\n    requires:\n        world_frozen(ctx)\n        world_frozen(ctx)\n    ensures:\n        output >= 0\n}\n\nfn dup(ctx: i64) -> i64 {\n    return ctx - ctx\n}\n\nfn main() {\n    print("x")\n}\n' > /tmp/baga_w27_dup.baga
+RC=0
+run --check /tmp/baga_w27_dup.baga > /tmp/baga_w27_dup_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]]; then
+	echo "OK: повторен един и същ договор не е грешка"
+else
+	echo "FAIL: дублираният единствен договор трябваше да мине"
+	cat /tmp/baga_w27_dup_out.txt
+	exit 1
+fi
+
 echo "=== W2.2 Worlds runtime: невалиден офсет/blob е чиста грешка, не UB ==="
 # Сгрешен wvec офсет четеше извън malloc блока (heap-buffer-overflow под ASan).
 printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push(w, v, 42)\n    print(wvec_len(w, 70000))\n}\n' > /tmp/baga_wvec_badoff.baga

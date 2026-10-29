@@ -289,6 +289,47 @@ static Node *find_spec_item(CheckCtx *ctx, const char *name) {
     return NULL;
 }
 
+/* W2.7: договорите за свят в requires — събира ги за един параметър (през AND,
+ * както верификатора). frozen/mutable/owned се изключват взаимно: два договора
+ * за един параметър не са UB, но правят функцията неизвикваема (всеки аргумент
+ * е обречен от някой от двата discharge-а), което е очевидно — затова е
+ * compile-time грешка, а не два контрапримера. */
+static void collect_spec_world_contracts(Node *e, const char *pn, int *kinds,
+                                         const char **names, int *n, int cap) {
+    if (!e || *n >= cap) return;
+    if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
+        e->args.len == 1 && e->args.data[0]->kind == NODE_IDENT &&
+        strcmp(e->args.data[0]->name, pn) == 0) {
+        const char *f = e->callee->name;
+        int k = strcmp(f, "world_frozen") == 0 ? 1 :
+                strcmp(f, "world_mutable") == 0 ? 2 :
+                strcmp(f, "world_owned") == 0 ? 3 : 0;
+        if (k) { kinds[*n] = k; names[*n] = f; (*n)++; }
+        return;
+    }
+    if (e->kind == NODE_BINARY && e->bin_op == OP_AND) {
+        collect_spec_world_contracts(e->left, pn, kinds, names, n, cap);
+        collect_spec_world_contracts(e->right, pn, kinds, names, n, cap);
+    }
+}
+
+static void check_spec_world_contracts(CheckCtx *ctx, Node *item) {
+    for (int j = 0; j < item->spec_inputs.len; j++) {
+        const char *pn = item->spec_inputs.data[j]->param_name;
+        int kinds[8]; const char *names[8]; int n = 0;
+        for (int r = 0; r < item->spec_requires.len && n < 8; r++)
+            collect_spec_world_contracts(item->spec_requires.data[r]->ensure_expr,
+                                         pn, kinds, names, &n, 8);
+        for (int a = 1; a < n; a++) {
+            if (kinds[a] == kinds[0]) continue;   /* един и същ договор — излишно, но безвредно */
+            check_error(ctx, item->pos,
+                "spec '%s': параметър '%s' има два договора за свят (%s и %s) — избери един",
+                item->spec_name, pn, names[0], names[a]);
+            break;
+        }
+    }
+}
+
 static void infer_spec_contracts(CheckCtx *ctx, Node *item, Type *fn_ret) {
     if (item->spec_ensures.len > 0) {
         if (fn_ret->kind == TYPE_VOID) {
@@ -331,6 +372,7 @@ static void infer_spec_contracts(CheckCtx *ctx, Node *item, Type *fn_ret) {
                     item->spec_name, j + 1, type_str(rt));
             }
         }
+        check_spec_world_contracts(ctx, item);   /* W2.7: по един договор на параметър */
         pop_scope(ctx);
     }
     if (item->spec_decreases) {
