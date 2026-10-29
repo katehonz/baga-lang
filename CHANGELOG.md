@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-10-29
+
+**Release „Светове"**: цялата поредица W0 → W2.5 — региони с ownership/freeze
+дисциплина (`world_*`), typed position-independent контейнер в свят (`wvec_*`),
+двустранен ghost протокол за споделен свят (`requires: world_frozen`),
+вътрешна променяемост (`wcache_*`), споделена read-only capability за N
+читателя и ацикличен граф от светове (`world_link`). Три ASan-потвърдени UB
+класа затворени, data race в `!Par` join флага оправен, compile-time seatbelt с
+join-логика (никакви фалшиви обвинения). Оркъли: `worlds.baga` (12+8),
+`worlds_cap.baga` (19+14), `worlds_graph.baga` (8+5); ASan и TSan прогони в CI.
+Концептуален документ: `docs/worlds-bg.md`.
+
 ### W2.5 — светове: capability връзки между светове (ацикличен граф)
 - `world_link(owner, target)` / `world_unlink(o, t)` / `world_links(o)` /
   `world_linked(o, i)` — насочена способност от един свят към друг. Таблицата е
