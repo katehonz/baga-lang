@@ -592,11 +592,34 @@ fi
 # да се пропуска (иначе се емитира несъществуващата b_world_frozen).
 RC=0
 run --test-specs /tmp/baga_w21_ghost.baga > /tmp/baga_w21_specs_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "reader: 100/100" /tmp/baga_w21_specs_out.txt; then
-	echo "OK: --test-specs пропуска ghost предиката (без b_world_frozen)"
+if [[ $RC -eq 0 ]] && grep -qE "reader: пропусната|няма spec-ове за тестване" /tmp/baga_w21_specs_out.txt; then
+	echo "OK: --test-specs пропуска spec с договор за свят (random i64 не е handle)"
 else
-	echo "FAIL: --test-specs не трябва да емитира runtime проверка за world_frozen"
+	echo "FAIL: --test-specs трябва да пропуска spec-ове с договор за свят"
 	cat /tmp/baga_w21_specs_out.txt
+	exit 1
+fi
+
+echo "=== W2.7 договори world_mutable / world_owned (verifier-only, без runtime) ==="
+# mutable договор = запис в региона по време на повикването (собствеността остава
+# у извикващия); owned = прехвърляне (sink-ът freeze-ва и free-ва света).
+printf 'spec filler {\n    input:\n        ctx: i64\n    output: i64\n    requires:\n        world_mutable(ctx)\n    ensures:\n        output >= 0\n}\n\nfn filler(ctx: i64) -> i64 {\n    let v = wvec_new(ctx)\n    wvec_push(ctx, v, 5)\n    return ctx - ctx\n}\n\nspec sink {\n    input:\n        ctx: i64\n    output: i64\n    requires:\n        world_owned(ctx)\n    ensures:\n        output >= 0\n}\n\nfn sink(ctx: i64) -> i64 {\n    world_freeze(ctx)\n    world_free(ctx)\n    return 0\n}\n\nfn main() {\n    let w = world_new()\n    print(filler(w))\n    world_freeze(w)\n    world_free(w)\n    let w2 = world_new()\n    print(sink(w2))\n}\n' > /tmp/baga_w27_contract.baga
+RC=0
+run /tmp/baga_w27_contract.baga > /tmp/baga_w27_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && [[ "$(grep -c '^0$' /tmp/baga_w27_out.txt)" -ge 2 ]]; then
+	echo "OK: world_mutable/world_owned в requires не пречат на компилация/изпълнение"
+else
+	echo "FAIL: договорите за свят трябваше да са verifier-only"
+	cat /tmp/baga_w27_out.txt
+	exit 1
+fi
+RC=0
+run --test-specs /tmp/baga_w27_contract.baga > /tmp/baga_w27_specs_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -qE "filler: пропусната|няма spec-ове за тестване" /tmp/baga_w27_specs_out.txt; then
+	echo "OK: --test-specs пропуска world_mutable/world_owned spec-ове (без segfault от random handle)"
+else
+	echo "FAIL: --test-specs трябва да пропуска spec-ове с договор за свят"
+	cat /tmp/baga_w27_specs_out.txt
 	exit 1
 fi
 

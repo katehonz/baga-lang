@@ -1,0 +1,250 @@
+// worlds_contract.baga — W2.7: задължителен договор за world-параметър.
+//
+// Проследен свят не може да бъде подаден на функция, която не декларира какво
+// прави с него. Три договора (ghost предикати в requires, verifier-only като
+// sorted(v)):
+//
+//   requires: world_frozen(p)   — ЗАЕМАНЕ за четене (W2.1/W2.4/W2.6): p е
+//                                 замразен; write/free/препредаване без договор
+//                                 и делегиране без join са нарушения.
+//   requires: world_mutable(p)  — изключителен ЗАПИС в региона по време на
+//                                 повикването; собствеността остава у
+//                                 извикващия, значи freeze/free/handoff/link са
+//                                 нарушения на договора.
+//   requires: world_owned(p)    — ПРЕХВЪРЛЯНЕ на собствеността: callee прави
+//                                 каквото иска (freeze, free, споделяне), а
+//                                 извикващият губи handle-а (moved) — всяка
+//                                 по-нататъшна употреба е ОБРОЧЕНО.
+//
+// Без договор функцията е sound silence (може да сподели или освободи света),
+// затова предаването е ОБРОЧЕНО — това е дупката, която W2.7 затваря.
+//
+//   ./baga --verify examples/verify/worlds_contract.baga
+
+spec ok_mutable_fill {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_mutable(ctx)
+    ensures:
+        output >= 0
+}
+
+// Легален писател: договорът дава изключителен запис в региона.
+fn ok_mutable_fill(ctx: i64) -> i64 {
+    let v = wvec_new(ctx)
+    wvec_push(ctx, v, 1)
+    wvec_push(ctx, v, 2)
+    return ctx - ctx
+}
+
+spec ok_fill_caller {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Извикващият дава мутабелен свят на писател и си запазва собствеността:
+// след повикването светът е още негов — freeze и free са легални.
+fn ok_fill_caller(n: i64) -> i64 {
+    let w = world_new()
+    ok_mutable_fill(w)
+    world_freeze(w)
+    world_free(w)
+    return n - n
+}
+
+spec bad_mutable_freeze {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_mutable(ctx)
+    ensures:
+        output >= 0
+}
+
+// freeze променя правата трайно и извън обхвата на повикването — извикващият
+// не знае, че светът му вече е замразен. ОБРОЧЕНО.
+fn bad_mutable_freeze(ctx: i64) -> i64 {
+    world_freeze(ctx)
+    return ctx - ctx
+}
+
+spec bad_mutable_free {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_mutable(ctx)
+    ensures:
+        output >= 0
+}
+
+// free на чужд свят с договор само за запис — ОБРОЧЕНО (извикващият остава с
+// висящ handle).
+fn bad_mutable_free(ctx: i64) -> i64 {
+    world_free(ctx)
+    return 0
+}
+
+spec bad_mutable_handoff {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_mutable(ctx)
+    ensures:
+        output >= 0
+}
+
+// Предаване на света нататък е извън договора за запис — ОБРОЧЕНО.
+fn bad_mutable_handoff(ctx: i64) -> i64 !Par {
+    let h = go(contract_reader, ctx)
+    let r = join(h)
+    return r - r
+}
+
+spec contract_reader {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+fn contract_reader(ctx: i64) -> i64 {
+    let u = world_used(ctx)
+    return ctx - ctx
+}
+
+spec bad_frozen_to_mutable {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Обратната посока: замразен свят не може да се даде на писател — ОБРОЧЕНО с
+// witness по живия път (freeze е в then-клона, checker-ът мълчи).
+fn bad_frozen_to_mutable(n: i64) -> i64 {
+    let w = world_new()
+    if n > 0 {
+        world_freeze(w)
+    }
+    ok_mutable_fill(w)
+    world_free(w)
+    return n - n
+}
+
+spec ok_owned_sink {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_owned(ctx)
+    ensures:
+        output >= 0
+}
+
+// Легален sink: собствеността е прехвърлена, значи freeze и free са негови.
+fn ok_owned_sink(ctx: i64) -> i64 {
+    let v = wvec_new(ctx)
+    wvec_push(ctx, v, 9)
+    world_freeze(ctx)
+    world_free(ctx)
+    return 0
+}
+
+spec ok_owned_caller {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Извикващият предава собствеността и не пипа handle-а повече — чисто.
+fn ok_owned_caller(n: i64) -> i64 {
+    let w = world_new()
+    ok_owned_sink(w)
+    return n - n
+}
+
+spec bad_use_after_owned {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// След прехвърляне на собствеността handle-ът е мъртъв за извикващия —
+// употреба е ОБРОЧЕНО (use-after-move), защото sink-ът го е освободил.
+fn bad_use_after_owned(n: i64) -> i64 {
+    let w = world_new()
+    ok_owned_sink(w)
+    let s = world_state(w)
+    return n - n
+}
+
+spec plain {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Функция без договор за света: връща аритметика, но верификаторът не знае
+// какво още би направила с handle-а (sound silence).
+fn plain(x: i64) -> i64 {
+    return x - x
+}
+
+spec bad_no_contract {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Задължителността: предаване на проследен свят на функция без договор е
+// ОБРОЧЕНО — иначе callee може да го освободи, а извикващият после free-ва.
+fn bad_no_contract(n: i64) -> i64 {
+    let w = world_new()
+    let r = plain(w)
+    world_free(w)
+    return r - r
+}
+
+spec bad_borrowed_as_owned {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Заемателят не може да прехвърли собствеността — правото му е само за четене.
+// ОБРОЧЕНО, дори sink-ът да е легален за истински собственик.
+fn bad_borrowed_as_owned(ctx: i64) -> i64 {
+    ok_owned_sink(ctx)
+    return 0
+}
+
+fn main() {
+    print(ok_fill_caller(1))
+    print(ok_owned_caller(1))
+    print(bad_frozen_to_mutable(0))
+    print(bad_no_contract(1))
+}

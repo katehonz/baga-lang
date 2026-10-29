@@ -59,6 +59,11 @@ typedef struct {
     int borrowed;     /* HK_WORLD: W2.4 handle-ът е ЗАЕМАН (получател с
                        * `requires: world_frozen`) — право на четене, не
                        * собственост: world_free и препредаване са ОБРОЧЕНИ. */
+    int wcontract;    /* HK_WORLD: W2.7 договорът на параметъра —
+                       * 0 = няма/собствен, 1 = world_frozen (заемане за четене),
+                       * 2 = world_mutable (запис по време на повикването,
+                       *     собствеността остава у извикващия),
+                       * 3 = world_owned (прехвърлена собственост). */
     char **links;     /* HK_WORLD: W2.5 capability връзки owner → target
                        * (ghost имена, owned). Целта надживява връзката: free
                        * или предаване на свързан свят е ОБРОЧЕНО; цикъл също. */
@@ -180,6 +185,8 @@ Constraint mk_cons(Lin lhs, COp op, Rat rhs);   /* 516 */
 int is_cmp(BinOp op);   /* 542 */
 int is_sorted_call(Node *e);   /* 568 */
 int is_world_ghost_call(Node *e);   /* W2.1: world_frozen(w) — ghost предикат */
+int world_contract_of(Node *e);   /* W2.7: 0/1=frozen/2=mutable/3=owned */
+int spec_world_contract(Node *spec, Node *wfn, int idx);   /* W2.7: договор за параметър */
 int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated, Formula *out);   /* 573 */
 int fm_sat(ConsList *sys);   /* 698 */
 int64_t ienv_get(IEnv *e, const char *name, int *ok);   /* 781 */

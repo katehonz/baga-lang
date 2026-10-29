@@ -1295,6 +1295,17 @@ invalidates nothing:
   finished and `world_free` is legal. Delegating without a join, with a partial
   join, to a worker without a contract, through a channel or via `go_bg` is
   REFUTED.
+- W2.7: the contract for a world parameter is MANDATORY and comes in three
+  kinds — `requires: world_frozen(p)` (reading plus `wcache_*`; delegation only
+  with a join), `requires: world_mutable(p)` (exclusive writes to the region for
+  the duration of the call; `world_freeze`/`world_free`/`world_link` and handing
+  it on are violations — ownership stays with the caller), and
+  `requires: world_owned(p)` (ownership transfer: the callee may do anything and
+  the caller's handle becomes moved, so using it afterwards is REFUTED). Passing
+  a world to a function with no contract for that parameter is REFUTED (direct
+  calls and `go`/`go_bg`); `chan_send` is the exception — its receiver is outside
+  the model. `--test-specs` skips specs with a world contract (a random i64 is
+  not a handle).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

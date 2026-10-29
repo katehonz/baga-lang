@@ -185,6 +185,18 @@ fn bad_handoff_linked(n: i64) -> i64 !Par {
     return r - r
 }
 
+spec graph_worker {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// W2.7: договор за четене — работникът получава замразен свят (случаят тук е
+// свързан свят, затова нарушението е за връзката, не за договора).
 fn graph_worker(ctx: i64) -> i64 !Par {
     return ctx - ctx
 }

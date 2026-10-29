@@ -223,7 +223,7 @@ grep -q "ok_seq:" /tmp/baga_verify_out.txt && grep -q "ok_map:" /tmp/baga_verify
 grep -q "ok_lifecycle:" /tmp/baga_verify_out.txt && grep -q "ok_shared_frozen:" /tmp/baga_verify_out.txt \
 	&& grep -q "ok_frozen_read:" /tmp/baga_verify_out.txt && grep -q "ok_frozen_read_str:" /tmp/baga_verify_out.txt \
 	&& grep -q "bad_go_move:" /tmp/baga_verify_out.txt \
-	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^12$' \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^13$' \
 	&& grep -q "протокол (mutate-after-freeze: world_alloc.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (повторен world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (използване след world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
@@ -241,7 +241,7 @@ grep -q "ok_shared_reader:" /tmp/baga_verify_out.txt && grep -q "bad_shared_writ
 	&& grep -q "cached_reader:" /tmp/baga_verify_out.txt && grep -q "bad_cache_after_move:" /tmp/baga_verify_out.txt \
 	&& grep -q "ok_shared_many:" /tmp/baga_verify_out.txt && grep -q "bad_move_twice:" /tmp/baga_verify_out.txt \
 	&& grep -q "bad_reader_frees:" /tmp/baga_verify_out.txt && grep -q "ok_reader_delegates:" /tmp/baga_verify_out.txt \
-	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^19$' \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^20$' \
 	&& grep -q "извикване (requires world_frozen.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (mutate-after-freeze: world_alloc върху замразен 'ctx'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (requires world_frozen.*предаден мутабелен свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
@@ -250,7 +250,7 @@ grep -q "ok_shared_reader:" /tmp/baga_verify_out.txt && grep -q "bad_shared_writ
 	&& grep -q "протокол (wcache_set след world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (wcache_set след move.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& [ "$(grep -c 'протокол (world_free на споделен свят.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 2 ] \
-	&& grep -q "протокол (предаване на вече преместен свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (.*вече преместен свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (world_free на заеман свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (.*на заеман свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
@@ -261,7 +261,7 @@ grep -q "ok_shared_reader:" /tmp/baga_verify_out.txt && grep -q "bad_shared_writ
 grep -q "ok_graph:" /tmp/baga_verify_out.txt && grep -q "ok_unlink_then_free:" /tmp/baga_verify_out.txt \
 	&& grep -q "ok_deep_chain:" /tmp/baga_verify_out.txt && grep -q "bad_link_cycle:" /tmp/baga_verify_out.txt \
 	&& grep -q "bad_handoff_linked:" /tmp/baga_verify_out.txt && grep -q "bad_self_link:" /tmp/baga_verify_out.txt \
-	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^8$' \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^9$' \
 	&& grep -q "протокол (world_free на свързан свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& [ "$(grep -c 'протокол (цикъл между светове.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 2 ] \
 	&& grep -q "протокол (world_link върху замразен свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
@@ -283,6 +283,23 @@ grep -q "leaf_reader:" /tmp/baga_verify_out.txt && grep -q "mid_reader:" /tmp/ba
 	&& ! grep -q "извикване.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 	&& echo "OK: worlds_deleg — W2.6: делегиране на capability с транзитивно отчитане — веригата owner→deep→mid→leaf с join на всяко ниво е чиста (и три успоредни делегации), а делегиране без join, с частичен join, на работник без договор, през канал или go_bg е обречено" \
 	|| { echo "FAIL: worlds_deleg"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/worlds_contract.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "ok_mutable_fill:" /tmp/baga_verify_out.txt && grep -q "ok_fill_caller:" /tmp/baga_verify_out.txt \
+	&& grep -q "ok_owned_sink:" /tmp/baga_verify_out.txt && grep -q "ok_owned_caller:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_no_contract:" /tmp/baga_verify_out.txt && grep -q "bad_borrowed_as_owned:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^13$' \
+	&& grep -q "протокол (world_freeze върху свят с договор world_mutable.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (world_free върху свят с договор world_mutable.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (предаване на свят с договор world_mutable.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (requires world_mutable.*предаден замразен свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (използване след move.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (предаване на свят.*без договор за параметъра.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (requires world_owned.*предаден заеман.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& ! grep -q "ensures.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& ! grep -q "извикване.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& echo "OK: worlds_contract — W2.7: задължителен договор за world-параметър — world_mutable дава запис без промяна на собствеността (freeze/free/handoff са обречени), world_owned прехвърля собствеността (sink-ът е легален, употребата след това е use-after-move), предаване на свят без договор и на заеман свят като owned са обречени" \
+	|| { echo "FAIL: worlds_contract"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
 	&& grep -q "контрапример: n = 9223372036854775807" /tmp/baga_verify_out.txt \

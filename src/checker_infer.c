@@ -1125,16 +1125,24 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             return type_new(TYPE_BOOL);
         }
 
-        /* W2.1: world_frozen(w) — ghost предикат за requires/ensures (като
-         * sorted): verifier-only, без runtime проверка и без codegen. */
-        if (strcmp(name, "world_frozen") == 0) {
+        /* W2.1/W2.7: ghost предикати за ДОГОВОР за свят в requires (като
+         * sorted): verifier-only, без runtime проверка и без codegen.
+         *   world_frozen(p)  — заемане за четене: p е замразен, write/free/
+         *                      препредаване без договор са нарушения;
+         *   world_mutable(p) — изключителен запис по време на повикването,
+         *                      собствеността остава у извикващия (freeze/free/
+         *                      handoff/link са нарушения на договора);
+         *   world_owned(p)   — прехвърляне на собствеността: callee прави
+         *                      каквото иска, извикващият губи handle-а. */
+        if (strcmp(name, "world_frozen") == 0 || strcmp(name, "world_mutable") == 0 ||
+            strcmp(name, "world_owned") == 0) {
             n->callee->type = type_new(TYPE_VOID);
             if (n->args.len != 1)
-                check_error(ctx, n->pos, "'world_frozen' очаква 1 аргумент, получих %d", n->args.len);
+                check_error(ctx, n->pos, "'%s' очаква 1 аргумент, получих %d", name, n->args.len);
             Type *wt = n->args.len > 0 ? n->args.data[0]->type : NULL;
             if (!wt || (wt->kind != TYPE_I64 && wt->kind != TYPE_ERROR))
                 check_error(ctx, n->pos,
-                    "'world_frozen' очаква i64 handle на свят, получих %s",
+                    "'%s' очаква i64 handle на свят, получих %s", name,
                     wt ? type_str(wt) : "?");
             return type_new(TYPE_BOOL);
         }
@@ -1150,6 +1158,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
              * такъв builtin го добави и тук, иначе просто няма подсказка. */
             static const char *const special[] = {
                 "print", "println", "write", "sorted", "drop", "world_frozen",
+                "world_mutable", "world_owned",
                 "vec_new", "vec_push", "vec_set", "vec_push_str", "vec_set_str",
                 "vec_get", "vec_get_str", "vec_len", "vec_slice", "vec_concat",
                 "vec_from_bytes", "bytes_from_vec",

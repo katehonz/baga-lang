@@ -349,7 +349,9 @@ static int expr_has_elem_ref_llvm(Node *e) {
     if (e->kind == NODE_ELEM_REF) return 1;
     if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
         (strcmp(e->callee->name, "sorted") == 0 ||
-         strcmp(e->callee->name, "world_frozen") == 0)) return 1;   /* W2.1: ghost */
+         strcmp(e->callee->name, "world_frozen") == 0 ||
+         strcmp(e->callee->name, "world_mutable") == 0 ||
+         strcmp(e->callee->name, "world_owned") == 0)) return 1;   /* W2.1/W2.7: ghost */
     if (e->kind == NODE_BINARY) return expr_has_elem_ref_llvm(e->left) || expr_has_elem_ref_llvm(e->right);
     if (e->kind == NODE_UNARY) return expr_has_elem_ref_llvm(e->operand);
     return 0;

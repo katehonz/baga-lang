@@ -258,6 +258,7 @@ void handles_set(HandleList *l, const char *var, int kind, int state, Lin *resul
         e->worker = NULL; e->chan_arg = NULL; e->world_arg = NULL;
         e->n_shared = 0;
         e->borrowed = 0;
+        e->wcontract = 0;
         e->links = NULL; e->n_links = 0; e->cap_links = 0;
         e->wf_recv = e->wf_send = e->wf_complex = 0;
         e->wf_n_send = e->wf_n_recv = 0;
@@ -297,6 +298,7 @@ void handles_clone_into(HandleList *dst, HandleList *src) {
         d->world_arg = src->h[i].world_arg ? strdup(src->h[i].world_arg) : NULL;
         d->n_shared = src->h[i].n_shared;
         d->borrowed = src->h[i].borrowed;
+        d->wcontract = src->h[i].wcontract;
         for (int k = 0; k < src->h[i].n_links; k++) wlink_add(d, src->h[i].links[k]);
     }
 }

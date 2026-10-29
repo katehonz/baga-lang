@@ -737,8 +737,8 @@ void inject_prod_axioms(State *st) {
     }
 }
 
-/* W2.1: ghost-конюнктите на requires. Обхождане САМО през AND — при OR/NOT
- * `world_frozen(p)` не е гаранция на извикващия, значи не се разтоварва
+/* W2.1/W2.7: ghost договорите на requires. Обхождане САМО през AND — при
+ * OR/NOT предикатът не е гаранция на извикващия, значи не се разтоварва
  * (callee-то също не го регистрира: extract_world_ghost). */
 static int world_req_has_ghost(Node *e) {
     if (!e) return 0;
@@ -760,12 +760,43 @@ static void collect_world_ghosts(Node *e, Node **out, int *n, int cap, int *trun
     }
 }
 
-/* Разтоварва един `world_frozen(p)` конюнкт срещу HK_WORLD състоянието на
- * актуалния аргумент при извикващия. Връща 1 ако е ДОКАЗАНО; иначе push-ва
- * нарушение (kind-3, path-sensitive) или честен UNKNOWN (kind-2, bad) и връща 0. */
+static int expr_world_contract(Node *e, const char *pn) {
+    if (!e) return 0;
+    int k = world_contract_of(e);
+    if (k) return strcmp(e->args.data[0]->name, pn) == 0 ? k : 0;
+    if (e->kind == NODE_BINARY && e->bin_op == OP_AND) {
+        int l = expr_world_contract(e->left, pn);
+        return l ? l : expr_world_contract(e->right, pn);
+    }
+    return 0;
+}
+
+/* W2.7: какъв договор (0=няма, 1=frozen, 2=mutable, 3=owned) декларира spec-ът
+ * за параметър #idx. Използва се и за задължителността: проследен свят не се
+ * предава на функция без договор за съответния параметър. */
+int spec_world_contract(Node *spec, Node *wfn, int idx) {
+    if (!spec || !wfn || idx < 0 || idx >= wfn->params.len) return 0;
+    const char *pn = wfn->params.data[idx]->param_name;
+    for (int r = 0; r < spec->spec_requires.len; r++) {
+        int k = expr_world_contract(spec->spec_requires.data[r]->ensure_expr, pn);
+        if (k) return k;
+    }
+    return 0;
+}
+
+/* Разтоварва един ghost договор върху актуалния аргумент при извикващия.
+ * Връща 1 ако е ДОКАЗАНО; иначе push-ва нарушение (kind-3, path-sensitive —
+ * мъртъв път остава vacuously PROVEN) или честен UNKNOWN (kind-2, bad).
+ *   world_frozen  → аргументът трябва да е замразен (жив, не преместен);
+ *   world_mutable → жив, мутабелен, НЕзаеман, без читатели (собствеността
+ *                   остава у извикващия — callee може само да пише в региона);
+ *   world_owned   → същото + не свързан; след повикването handle-ът на
+ *                   извикващия минава в moved (собствеността е пътувала). */
 static int world_ghost_discharge(Node *g, Node *call, Node *cfn, State *st,
                                  Obligations *ob, const char *callee, const char *rv) {
+    int kind = world_contract_of(g);
     const char *pn = g->args.data[0]->name;
+    const char *kn = kind == 1 ? "world_frozen" : kind == 2 ? "world_mutable" : "world_owned";
     HandleEntry *we = NULL;
     const char *an = NULL;
     for (int j = 0; j < cfn->params.len && j < call->args.len; j++) {
@@ -779,29 +810,66 @@ static int world_ghost_discharge(Node *g, Node *call, Node *cfn, State *st,
         break;
     }
     char wlabel[300];
-    if (we && we->state == 1) {
-        ConsList opath; cl_init(&opath);
-        for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
-        ConsList empty; cl_init(&empty);
-        snprintf(wlabel, sizeof wlabel, "requires world_frozen на '%s' при извикване", callee);
-        obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 0, 2, wlabel);
-        return 1;
-    }
     if (we) {
-        snprintf(wlabel, sizeof wlabel,
-            "requires world_frozen на '%s': предаден %s свят '%s'", callee,
-            we->state == 0 ? "мутабелен" : we->state == 2 ? "освободен" : "вече преместен",
-            an);
-        push_protocol_violation(st, ob, wlabel);
-        return 0;
+        const char *why = NULL;
+        if (kind == 1) {
+            if (we->state == 0) why = "мутабелен";
+            else if (we->state == 2) why = "освободен";
+            else if (we->state == 3) why = "вече преместен";
+        } else if (we->borrowed) {
+            why = "заеман (правото е само за четене)";
+        } else if (we->state == 1) {
+            why = "замразен";
+        } else if (we->state == 2) {
+            why = "освободен";
+        } else if (we->state == 3) {
+            why = "вече преместен";
+        } else if (we->n_shared > 0) {
+            why = "споделен с незавършили читатели";
+        } else if (kind == 3 && wlink_owner_of(&st->handles, we->var)) {
+            why = "свързан (друг свят държи capability към него)";
+        }
+        if (why) {
+            snprintf(wlabel, sizeof wlabel, "requires %s на '%s': предаден %s свят '%s'",
+                     kn, callee, why, an);
+            push_protocol_violation(st, ob, wlabel);
+            return 0;
+        }
+        if (kind == 3) we->state = 3;   /* W2.7: собствеността пътува */
     }
     ConsList opath; cl_init(&opath);
     for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
     ConsList empty; cl_init(&empty);
+    if (we) {
+        snprintf(wlabel, sizeof wlabel, "requires %s на '%s' при извикване", kn, callee);
+        obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 0, 2, wlabel);
+        return 1;
+    }
     snprintf(wlabel, sizeof wlabel,
-        "requires world_frozen на '%s' при извикване — състоянието на аргумента не се следи", callee);
+        "requires %s на '%s' при извикване — състоянието на аргумента не се следи", kn, callee);
     obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 1, 2, wlabel);
     return 0;
+}
+
+/* W2.7: задължителен договор — проследен свят, подаден на функция без
+ * world_frozen/world_mutable/world_owned за съответния параметър, е ОБРОЧЕНО.
+ * Без него callee-то е sound silence: може да сподели или освободи света, а
+ * извикващият после free-ва или чете през висящ handle. */
+static void check_world_arg_contract(Node *call, Node *cfn, Node *cspec, State *st,
+                                     Obligations *ob, const char *callee) {
+    if (!cfn) return;
+    for (int j = 0; j < cfn->params.len && j < call->args.len; j++) {
+        Node *aa = call->args.data[j];
+        if (!aa || aa->kind != NODE_IDENT) continue;
+        HandleEntry *we = handles_find(&st->handles, aa->name);
+        if (!we || we->kind != HK_WORLD) continue;
+        if (spec_world_contract(cspec, cfn, j)) continue;
+        char wlabel[300];
+        snprintf(wlabel, sizeof wlabel,
+            "предаване на свят '%s' на '%s' без договор за параметъра — декларирай "
+            "requires: world_frozen/world_mutable/world_owned", aa->name, callee);
+        push_protocol_violation(st, ob, wlabel);
+    }
 }
 
 /* M5: assume-guarantee for a user call in statement position.
@@ -843,6 +911,7 @@ Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *caller_na
 
     int all_req_proven = 1;
     inject_prod_axioms(st);   /* M8b: фактите за продукти влизат в opath */
+    check_world_arg_contract(call, cfn, cspec, st, ob, callee);   /* W2.7 */
     for (int r = 0; r < cspec->spec_requires.len; r++) {
         Node *req = cspec->spec_requires.data[r]->ensure_expr;
         /* W2.1: ghost предикат world_frozen(p) — caller страната на двустранния

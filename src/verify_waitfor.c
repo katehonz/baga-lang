@@ -630,8 +630,8 @@ static Sym make_status_pair(State *st, Node *c0, Node *c1, int hi) {
     return sym_lin(lin_var(pv));
 }
 
-static const char *world_move_scan(State *st, Obligations *ob, Node *arg, int delegate_ok, int can_join);   /* W1.5, W2.4, W2.6 */
-static int spec_requires_frozen_param(Node *spec, Node *wfn, int idx);   /* W2.6 */
+static const char *world_move_scan(State *st, Obligations *ob, Node *arg, int delegate_ok,
+                                  int can_join, const char *skip);   /* W1.5…W2.7 */
 static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
                                 const char *op, int joinable, int delegate_ok);   /* W2.4/W2.6 */
 
@@ -685,6 +685,18 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             res = eval_user_call(&fake, st, ob, g_caller_name);
         } else {
             /* spec-less worker: nothing to discharge or assume (honest) */
+            /* W2.7: работник без spec няма договор — проследен свят не може да
+             * му се предаде (освен ЗАЕМАН, където W2.6 правилата вече спорят). */
+            if (call->args.data[1] && call->args.data[1]->kind == NODE_IDENT) {
+                HandleEntry *we0 = handles_find(&st->handles, call->args.data[1]->name);
+                if (we0 && we0->kind == HK_WORLD && !we0->borrowed) {
+                    char nolabel[300];
+                    snprintf(nolabel, sizeof nolabel,
+                        "предаване на свят '%s' на работник '%s' без spec — декларирай "
+                        "requires: world_frozen/world_mutable/world_owned", we0->var, wname);
+                    push_protocol_violation(st, ob, nolabel);
+                }
+            }
             Sym a = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
             lin_free(&a.lin);
             /* M16 drop rule: a spec-less worker may send anything on the
@@ -695,11 +707,18 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
             res = sym_lin(lin_var(rv));
         }
-        /* W2.6: договорът на работника решава дали ЗАЕМАН свят може да се
-         * делегира надолу (при go аргументът отива в param 0). */
-        int deleg_ok = spec_requires_frozen_param(find_spec(g_prog, wname), wfn, 0);
+        /* W2.6/W2.7: договорът на работника (param 0) решава три неща —
+         * дали ЗАЕМАН свят може да се делегира надолу (само world_frozen), и
+         * дали собствеността вече е прехвърлена от discharge-а (world_owned:
+         * тогава scan-ът не трябва да я третира като второ предаване). */
+        Node *wspec = find_spec(g_prog, wname);
+        int wcont = spec_world_contract(wspec, wfn, 0);
+        int deleg_ok = (wcont == 1);
+        const char *skip = NULL;
+        if (wcont == 3 && call->args.data[1] && call->args.data[1]->kind == NODE_IDENT)
+            skip = call->args.data[1]->name;
         const char *shared_w = world_move_scan(st, ob, call->args.data[1], deleg_ok,
-                                              strcmp(nm, "go_bg") != 0);
+                                              strcmp(nm, "go_bg") != 0, skip);
         /* M19: classify the worker's first blocking op on the channel arg */
         HandleEntry *ch = NULL;
         {
@@ -907,26 +926,6 @@ void eval_drop_call(Node *call, State *st, Obligations *ob) {
     }
 }
 
-/* W2.6: дали spec-ът на работника декларира `requires: world_frozen(<param
- * idx>)` — договорът, без който делегирането на ЗАЕМАН свят не е sound
- * (получателят без договор може да го освободи или препредаде, а ние не виждаме
- * вътре: sound silence). Обхожда конюнктите, както extract_world_ghost. */
-static int expr_requires_frozen(Node *e, const char *pn) {
-    if (!e) return 0;
-    if (is_world_ghost_call(e)) return strcmp(e->args.data[0]->name, pn) == 0;
-    if (e->kind == NODE_BINARY && e->bin_op == OP_AND)
-        return expr_requires_frozen(e->left, pn) || expr_requires_frozen(e->right, pn);
-    return 0;
-}
-
-static int spec_requires_frozen_param(Node *spec, Node *wfn, int idx) {
-    if (!spec || !wfn || idx < 0 || idx >= wfn->params.len) return 0;
-    const char *pn = wfn->params.data[idx]->param_name;
-    for (int r = 0; r < spec->spec_requires.len; r++)
-        if (expr_requires_frozen(spec->spec_requires.data[r]->ensure_expr, pn)) return 1;
-    return 0;
-}
-
 /* W2.4: предаване на свят на друг изпълнител. ЗАМРАЗЕН свят е споделена
  * read-only capability (Pony val / Verona frozen region): n_shared++, а
  * локалните четения остават легални — свободата да имаш N читателя е цялата
@@ -945,6 +944,15 @@ static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
     }
     if (we->state == 3) {
         snprintf(label, sizeof label, "%s на вече преместен свят '%s'", op, we->var);
+        push_protocol_violation(st, ob, label);
+        return NULL;
+    }
+    /* W2.7: договор world_mutable е за запис по време на повикването —
+     * предаването на света нататък е извън него (собствеността е у извикващия).
+     * За world_owned предаването е легално: собствеността вече е тук. */
+    if (we->wcontract == 2) {
+        snprintf(label, sizeof label,
+            "%s на свят с договор world_mutable — собствеността е у извикващия", op);
         push_protocol_violation(st, ob, label);
         return NULL;
     }
@@ -1000,31 +1008,32 @@ static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
  * всеки. Joinable е само голо ident-предаване; delegate_ok важи само за него
  * (в пакет не знаем кой параметър получава света). */
 static const char *world_move_scan_rec(Node *e, State *st, Obligations *ob,
-                                       int joinable, int delegate_ok) {   /* joinable = can_join && гол ident */
+                                       int joinable, int delegate_ok, const char *skip) {
     if (!e) return NULL;
     switch (e->kind) {
     case NODE_IDENT: {
+        if (skip && strcmp(e->name, skip) == 0) return NULL;   /* W2.7: owned — вече прехвърлен */
         HandleEntry *h = handles_find(&st->handles, e->name);
         if (!h || h->kind != HK_WORLD) return NULL;
         return world_handoff(st, ob, h, "предаване", joinable, delegate_ok);
     }
     case NODE_CALL:
-        for (int i = 0; i < e->args.len; i++) world_move_scan_rec(e->args.data[i], st, ob, 0, 0);
+        for (int i = 0; i < e->args.len; i++) world_move_scan_rec(e->args.data[i], st, ob, 0, 0, NULL);
         return NULL;
     case NODE_BINARY:
-        world_move_scan_rec(e->left, st, ob, 0, 0);
-        world_move_scan_rec(e->right, st, ob, 0, 0);
+        world_move_scan_rec(e->left, st, ob, 0, 0, NULL);
+        world_move_scan_rec(e->right, st, ob, 0, 0, NULL);
         return NULL;
     default: return NULL;
     }
 }
 static const char *world_move_scan(State *st, Obligations *ob, Node *arg,
-                                  int delegate_ok, int can_join) {
+                                  int delegate_ok, int can_join, const char *skip) {
     /* само ГОЛ ident е joinable: при cell2 пакет не знаем кой свят ще бъде
      * прочетен от работника, значи декремент при join не е възможен; go_bg е
      * detached at birth и изобщо няма handle за join. */
     return world_move_scan_rec(arg, st, ob,
-                              can_join && arg && arg->kind == NODE_IDENT, delegate_ok);
+                              can_join && arg && arg->kind == NODE_IDENT, delegate_ok, skip);
 }
 
 /* W0: world_* преходи на HK_WORLD ghost състоянието (като eval_drop_call,
@@ -1040,6 +1049,19 @@ void eval_world_call(Node *call, State *st, Obligations *ob) {
     if (!e || e->kind != HK_WORLD) return;
     char label[300];
     const char *viol = NULL;
+    /* W2.7: договорът world_mutable дава изключителен ЗАПИС в региона по време
+     * на повикването, но собствеността остава у извикващия — freeze, free и
+     * връзките променят правата трайно (извън обхвата на договора), затова са
+     * нарушения. За world_frozen това вече го покрива borrowed-правилото, а
+     * world_owned позволява всичко. */
+    if (e->wcontract == 2 &&
+        (strcmp(op, "world_freeze") == 0 || strcmp(op, "world_free") == 0 ||
+         strcmp(op, "world_link") == 0 || strcmp(op, "world_unlink") == 0)) {
+        snprintf(label, sizeof label,
+            "%s върху свят с договор world_mutable — собствеността е у извикващия", op);
+        push_protocol_violation(st, ob, label);
+        return;
+    }
     if (strcmp(op, "world_freeze") == 0) {
         if (e->state == 0) {
             e->state = 1;

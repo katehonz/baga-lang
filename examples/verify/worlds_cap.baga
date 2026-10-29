@@ -418,8 +418,22 @@ fn ok_reader_delegates(ctx: i64) -> i64 !Par {
     return r - r
 }
 
+spec w_worker {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_owned(ctx)
+    ensures:
+        output >= 0
+}
+
+// W2.7: работникът-приемник на mutable свят декларира договор — собствеността
+// се прехвърля (world_owned), което е точно move-семантиката на W1.5/W2.4.
 fn w_worker(ctx: i64) -> i64 !Par {
-    return ctx
+    // връщаме 0, не handle-а: i64-ът на света няма знак според договора, а
+    // ensures output >= 0 трябва да е доказуем, не оборен от произвол handle.
+    return ctx - ctx
 }
 
 

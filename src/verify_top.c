@@ -620,20 +620,26 @@ void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax) {
  * е гарантиран, значи не се регистрира нищо (честно мълчание). */
 void extract_world_ghost(Node *e, State *st) {
     if (!e) return;
-    if (is_world_ghost_call(e)) {
+    int kind = world_contract_of(e);
+    if (kind) {
+        /* W2.1/W2.7: договорът определя началното ghost състояние на
+         * параметъра — frozen(1) за четене, mutable(0) за изключителен запис,
+         * owned(0) за прехвърлена собственост. Правата се налагат от
+         * eval_world_call/world_handoff по wcontract. */
         const char *nm = e->args.data[0]->name;
+        int state = kind == 1 ? 1 : 0;
         HandleEntry *h = handles_find(&st->handles, nm);
         if (h) {
-            if (h->kind == HK_WORLD) { h->state = 1; h->borrowed = 1; }
+            if (h->kind == HK_WORLD) {
+                h->state = state;
+                h->wcontract = kind;
+                h->borrowed = kind == 1;
+            }
             return;
         }
-        handles_set(&st->handles, nm, HK_WORLD, 1, NULL);
-        /* W2.4: `requires: world_frozen(ctx)` дава ПРАВО НА ЧЕТЕНЕ, не
-         * собственост — получателят не може да освобождава или препредава
-         * света (извикващият join-ва само своите работници и после free-ва;
-         * free на заеман свят би съблякъл региона под останалите читатели). */
+        handles_set(&st->handles, nm, HK_WORLD, state, NULL);
         h = handles_find(&st->handles, nm);
-        if (h) h->borrowed = 1;
+        if (h) { h->wcontract = kind; h->borrowed = kind == 1; }
         return;
     }
     if (e->kind == NODE_BINARY && e->bin_op == OP_AND) {

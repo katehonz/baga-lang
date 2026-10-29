@@ -45,7 +45,7 @@ static void emit_test_driver(Codegen *cg, Node *program) {
         if (!spec_inputs_testable(it)) {
             fprintf(f, "    printf(");
             emit_c_string(f, it->spec_name);
-            fprintf(f, " \": пропусната (неподдържан тип за --test-specs)\\n\");\n");
+            fprintf(f, " \": пропусната (входовете не са property-testable — непознат тип или договор за свят)\\n\");\n");
             continue;
         }
         int np = it->spec_inputs.len;

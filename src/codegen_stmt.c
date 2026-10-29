@@ -452,7 +452,31 @@ static Node *find_ensures_spec(Codegen *cg, const char *fn_name) {
 /* ---- --test-specs ---- */
 
 /* true, ако всички input типове на spec-а са i64/bool */
+/* W2.7: spec с договор за свят НЕ е property-testable — --test-specs подава
+ * произволни i64, а world handle-ът е указатъл: builtin-ите го дереференсират
+ * и случайната стойност е segfault. (Досега някои случаи минаваха само защото
+ * emitter-ът махаше мъртвите let-ове.) Договорът се проверява от --verify. */
+static int expr_has_world_contract(Node *e) {
+    if (!e) return 0;
+    if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT) {
+        const char *n = e->callee->name;
+        if (strcmp(n, "world_frozen") == 0 || strcmp(n, "world_mutable") == 0 ||
+            strcmp(n, "world_owned") == 0) return 1;
+    }
+    if (e->kind == NODE_BINARY)
+        return expr_has_world_contract(e->left) || expr_has_world_contract(e->right);
+    if (e->kind == NODE_UNARY) return expr_has_world_contract(e->operand);
+    return 0;
+}
+
+static int spec_has_world_contract(Node *spec) {
+    for (int i = 0; i < spec->spec_requires.len; i++)
+        if (expr_has_world_contract(spec->spec_requires.data[i]->ensure_expr)) return 1;
+    return 0;
+}
+
 int spec_inputs_testable(Node *spec) {
+    if (spec_has_world_contract(spec)) return 0;   /* W2.7 */
     for (int i = 0; i < spec->spec_inputs.len; i++) {
         Node *pt = spec->spec_inputs.data[i]->param_type;
         if (pt->kind != NODE_TYPE || !pt->type_name) return 0;
@@ -502,14 +526,17 @@ void emit_requires_predicate(Codegen *cg, Node *spec) {
 
 /* ---- function emission ---- */
 
-/* v[*] element invariants, sorted(v) and world_frozen(w) are verifier-only
- * annotations — they are not emitted as runtime contract checks. */
+/* v[*] element invariants and the world contract predicates (world_frozen /
+ * world_mutable / world_owned) plus sorted(v) are verifier-only annotations —
+ * they are not emitted as runtime contract checks. */
 static int is_verifier_only_annotation(Node *e) {
     if (!e) return 0;
     if (e->kind == NODE_ELEM_REF) return 1;
     if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
         (strcmp(e->callee->name, "sorted") == 0 ||
-         strcmp(e->callee->name, "world_frozen") == 0)) return 1;
+         strcmp(e->callee->name, "world_frozen") == 0 ||
+         strcmp(e->callee->name, "world_mutable") == 0 ||
+         strcmp(e->callee->name, "world_owned") == 0)) return 1;
     if (e->kind == NODE_BINARY) return is_verifier_only_annotation(e->left) || is_verifier_only_annotation(e->right);
     if (e->kind == NODE_UNARY) return is_verifier_only_annotation(e->operand);
     return 0;

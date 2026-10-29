@@ -528,15 +528,27 @@ int is_sorted_call(Node *e) {
            strcmp(e->callee->name, "sorted") == 0;
 }
 
-/* W2.1: verifier-only ghost предикат world_frozen(w) в requires/ensures.
+/* W2.1/W2.7: verifier-only ghost предикати за ДОГОВОР за свят в requires:
+ *   world_frozen(p)  — заемане за четене (W2.1);
+ *   world_mutable(p) — изключителен запис по време на повикването (W2.7);
+ *   world_owned(p)   — прехвърляне на собствеността (W2.7).
  * Състоянието на свят не е аритметична величина (HK_WORLD е ghost, като
  * sorted(v)): положителна употреба → vacuous TRUE за скаларния фрагмент
  * (ghost-регистрацията е отделна — extract_world_ghost); отрицание → извън
  * фрагмента, т.е. честен UNKNOWN. */
 int is_world_ghost_call(Node *e) {
-    return e && e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
-           strcmp(e->callee->name, "world_frozen") == 0 &&
-           e->args.len == 1 && e->args.data[0]->kind == NODE_IDENT;
+    return world_contract_of(e) != 0;
+}
+
+/* 0 = не е договор; 1 = world_frozen; 2 = world_mutable; 3 = world_owned */
+int world_contract_of(Node *e) {
+    if (!e || e->kind != NODE_CALL || !e->callee || e->callee->kind != NODE_IDENT ||
+        e->args.len != 1 || e->args.data[0]->kind != NODE_IDENT) return 0;
+    const char *nm = e->callee->name;
+    if (strcmp(nm, "world_frozen") == 0) return 1;
+    if (strcmp(nm, "world_mutable") == 0) return 2;
+    if (strcmp(nm, "world_owned") == 0) return 3;
+    return 0;
 }
 
 int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated, Formula *out) {
