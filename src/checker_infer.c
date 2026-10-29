@@ -1044,11 +1044,11 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                         check_error(ctx, n->pos,
                             "world_free на външен за цикъла свят '%s' — втората итерация би била use-after-free",
                             wh->name);
-                    else {
-                        e->dropped = 1;
-                        if (ctx->n_drop_log < 256) ctx->drop_log[ctx->n_drop_log++] = e;
-                        else ctx->drop_log_overflowed = 1;
-                    }
+                    else
+                        /* W2.2: умират и алиасите, и заеманите от региона
+                         * низове (wvec_get_str) — иначе `print(s)` след free е
+                         * heap-use-after-free, който минаваше проверката */
+                        mem3_free_world(ctx, e);
                 } else if (is_freeze) {
                     if (e->world_frozen)
                         check_error(ctx, n->pos, "повторен world_freeze на '%s'", wh->name);

@@ -78,5 +78,19 @@ fn main() {
     check("str_roundtrip", wvec_get_str(w4, vs, 0) == "здравей" && wvec_get_str(w4, vs, 1) == "свят")
     world_free(w4)
 
+    // W2.2 регресия: низ от САМИЯ регион като източник на push_str. Ако
+    // arena_alloc realloc-не base, старият s висеше (heap-use-after-free под
+    // ASan). Падингът докарва used точно до cap=65536, така че копието между
+    // двата wvec-а предизвиква растеж точно в критичния момент.
+    let w5 = world_new()
+    let va = wvec_new(w5)
+    let vb = wvec_new(w5)
+    wvec_push_str(w5, va, "region-string-payload")
+    let pad = world_alloc(w5, 65536 - world_used(w5))
+    wvec_push_str(w5, vb, wvec_get_str(w5, va, 0))
+    check("str_region_copy_growth", wvec_get_str(w5, vb, 0) == "region-string-payload")
+    check("str_region_source_intact", wvec_get_str(w5, va, 0) == "region-string-payload")
+    world_free(w5)
+
     print("wvec_test: all passed")
 }

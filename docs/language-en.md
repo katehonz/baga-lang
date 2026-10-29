@@ -1246,6 +1246,20 @@ invalidates nothing:
   (and the receiver's ensures is assumed), a mutable/freed/already-moved world
   is REFUTED with a witness, an untracked handle is an honest UNKNOWN. A worker
   without a spec stays sound silence: there is no contract to discharge.
+- W2.2: a runtime memory-safety audit (ASan). `wvec_push_str` with a source
+  string inside the same region no longer dangles across growth (offset-first
+  discipline for the string too — this was a heap-use-after-free); every address
+  a wvec touches is proven inside the region, so a bad offset or a corrupt
+  `world_load` blob is a clean error instead of an out-of-bounds access, and
+  `wvec_get_str` requires the element to be a valid region string (offset +
+  NUL). `world_free` kills the handle, its aliases and the strings borrowed
+  from the region: `world_free(w); print(s)` with `s = wvec_get_str(w, …)` is
+  now a compile error (it used to be a heap-use-after-free the checker
+  accepted), a double free is a no-op (codegen zeroes the local handle), and
+  `world_state` after free is -1. To keep a string past the region's lifetime,
+  copy it with `concat(s, "")`. A repeated `world_freeze` is a clean runtime error (matching
+  the checker and the verifier). An ASan run of `tests/wvec_test.baga` is a gate
+  in run_tests.sh. The measured cost of validation is in docs/worlds-bg.md §4.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

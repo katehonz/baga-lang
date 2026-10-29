@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### W2.2 — светове: runtime memory safety (ASan одит)
+- **Поправен heap-use-after-free в `wvec_push_str`**: `wvec_push_str(w, v2,
+  wvec_get_str(w, v, 0))` при растеж на арената четеше освободения стар `base`
+  (потвърдено с ASan). Низът от самия регион вече се бележи като ОФСЕТ преди
+  `arena_alloc` и се препрочита след него — офсет-първата дисциплина на W1 важи
+  вече и за него. Регресия: `str_region_copy_growth` в tests/wvec_test.baga
+  (падинг до точно cap).
+- **Всеки адрес на wvec достъп е доказан в региона**: `baga_wvec_at` (заглавие),
+  `baga_wvec_data` (точният елемент), старият span при растеж. Сгрешен `voff`
+  или счупен `world_load` blob вече е чиста грешка, не heap-buffer-overflow
+  (също потвърдено с ASan). `wvec_get_str` изисква елементът да е офсет в
+  региона с NUL преди края му — i64 елемент, прочетен като низ, е чиста грешка.
+  Сметките са в uint64 с по две сравнения (без signed overflow, без деление);
+  валидира се адресът на достъпа, не целия инвариант на заглавието.
+- **`world_free` убива handle-а, алиасите и заеманите низове** — статично и
+  динамично. `world_free(w); print(s)` със `s = wvec_get_str(w, …)` беше
+  heap-use-after-free, който checker-ът приемаше (третата ASan находка);
+  сега е compile грешка чрез `mem3_free_world`: светът получава region id в
+  `mem3_bind`, `wvec_get_str` тагва резултата като payload на региона
+  (`region_of_expr`), а free-ът инвалидира payload-ите и world-алиасите със
+  същото id. Също и `world_free(b)` при `let b = w`. Codegen нулира локалния
+  handle след `world_free`/`arena_free` (C бекенд, при ident аргумент): двоен
+  free е no-op, `world_state` след free е -1. Идиомът за изтичане —
+  `concat(s, "")` — е проверен, че оцелява.
+- **Повторният `world_freeze` е чиста runtime грешка** — runtime-ът я приемаше
+  тихо, докато verifier-ът (W0) и checker-ът (W1.6) я оборват. Сега трите
+  нива имат една дисциплина.
+- `arena_alloc`: overflow guard при гигантска заявка + oom проверка;
+  `world_load`: валидация на blob-а + oom проверки.
+- **ASan gate в run_tests.sh**: `tests/wvec_test.baga` се компилира с
+  `-fsanitize=address` и минава — този клас регресии излиза в CI. Нови проби:
+  невалиден wvec офсет, get_str върху i64 елемент, world_load на боклук,
+  повторен freeze, двоен free (no-op), world_state след free (-1),
+  borrow-after-free и alias-after-free (compile грешки), concat-копието.
+- **Честната цена е в docs/worlds-bg.md §4**: wvec get ~1.78 ns/достъп (беше
+  0.54 ns) — проверките спират auto-векторизацията на горещия цикъл; push
+  остава ~0.9× от Vec, dump/load са memcpy-скорости. Честна остатъчна граница:
+  struct-валиден, но семантично чужд blob дава грешни стойности, не UB.
+
 ### W2.1 — светове: двустранен протокол (`world_frozen` в requires)
 - Ghost предикат `world_frozen(w)` за `requires`/`ensures` — verifier-only, по
   модела на `sorted(v)`: без runtime проверка (C и LLVM contract-check

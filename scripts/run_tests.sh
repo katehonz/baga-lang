@@ -600,6 +600,127 @@ else
 	exit 1
 fi
 
+echo "=== W2.2 Worlds runtime: невалиден офсет/blob е чиста грешка, не UB ==="
+# Сгрешен wvec офсет четеше извън malloc блока (heap-buffer-overflow под ASan).
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push(w, v, 42)\n    print(wvec_len(w, 70000))\n}\n' > /tmp/baga_wvec_badoff.baga
+RC=0
+run /tmp/baga_wvec_badoff.baga > /tmp/baga_wvec_badoff_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "невалиден wvec офсет" /tmp/baga_wvec_badoff_out.txt; then
+	echo "OK: невалиден wvec офсет — чиста грешка"
+else
+	echo "FAIL: невалидният wvec офсет трябваше да е чиста грешка"
+	cat /tmp/baga_wvec_badoff_out.txt
+	exit 1
+fi
+# i64 елемент, прочетен като низ — офсетът е извън региона.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push(w, v, 12345)\n    print(wvec_get_str(w, v, 0))\n}\n' > /tmp/baga_wvec_badstr.baga
+RC=0
+run /tmp/baga_wvec_badstr.baga > /tmp/baga_wvec_badstr_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "не е офсет в региона" /tmp/baga_wvec_badstr_out.txt; then
+	echo "OK: wvec_get_str върху i64 елемент — чиста грешка"
+else
+	echo "FAIL: wvec_get_str с невалиден елемент трябваше да е чиста грешка"
+	cat /tmp/baga_wvec_badstr_out.txt
+	exit 1
+fi
+# world_load на случаен blob + wvec достъп — trust boundary, чиста грешка.
+printf 'fn main() {\n    let b = bytes_of_str("not-a-world-blob-at-all")\n    let w = world_load(b)\n    print(wvec_len(w, 0))\n}\n' > /tmp/baga_world_badload.baga
+RC=0
+run /tmp/baga_world_badload.baga > /tmp/baga_world_badload_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "невалиден wvec офсет" /tmp/baga_world_badload_out.txt; then
+	echo "OK: world_load на боклук + wvec достъп — чиста грешка"
+else
+	echo "FAIL: счупеният blob трябваше да дава чиста грешка"
+	cat /tmp/baga_world_badload_out.txt
+	exit 1
+fi
+# Повторен freeze зад if-клон: checker-ът (W1.6) мълчи (maybe-frozen),
+# verifier-ът оборва, runtime-ът вече също отказва чисто.
+printf 'fn main() {\n    let w = world_new()\n    let n = 1\n    if n > 0 {\n        world_freeze(w)\n    }\n    world_freeze(w)\n}\n' > /tmp/baga_w_refreeeze.baga
+RC=0
+run /tmp/baga_w_refreeeze.baga > /tmp/baga_w_refreeeze_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "повторен world_freeze" /tmp/baga_w_refreeeze_out.txt; then
+	echo "OK: повторен world_freeze — чиста runtime грешка (същата дисциплина)"
+else
+	echo "FAIL: повторният freeze трябваше да е чиста грешка"
+	cat /tmp/baga_w_refreeeze_out.txt
+	exit 1
+fi
+# Двоен free зад if-клон: handle-ът се нулира след free ⇒ no-op, НЕ двоен
+# free() на malloc. Use-after-free пък е чиста null-handle стойност/грешка.
+printf 'fn main() {\n    let w = world_new()\n    let n = 1\n    if n > 0 {\n        world_free(w)\n    }\n    world_free(w)\n    print("survived")\n}\n' > /tmp/baga_w_refree.baga
+RC=0
+run /tmp/baga_w_refree.baga > /tmp/baga_w_refree_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "survived" /tmp/baga_w_refree_out.txt; then
+	echo "OK: двоен world_free е no-op (handle-ът се нулира след free)"
+else
+	echo "FAIL: двоен free трябваше да е no-op, не UB"
+	cat /tmp/baga_w_refree_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let n = 1\n    if n > 0 {\n        world_free(w)\n    }\n    print(world_state(w))\n}\n' > /tmp/baga_w_uafstate.baga
+RC=0
+run /tmp/baga_w_uafstate.baga > /tmp/baga_w_uafstate_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "^-1$" /tmp/baga_w_uafstate_out.txt; then
+	echo "OK: world_state след free е -1 (null handle), не use-after-free четене"
+else
+	echo "FAIL: world_state след free трябваше да е чист, не UB"
+	cat /tmp/baga_w_uafstate_out.txt
+	exit 1
+fi
+
+echo "=== W2.2 borrow/alias: free убива и заеманите от региона низове ==="
+# `let s = wvec_get_str(w, …); world_free(w); print(s)` беше heap-use-after-free,
+# който checker-ът приемаше (потвърдено с ASan). Вече е compile грешка.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "borrowed")\n    let s = wvec_get_str(w, v, 0)\n    world_free(w)\n    print(s)\n}\n' > /tmp/baga_w_borrowfree.baga
+RC=0
+run /tmp/baga_w_borrowfree.baga > /tmp/baga_w_borrowfree_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w_borrowfree_out.txt; then
+	echo "OK: заеман регион-низ след world_free — compile грешка"
+else
+	echo "FAIL: borrow-after-free трябваше да е compile грешка"
+	cat /tmp/baga_w_borrowfree_out.txt
+	exit 1
+fi
+# Алиасът на handle-а също умира при free на който и да е от двамата.
+printf 'fn main() {\n    let w = world_new()\n    let b = w\n    world_free(w)\n    world_free(b)\n}\n' > /tmp/baga_w_aliasfree.baga
+RC=0
+run /tmp/baga_w_aliasfree.baga > /tmp/baga_w_aliasfree_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w_aliasfree_out.txt; then
+	echo "OK: алиас на свят след world_free — compile грешка"
+else
+	echo "FAIL: alias-after-free трябваше да е compile грешка"
+	cat /tmp/baga_w_aliasfree_out.txt
+	exit 1
+fi
+# Копието е независимо от региона и оцелява — идиомът за дълъг живот.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "borrowed")\n    let s = wvec_get_str(w, v, 0)\n    let c = concat(s, "")\n    world_free(w)\n    print(c)\n}\n' > /tmp/baga_w_borrowcopy.baga
+RC=0
+run /tmp/baga_w_borrowcopy.baga > /tmp/baga_w_borrowcopy_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "^borrowed$" /tmp/baga_w_borrowcopy_out.txt; then
+	echo "OK: concat-копието оцелява след free (идиомът за изтичане от региона)"
+else
+	echo "FAIL: копието на заемания низ трябваше да оцелее"
+	cat /tmp/baga_w_borrowcopy_out.txt
+	exit 1
+fi
+
+echo "=== W2.2 ASan прогон на wvec_test (UB регресии в region runtime-а) ==="
+# Компилира генерирания C с AddressSanitizer: use-after-free при растеж на
+# региона и out-of-bounds при счупен офсет излизат веднага. Leak-овете са
+# изключени — bump арената по дизайн не се освобождава (MEM-6 я мери).
+"$BIN" $BAGAIFLAGS --emit-c tests/wvec_test.baga > /tmp/baga_wvec_asan.c 2>/tmp/baga_wvec_asan_err.txt \
+	&& gcc -g -O1 -fsanitize=address -o /tmp/baga_wvec_asan /tmp/baga_wvec_asan.c -lm -pthread 2>>/tmp/baga_wvec_asan_err.txt
+RC=0
+ASAN_OPTIONS=detect_leaks=0 /tmp/baga_wvec_asan > /tmp/baga_wvec_asan_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "wvec_test: all passed" /tmp/baga_wvec_asan_out.txt; then
+	echo "OK: wvec_test минава и под AddressSanitizer (region copy при растеж включен)"
+else
+	echo "FAIL: ASan прогонът на wvec_test трябваше да е чист"
+	cat /tmp/baga_wvec_asan_out.txt /tmp/baga_wvec_asan_err.txt
+	exit 1
+fi
+
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 # 8000 keeps clear of the crowded framework defaults (8080/8090) and of
 # ambient dev servers; override with REGISTRY_PORT when 8000 is taken.

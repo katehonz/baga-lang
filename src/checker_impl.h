@@ -157,6 +157,7 @@ void pop_scope(CheckCtx *ctx);   /* 780 */
 void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos);   /* 784 */
 void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_mut, SrcPos pos);   /* 809 */
 void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h);   /* 857 */
+void mem3_free_world(CheckCtx *ctx, EnvEntry *h);   /* W2.2: free на свят + заеманите низове */
 EnvEntry *ck_env_find(CheckCtx *ctx, const char *name);   /* 877 */
 const char *ck_suggest(const char *name, const char *const *cands, int n);
 int region_of_expr(CheckCtx *ctx, Node *n);   /* 891 */

@@ -1413,9 +1413,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
     fprintf(out, "    if (!a) { fprintf(stderr, \"baga: arena_alloc: null handle\\n\"); exit(1); }\n");
     fprintf(out, "    if (size < 0) size = 0;\n");
+    /* W2.2: overflow guard — иначе used+size или (used+size)*2 прелива и
+     * bump-ът пише извън блока при гигантска заявка. */
+    fprintf(out, "    if (size > 0 && a->used > INT64_MAX - size) { fprintf(stderr, \"baga: arena_alloc: блокът е прекалено голям\\n\"); exit(1); }\n");
     fprintf(out, "    if (a->used + size > a->cap) {\n");
-    fprintf(out, "        int64_t nc = (a->used + size) * 2;\n");
+    fprintf(out, "        int64_t need = a->used + size;\n");
+    fprintf(out, "        int64_t nc = need > a->cap * 2 ? need : a->cap * 2;\n");
     fprintf(out, "        a->base = realloc(a->base, (size_t)nc); a->cap = nc;\n");
+    fprintf(out, "        if (!a->base) { fprintf(stderr, \"baga: arena_alloc: oom\\n\"); exit(1); }\n");
     fprintf(out, "    }\n");
     fprintf(out, "    char *p = a->base + a->used; a->used += size;\n");
     fprintf(out, "    return (int64_t)(intptr_t)p;\n");
@@ -1444,6 +1449,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static int64_t baga_world_freeze(int64_t h) {\n");
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
     fprintf(out, "    if (!a) { fprintf(stderr, \"baga: world_freeze: null handle\\n\"); exit(1); }\n");
+    /* W2.2: повторният freeze е нарушение на протокола (verifier-ът го оборва,
+     * W1.6 — на компилация). Runtime-ът вече не го приема мълчаливо: чиста
+     * грешка, същата дисциплина като mutate-after-freeze. */
+    fprintf(out, "    if (a->frozen) { fprintf(stderr, \"baga: повторен world_freeze — святът вече е замразен\\n\"); exit(1); }\n");
     fprintf(out, "    a->frozen = 1;\n");
     fprintf(out, "    return 1;\n");
     fprintf(out, "}\n");
@@ -1469,6 +1478,27 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_world_mut_check(baga_Arena *a, const char *op) {\n");
     fprintf(out, "    if (a->frozen) { fprintf(stderr, \"baga: %%s върху замразен свят — mutate-after-freeze\\n\", op); exit(1); }\n");
     fprintf(out, "}\n");
+    /* W2.2: всеки адрес, който wvec пипа, е доказан ВЪТРЕ в региона — иначе
+     * сгрешен voff или зловреден/счупен blob от world_load четеше/пишеше извън
+     * malloc блока (heap-buffer-overflow под ASan). Два помощника, всяка
+     * проверка е по 2 сравнения, без деление и без signed overflow (сметките
+     * са в uint64: евентуален wrap дава адрес ПАК в региона, никога извън него).
+     * Не валидираме целия инвариант на заглавието — само адреса на достъпа. */
+    fprintf(out, "static baga_WVec *baga_wvec_at(baga_Arena *w, int64_t voff, const char *op) {\n");
+    fprintf(out, "    if (voff < 0 || voff > w->used - (int64_t)sizeof(baga_WVec)) {\n");
+    fprintf(out, "        fprintf(stderr, \"baga: %%s: невалиден wvec офсет %%lld (used=%%lld)\\n\", op, (long long)voff, (long long)w->used);\n");
+    fprintf(out, "        exit(1);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t *baga_wvec_data(baga_Arena *w, baga_WVec *v, int64_t i, const char *op) {\n");
+    fprintf(out, "    uint64_t off = (uint64_t)v->data_off + (uint64_t)i * 8u;\n");
+    fprintf(out, "    if (off > (uint64_t)w->used || (uint64_t)w->used - off < 8u) {\n");
+    fprintf(out, "        fprintf(stderr, \"baga: %%s: достъп извън региона (off=%%llu used=%%lld)\\n\", op, (unsigned long long)off, (long long)w->used);\n");
+    fprintf(out, "        exit(1);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return (int64_t *)(w->base + off);\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wvec_new(int64_t wh) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_new\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wvec_new\");\n");
@@ -1486,29 +1516,32 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_wvec_push(int64_t wh, int64_t voff, int64_t x) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wvec_push\");\n");
-    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_push\");\n");
     fprintf(out, "    if (v->len == v->cap) {\n");
     fprintf(out, "        int64_t old_off = v->data_off, old_len = v->len, nc = v->cap * 2;\n");
+    /* W2.2: и старият span се валидира преди memcpy (счупено заглавие от
+     * blob) — същата uint64 аритметика като baga_wvec_data. */
+    fprintf(out, "        if ((uint64_t)old_off + (uint64_t)old_len * 8u > (uint64_t)w->used) { fprintf(stderr, \"baga: wvec_push: старият блок е извън региона\\n\"); exit(1); }\n");
     fprintf(out, "        int64_t nd = baga_arena_alloc(wh, nc * 8);\n");
     fprintf(out, "        memcpy((char *)(intptr_t)nd, w->base + old_off, (size_t)old_len * 8);\n");
     fprintf(out, "        v = (baga_WVec *)(w->base + voff);   /* base може да е преместен */\n");
     fprintf(out, "        v->data_off = (int64_t)((char *)(intptr_t)nd - w->base);\n");
     fprintf(out, "        v->cap = nc;\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    int64_t *d = (int64_t *)(w->base + v->data_off);\n");
-    fprintf(out, "    d[v->len++] = x;\n");
+    fprintf(out, "    int64_t *d = baga_wvec_data(w, v, v->len, \"wvec_push\");\n");
+    fprintf(out, "    *d = x;\n");
+    fprintf(out, "    v->len++;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wvec_len(int64_t wh, int64_t voff) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_len\");\n");
-    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_len\");\n");
     fprintf(out, "    return v->len;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wvec_get(int64_t wh, int64_t voff, int64_t i) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get\");\n");
-    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_get\");\n");
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get\", i, v->len);\n");
-    fprintf(out, "    int64_t *d = (int64_t *)(w->base + v->data_off);\n");
-    fprintf(out, "    return d[i];\n");
+    fprintf(out, "    return *baga_wvec_data(w, v, i, \"wvec_get\");\n");
     fprintf(out, "}\n");
     /* dump/load: светът е position-independent — dump е memcpy на региона,
      * load го възстановява в НОВА арена и офсетите важат веднага. */
@@ -1520,10 +1553,16 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return r;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_world_load(baga_bytes b) {\n");
+    /* W2.2: load е trust boundary — blob-ът може да е от файл/мрежа. Самата
+     * арена се проверява тук (размер/данни), а структурата на wvec-овете вътре
+     * — при всеки достъп (baga_wvec_at), така че счупен blob дава чиста
+     * грешка, не out-of-bounds четене. */
+    fprintf(out, "    if (b.len < 0 || (b.len > 0 && !b.data)) { fprintf(stderr, \"baga: world_load: невалиден blob\\n\"); exit(1); }\n");
     fprintf(out, "    baga_Arena *a = malloc(sizeof(baga_Arena));\n");
     fprintf(out, "    if (!a) { fprintf(stderr, \"baga: world_load: oom\\n\"); exit(1); }\n");
     fprintf(out, "    a->used = b.len; a->cap = b.len > 65536 ? b.len : 65536; a->frozen = 0;\n");
     fprintf(out, "    a->base = malloc((size_t)a->cap);\n");
+    fprintf(out, "    if (!a->base) { fprintf(stderr, \"baga: world_load: oom\\n\"); exit(1); }\n");
     fprintf(out, "    if (b.len > 0) memcpy(a->base, b.data, (size_t)b.len);\n");
     fprintf(out, "    return (int64_t)(intptr_t)a;\n");
     fprintf(out, "}\n");
@@ -1543,18 +1582,32 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_wvec_push_str(int64_t wh, int64_t voff, const char *s) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push_str\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wvec_push_str\");\n");
+    fprintf(out, "    (void)baga_wvec_at(w, voff, \"wvec_push_str\");\n");
     fprintf(out, "    int64_t n = baga_str_len(s);\n");
+    /* W2.2: s може да сочи ВЪТРЕ В САМИЯ РЕГИОН (`wvec_push_str(w, v2,
+     * wvec_get_str(w, v, 0))`). arena_alloc при растеж realloc-ва base и
+     * старият s висеше — heap-use-after-free при memcpy (потвърдено с ASan).
+     * Офсет-първа дисциплина и за низа: бележим офсета ПРЕДИ alloc и
+     * препрочитаме указателя СЛЕД него. */
+    fprintf(out, "    int in_region = (uintptr_t)s >= (uintptr_t)w->base && (uintptr_t)s < (uintptr_t)(w->base + w->used);\n");
+    fprintf(out, "    int64_t s_off = in_region ? (int64_t)(s - w->base) : 0;\n");
     fprintf(out, "    int64_t sp = baga_arena_alloc(wh, n + 1);\n");
+    fprintf(out, "    if (in_region) s = w->base + s_off;\n");
     fprintf(out, "    int64_t soff = (int64_t)((char *)(intptr_t)sp - w->base);\n");
     fprintf(out, "    memcpy(w->base + soff, s, (size_t)n + 1);\n");
     fprintf(out, "    baga_wvec_push(wh, voff, soff);\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_wvec_get_str(int64_t wh, int64_t voff, int64_t i) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get_str\");\n");
-    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_get_str\");\n");
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get_str\", i, v->len);\n");
-    fprintf(out, "    int64_t *d = (int64_t *)(w->base + v->data_off);\n");
-    fprintf(out, "    return w->base + d[i];\n");
+    /* W2.2: елементът е ОФСЕТ на низ в региона. Валидираме го: в [0, used) и с
+     * NUL преди края на региона — иначе strlen/print четеше извън блока при
+     * сгрешен елемент или счупен blob от world_load. */
+    fprintf(out, "    int64_t soff = *baga_wvec_data(w, v, i, \"wvec_get_str\");\n");
+    fprintf(out, "    if (soff < 0 || soff >= w->used) { fprintf(stderr, \"baga: wvec_get_str: елементът не е офсет в региона (%%lld)\\n\", (long long)soff); exit(1); }\n");
+    fprintf(out, "    if (!memchr(w->base + soff, 0, (size_t)(w->used - soff))) { fprintf(stderr, \"baga: wvec_get_str: низът няма NUL в региона\\n\"); exit(1); }\n");
+    fprintf(out, "    return w->base + soff;\n");
     fprintf(out, "}\n");
     fprintf(out, "\n");
     /* ---- concurrency (!Par): OS threads + i64 channels (CSP) ---- */

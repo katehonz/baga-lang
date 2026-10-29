@@ -778,6 +778,26 @@ void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h) {
     }
 }
 
+/* W2.2: free на свят — умират handle-ът, алиасите му И всички заемани от
+ * региона низове (`let s = wvec_get_str(w, …)`). Иначе `world_free(w);
+ * print(s)` беше heap-use-after-free, който checker-ът приемаше (ASan го
+ * потвърди). Същата region-tagging машина като MEM-3, но за is_world —
+ * без arena_freed_ids и без is_arena алиас-логиката (световете не са арени). */
+void mem3_free_world(CheckCtx *ctx, EnvEntry *h) {
+    if (!h) return;
+    int id = h->arena_id;
+    mem3_note_dropped(ctx, h);
+    if (id <= 0) return;
+    mem3_invalidate_region(ctx, id);   /* заеманите от региона низове */
+    for (int d = 0; d < ctx->depth; d++) {
+        EnvScope *s = &ctx->scopes[d];
+        for (int i = 0; i < s->count; i++) {
+            EnvEntry *e = &s->entries[i];
+            if (e->is_world && e->arena_id == id) mem3_note_dropped(ctx, e);
+        }
+    }
+}
+
 /* „Имахте предвид …?“ — Damerau–Levenshtein разстояние (optimal string
  * alignment: съседната транспозиция е 1 редакция, „totla“→„total“).
  * Имена над 63 байта не се подсказват (връщаме 99) — матрицата е фиксирана. */
@@ -844,6 +864,14 @@ int region_of_expr(CheckCtx *ctx, Node *n) {
             return e ? e->region_id : 0;
         }
         case NODE_CALL:
+            /* W2.2: wvec_get_str(w, …) е ЗАЕМАН низ от региона на света —
+             * умира с него (mem3_free_world), както arena payload-ите. */
+            if (n->callee && n->callee->kind == NODE_IDENT &&
+                strcmp(n->callee->name, "wvec_get_str") == 0 &&
+                n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT) {
+                EnvEntry *h = ck_env_find(ctx, n->args.data[0]->name);
+                return (h && h->is_world && h->arena_id > 0) ? h->arena_id : 0;
+            }
             if (n->callee && n->callee->kind == NODE_IDENT &&
                 strcmp(n->callee->name, "arena_alloc") == 0 &&
                 n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT) {
@@ -975,6 +1003,11 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
         EnvEntry *src = ck_env_find(ctx, init->name);
         if (src && src->arena_id > 0) pe->arena_id = src->arena_id;
     }
+    /* W2.2: светът получава region id (общо пространство с arena_id-тата), за
+     * да умират заеманите от него низове заедно с него. При алиас id-то вече е
+     * копирано от източника по-горе — заеманията са за РЕГИОНА, не за името. */
+    if (pe->is_world && pe->arena_id == 0)
+        pe->arena_id = ++ctx->next_arena_id;
 }
 
 /* MEM-2: drop-join машинерия — споделена от if/else, match и catch.

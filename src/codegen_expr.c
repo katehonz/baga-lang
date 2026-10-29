@@ -1191,6 +1191,21 @@ void emit_expr(Codegen *cg, Node *n) {
                 };
                 for (int bi = 0; bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                     if (strcmp(bn, bmap[bi].baga) == 0) {
+                        /* W2.2: след free локалният handle става 0. Двоен free
+                         * вече е no-op (baga_arena_free(0) е guard-иран), а
+                         * всяка следваща употреба е чиста null-handle грешка
+                         * вместо двоен free() на malloc (истинско UB). Записът
+                         * е само при обикновен ident аргумент — алиасите
+                         * остават отговорност на seatbelt/verifier (MEM-1). */
+                        if ((strcmp(bn, "world_free") == 0 || strcmp(bn, "arena_free") == 0) &&
+                            n->args.len == 1 && n->args.data[0]->kind == NODE_IDENT) {
+                            fprintf(f, "({ %s(", bmap[bi].c);
+                            emit_expr(cg, n->args.data[0]);
+                            fprintf(f, "); ");
+                            emit_expr(cg, n->args.data[0]);
+                            fprintf(f, " = 0; })");
+                            goto call_done;
+                        }
                         fprintf(f, "%s(", bmap[bi].c);
                         for (int i = 0; i < n->args.len; i++) {
                             if (i > 0) fprintf(f, ", ");

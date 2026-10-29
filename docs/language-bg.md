@@ -1253,6 +1253,19 @@ print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
   ensures-ът на получателя се поема), мутабелен/освободен/вече преместен свят е
   ОБРОЧЕНО с witness, неследен handle е честен UNKNOWN. Работник без spec
   остава sound silence: няма договор, който да се разтовари.
+- W2.2: runtime memory safety одит (ASan). `wvec_push_str` с източник от самия
+  регион вече не виси при растеж (офсет-първа дисциплина и за низа — беше
+  heap-use-after-free); всеки адрес на wvec достъп е доказан в региона, така че
+  сгрешен офсет или счупен `world_load` blob е чиста грешка, не out-of-bounds;
+  `wvec_get_str` изисква елементът да е валиден регион-низ (офсет + NUL).
+  `world_free` убива handle-а, алиасите и заеманите от региона низове:
+  `world_free(w); print(s)` със `s = wvec_get_str(w, …)` е compile грешка
+  (беше heap-use-after-free, който checker-ът приемаше), а двоен free е no-op
+  (codegen нулира локалния handle) и `world_state` след free е -1. За живот
+  извън региона — `concat(s, "")`.
+  Повторният `world_freeze` е чиста runtime грешка (като при checker/verifier).
+  ASan прогон на `tests/wvec_test.baga` е gate в run_tests.sh. Цената на
+  валидацията е измерена в docs/worlds-bg.md §4.
 - Пълният дизайн-документ — модел, сравнение с Verona/Pony/Cyclone, bench,
   честни граници и пътна карта: `docs/worlds-bg.md`.
 
