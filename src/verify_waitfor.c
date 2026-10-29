@@ -961,6 +961,16 @@ void eval_world_call(Node *call, State *st, Obligations *ob) {
         } else {
             snprintf(label, sizeof label, "world_free след move на '%s'", wn); viol = label;
         }
+    } else if (is_world_scratch_call(call)) {
+        /* W2.3: вътрешна променяемост — кешът е прикачен към handle-а, не към
+         * региона, затова ЗАМРАЗЕН свят го допуска (dump-ът и четенията са
+         * непроменени). Нарушение е само след free/move: там handle-ът вече не
+         * е твой. */
+        if (e->state == 2) {
+            snprintf(label, sizeof label, "%s след world_free на '%s'", op, wn); viol = label;
+        } else if (e->state == 3) {
+            snprintf(label, sizeof label, "%s след move на '%s'", op, wn); viol = label;
+        }
     } else {
         /* world_alloc / wvec_push — check-only мутатори: не сменят
          * състоянието, само изискват mutable (затова са легални и в цикли,

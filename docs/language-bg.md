@@ -1266,6 +1266,15 @@ print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
   Повторният `world_freeze` е чиста runtime грешка (като при checker/verifier).
   ASan прогон на `tests/wvec_test.baga` е gate в run_tests.sh. Цената на
   валидацията е измерена в docs/worlds-bg.md §4.
+- W2.3: вътрешна променяемост на замразен свят — `wcache_set(w, k, v)` /
+  `wcache_get(w, k)` / `wcache_has(w, k)` / `wcache_del(w, k)` /
+  `wcache_clear(w)` / `wcache_len(w)` (ключ и стойност i64; `get` връща 0 при
+  липса, `has` връща 1/0). Кешът е прикачен към handle-а и е ИЗВЪН региона:
+  `world_dump` и `world_used` не се променят от него, `world_load` стартира с
+  празен кеш. Легален върху замразен свят (escape hatch-ът за lazy индекси),
+  под mutex — нишките-читатели могат да го пълнят безопасно. Договорът е
+  идемпотентност (стойността е функция на замразените данни). Верификаторът:
+  нарушение само след `world_free` или move.
 - Пълният дизайн-документ — модел, сравнение с Verona/Pony/Cyclone, bench,
   честни граници и пътна карта: `docs/worlds-bg.md`.
 

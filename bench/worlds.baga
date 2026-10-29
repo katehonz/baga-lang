@@ -70,6 +70,28 @@ fn bench_world(n: i64) -> i64 !Time {
     print(concat("load_us           ", i64_to_str(t5 - t4)))
     print(concat("load_last_val     ", i64_to_str(loaded)))
     print(concat("world_bump_delta  ", i64_to_str(mem_peak_bytes() - bump_before)))
+    // W2.3: вътрешна променяемост — lazy кеш върху ВЕЧЕ ЗАМРАЗЕН свят. Всеки
+    // достъп минава през mutex (неконкурентна цена); кешът е извън региона,
+    // затова dump-ът горе не го носи.
+    let c0 = monotonic_us()
+    let mut k: i64 = 0
+    while k < n {
+        wcache_set(w, k, k * 2)
+        k = k + 1
+    }
+    let c1 = monotonic_us()
+    let mut cs: i64 = 0
+    let mut m: i64 = 0
+    while m < n {
+        cs = cs + wcache_get(w, m)
+        m = m + 1
+    }
+    let c2 = monotonic_us()
+    print(concat("wcache_set_us     ", i64_to_str(c1 - c0)))
+    print(concat("wcache_get_us     ", i64_to_str(c2 - c1)))
+    print(concat("wcache_checksum   ", i64_to_str(cs)))
+    print(concat("wcache_len        ", i64_to_str(wcache_len(w))))
+    print(concat("cache_dump_bytes  ", i64_to_str(bytes_len(world_dump(w)))))
     world_free(w)
     world_free(w2)
     return 0

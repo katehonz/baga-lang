@@ -1402,11 +1402,85 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     }
     fprintf(out, "static void baga_drop_fn(int64_t h) { baga_cell2_free(h); }\n");
+    /* W2.3: вътрешна променяемост на замразен свят — lazy кеш/индекс, който
+     * ЖИВЕЕ ИЗВЪН dump-натите байтове (прикачен е към handle-а, не към
+     * региона). Замразен свят остава непроменлив ПО СТОЙНОСТ (dump-ът и
+     * четенията са идентични преди и след кеш-попълване), а кешът е заключен с
+     * mutex, защото замразените светове се споделят между нишки за четене —
+     * lazy попълването от два читателя не е race. Договорът е идиомът на
+     * Rust OnceCell/lazy_static: стойността трябва да е ФУНКЦИЯ на
+     * замразените данни (идемпотентна), иначе два писателя дават
+     * недетерминиран резултат (документирано в worlds-bg.md). */
+    fprintf(out, "typedef struct { int64_t *k; int64_t *v; unsigned char *st; int64_t n; int64_t cap; } baga_WCache;\n");
+    fprintf(out, "static uint64_t baga_wc_h(int64_t k) { uint64_t x = (uint64_t)k; x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; return x; }\n");
+    fprintf(out, "static void baga_wc_oom(void) { fprintf(stderr, \"baga: wcache: oom\\n\"); exit(1); }\n");
+    fprintf(out, "static baga_WCache *baga_wc_new(void) {\n");
+    fprintf(out, "    baga_WCache *c = malloc(sizeof(baga_WCache));\n");
+    fprintf(out, "    if (!c) baga_wc_oom();\n");
+    fprintf(out, "    c->n = 0; c->cap = 16;\n");
+    fprintf(out, "    c->k = malloc(16 * sizeof(int64_t)); c->v = malloc(16 * sizeof(int64_t)); c->st = calloc(16, 1);\n");
+    fprintf(out, "    if (!c->k || !c->v || !c->st) baga_wc_oom();\n");
+    fprintf(out, "    return c;\n");
+    fprintf(out, "}\n");
+    /* open addressing, load factor <= 0.75, tombstone при del; растежът
+     * рекурсивно препътва (след удвояване факторът е <= 0.375, значи няма
+     * втори растеж в същата верига).
+     * Терминацията на сондирането не е очевидна и е load-bearing: put ПРЕДИЗЛАГА
+     * дупка (tombstone) пред празен слот, а растежът държи живите <= 0.75*cap,
+     * затова заетите слотове (живи + tombstone) никога не стигат cap — винаги
+     * остава празен слот, който спира while-а. Без това del-овете биха
+     * запълнили таблицата с tombstone-и и find би въртял безкрайно. */
+    fprintf(out, "static void baga_wc_put(baga_WCache *c, int64_t k, int64_t v) {\n");
+    fprintf(out, "    if ((c->n + 1) * 4 > c->cap * 3) {\n");
+    fprintf(out, "        int64_t oc = c->cap; int64_t *ok = c->k, *ov = c->v; unsigned char *os = c->st;\n");
+    fprintf(out, "        c->cap = oc * 2;\n");
+    fprintf(out, "        c->k = malloc(c->cap * sizeof(int64_t)); c->v = malloc(c->cap * sizeof(int64_t)); c->st = calloc(c->cap, 1);\n");
+    fprintf(out, "        if (!c->k || !c->v || !c->st) baga_wc_oom();\n");
+    fprintf(out, "        c->n = 0;\n");
+    fprintf(out, "        for (int64_t i = 0; i < oc; i++) if (os[i] == 1) baga_wc_put(c, ok[i], ov[i]);\n");
+    fprintf(out, "        free(ok); free(ov); free(os);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    int64_t mask = c->cap - 1;\n");
+    fprintf(out, "    int64_t i = (int64_t)(baga_wc_h(k) & (uint64_t)mask), hole = -1;\n");
+    fprintf(out, "    while (c->st[i]) {\n");
+    fprintf(out, "        if (c->st[i] == 1) { if (c->k[i] == k) { c->v[i] = v; return; } }\n");
+    fprintf(out, "        else if (hole < 0) hole = i;\n");
+    fprintf(out, "        i = (i + 1) & mask;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    if (hole >= 0) i = hole;\n");
+    fprintf(out, "    c->k[i] = k; c->v[i] = v; c->st[i] = 1; c->n++;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int baga_wc_find(baga_WCache *c, int64_t k, int64_t *out) {\n");
+    fprintf(out, "    if (!c || c->n == 0) return 0;\n");
+    fprintf(out, "    int64_t mask = c->cap - 1;\n");
+    fprintf(out, "    int64_t i = (int64_t)(baga_wc_h(k) & (uint64_t)mask);\n");
+    fprintf(out, "    while (c->st[i]) {\n");
+    fprintf(out, "        if (c->st[i] == 1 && c->k[i] == k) { if (out) *out = c->v[i]; return 1; }\n");
+    fprintf(out, "        i = (i + 1) & mask;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wc_del(baga_WCache *c, int64_t k) {\n");
+    fprintf(out, "    if (!c || c->n == 0) return;\n");
+    fprintf(out, "    int64_t mask = c->cap - 1;\n");
+    fprintf(out, "    int64_t i = (int64_t)(baga_wc_h(k) & (uint64_t)mask);\n");
+    fprintf(out, "    while (c->st[i]) {\n");
+    fprintf(out, "        if (c->st[i] == 1 && c->k[i] == k) { c->st[i] = 2; c->n--; return; }\n");
+    fprintf(out, "        i = (i + 1) & mask;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wc_free(baga_WCache *c) {\n");
+    fprintf(out, "    if (!c) return;\n");
+    fprintf(out, "    free(c->k); free(c->v); free(c->st); free(c);\n");
+    fprintf(out, "}\n");
     fprintf(out, "\n/* arena allocator: bump allocation, free-all-at-once */\n");
-    fprintf(out, "typedef struct { char *base; int64_t used; int64_t cap; int64_t frozen; } baga_Arena;\n");
+    fprintf(out, "typedef struct { char *base; int64_t used; int64_t cap; int64_t frozen; pthread_mutex_t wlock; baga_WCache *wcache; } baga_Arena;\n");
     fprintf(out, "static int64_t baga_arena_new(void) {\n");
     fprintf(out, "    baga_Arena *a = malloc(sizeof(baga_Arena));\n");
+    fprintf(out, "    if (!a) { fprintf(stderr, \"baga: arena_new: oom\\n\"); exit(1); }\n");
     fprintf(out, "    a->cap = 65536; a->used = 0; a->frozen = 0; a->base = malloc((size_t)a->cap);\n");
+    fprintf(out, "    if (!a->base) { fprintf(stderr, \"baga: arena_new: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    pthread_mutex_init(&a->wlock, NULL); a->wcache = NULL;\n");
     fprintf(out, "    return (int64_t)(intptr_t)a;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_arena_alloc(int64_t h, int64_t size) {\n");
@@ -1433,6 +1507,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_arena_free(int64_t h) {\n");
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
     fprintf(out, "    if (!a) return;\n");
+    fprintf(out, "    baga_wc_free(a->wcache); a->wcache = NULL;   /* W2.3: кешът е извън региона */\n");
+    fprintf(out, "    pthread_mutex_destroy(&a->wlock);\n");
     fprintf(out, "    free(a->base); free(a);\n");
     fprintf(out, "}\n");
     /* W0: светове — регион с ownership/freeze дисциплина. Runtime-ът е
@@ -1564,6 +1640,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    a->base = malloc((size_t)a->cap);\n");
     fprintf(out, "    if (!a->base) { fprintf(stderr, \"baga: world_load: oom\\n\"); exit(1); }\n");
     fprintf(out, "    if (b.len > 0) memcpy(a->base, b.data, (size_t)b.len);\n");
+    /* W2.3: зареденият свят стартира с ПРАЗЕН кеш — вътрешната променяемост
+     * не е част от стойността на света (dump-ът не я носи), затова lazy
+     * индексите се построяват наново при нужда. */
+    fprintf(out, "    pthread_mutex_init(&a->wlock, NULL); a->wcache = NULL;\n");
     fprintf(out, "    return (int64_t)(intptr_t)a;\n");
     fprintf(out, "}\n");
     /* W1.5: текущият bump обем на света — метрика за growth garbage
@@ -1608,6 +1688,51 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (soff < 0 || soff >= w->used) { fprintf(stderr, \"baga: wvec_get_str: елементът не е офсет в региона (%%lld)\\n\", (long long)soff); exit(1); }\n");
     fprintf(out, "    if (!memchr(w->base + soff, 0, (size_t)(w->used - soff))) { fprintf(stderr, \"baga: wvec_get_str: низът няма NUL в региона\\n\"); exit(1); }\n");
     fprintf(out, "    return w->base + soff;\n");
+    fprintf(out, "}\n");
+    /* W2.3: вътрешна променяемост — кеш върху замразен свят. НЯМА frozen
+     * проверка (това е смисълът на фичата); всеки достъп е под mutex, защото
+     * замразените светове се споделят между нишки-читатели. Стойностите са
+     * i64 (id/офсет/брой/хеш) — за низове и структури трябва scratch регион,
+     * което е следваща стъпка. */
+    fprintf(out, "static void baga_wcache_set(int64_t wh, int64_t k, int64_t v) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wcache_set\");\n");
+    fprintf(out, "    pthread_mutex_lock(&w->wlock);\n");
+    fprintf(out, "    if (!w->wcache) w->wcache = baga_wc_new();\n");
+    fprintf(out, "    baga_wc_put(w->wcache, k, v);\n");
+    fprintf(out, "    pthread_mutex_unlock(&w->wlock);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wcache_get(int64_t wh, int64_t k) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wcache_get\");\n");
+    fprintf(out, "    pthread_mutex_lock(&w->wlock);\n");
+    fprintf(out, "    int64_t out = 0; baga_wc_find(w->wcache, k, &out);\n");
+    fprintf(out, "    pthread_mutex_unlock(&w->wlock);\n");
+    fprintf(out, "    return out;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wcache_has(int64_t wh, int64_t k) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wcache_has\");\n");
+    fprintf(out, "    pthread_mutex_lock(&w->wlock);\n");
+    fprintf(out, "    int hit = baga_wc_find(w->wcache, k, NULL);\n");
+    fprintf(out, "    pthread_mutex_unlock(&w->wlock);\n");
+    fprintf(out, "    return hit ? 1 : 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wcache_del(int64_t wh, int64_t k) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wcache_del\");\n");
+    fprintf(out, "    pthread_mutex_lock(&w->wlock);\n");
+    fprintf(out, "    baga_wc_del(w->wcache, k);\n");
+    fprintf(out, "    pthread_mutex_unlock(&w->wlock);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_wcache_clear(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wcache_clear\");\n");
+    fprintf(out, "    pthread_mutex_lock(&w->wlock);\n");
+    fprintf(out, "    baga_wc_free(w->wcache); w->wcache = NULL;\n");
+    fprintf(out, "    pthread_mutex_unlock(&w->wlock);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_wcache_len(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wcache_len\");\n");
+    fprintf(out, "    pthread_mutex_lock(&w->wlock);\n");
+    fprintf(out, "    int64_t n = w->wcache ? w->wcache->n : 0;\n");
+    fprintf(out, "    pthread_mutex_unlock(&w->wlock);\n");
+    fprintf(out, "    return n;\n");
     fprintf(out, "}\n");
     fprintf(out, "\n");
     /* ---- concurrency (!Par): OS threads + i64 channels (CSP) ---- */
@@ -1696,7 +1821,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (h->magic != BAGA_HANDLE_MAGIC) {\n");
     fprintf(out, "        fprintf(stderr, \"baga: join: невалиден handle\\n\"); exit(1);\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    if (h->detached == 1) {\n");
+    /* W2.3 (TSan находка): `detached` се пише АТОМНО от trampoline-а, значи и
+     * четенето тук трябва да е атомно — смесеният достъп е data race по C11
+     * (безвреден на x86, но ThreadSanitizer го брои и моделът го забранява). */
+    fprintf(out, "    if (__atomic_load_n(&h->detached, __ATOMIC_ACQUIRE) == 1) {\n");
     fprintf(out, "        fprintf(stderr, \"baga: join: handle detached\\n\"); exit(1);\n");
     fprintf(out, "    }\n");
     fprintf(out, "    if (!h->joined) { pthread_join(h->th, NULL); h->joined = 1; }\n");

@@ -458,6 +458,68 @@ fn bad_pass_conj(n: i64) -> i64 {
     return r - r
 }
 
+spec cached_reader {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// W2.3: читателят попълва lazy индекс В замразения свят — легално, защото
+// кешът е прикачен към handle-а, не към региона: данните и dump-ът са
+// непроменени, значи договорът world_frozen не е нарушен. Мутаторите на
+// региона (world_alloc/wvec_push) остават обречени и тук (bad_shared_writer).
+// Връщаме израз над входа, защото стойностите от wcache_get са opaque за
+// линейния фрагмент — същият стил като ok_frozen_read.
+fn cached_reader(ctx: i64) -> i64 {
+    wcache_set(ctx, 1, 42)
+    let c = wcache_get(ctx, 1)
+    let u = world_used(ctx)
+    return ctx - ctx
+}
+
+spec bad_cache_after_free {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Кешът е вътрешна променяемост, не второ życie: след world_free handle-ът не
+// е твой — писане в кеша е ОБРОЧЕНО (free е само в then-клона ⇒ checker-ът
+// мълчи, верификаторът оборва пътя n = 1).
+fn bad_cache_after_free(n: i64) -> i64 {
+    let w = world_new()
+    if n > 0 {
+        world_free(w)
+    }
+    wcache_set(w, 1, 2)
+    return n - n
+}
+
+spec bad_cache_after_move {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Собствеността е прехвърлена на работника — локалният кеш след това е
+// use-after-move (два писателя върху една таблица без координация).
+fn bad_cache_after_move(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let h = go(cached_reader, w)
+    wcache_set(w, 2, 3)
+    let r = join(h)
+    return r - r
+}
+
 fn main() {
     print(ok_lifecycle(1))
     print(ok_frozen_read(1))
@@ -471,4 +533,5 @@ fn main() {
     print(bad_pass_freed(0))
     print(ok_pass_conj(1))
     print(bad_pass_conj(1))
+    print(bad_cache_after_free(0))
 }

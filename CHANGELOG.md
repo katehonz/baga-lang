@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### W2.3 — светове: freeze с вътрешна променяемост (`wcache_*`)
+- Escape hatch-ът, без който замразен свят е неизползваем за реални сървъри
+  (lazy индекси, кешове, мемоизирани агрегати). Freeze НЕ е отслабен: разделени
+  са **стойността на света** (байтовете в региона — непроменени) и
+  **вътрешното състояние на handle-а** (кешът, извън dump-натите байтове).
+- API: `wcache_set(w, k, v)` / `wcache_get(w, k)` (0 при липса) /
+  `wcache_has(w, k)` (1/0) / `wcache_del(w, k)` / `wcache_clear(w)` /
+  `wcache_len(w)` — ключ и стойност i64. Runtime: open-addressing таблица
+  (load factor 0.75, tombstone при del) в `baga_Arena`, създадена lazily при
+  първия set; `world_dump`/`world_used` не я носят, `world_load` стартира с
+  празен кеш.
+- **Под mutex** — замразените светове се споделят между нишки-читатели, затова
+  всеки достъп е заключен. TSan прогон на `tests/wcache_test.baga` е gate в
+  run_tests.sh: 4 работника × 500 ключа върху един свят — 0 race-а с mutex,
+  15 без него (проверено, за да има зъби gate-ът).
+- **Съпътстваща находка от TSan прогона (предварителен дефект в `!Par`
+  runtime-а):** `baga_join` четеше `h->detached` НЕАТОМНО, докато
+  `baga_par_trampoline` го пише атомно (`__sync_lock_test_and_set`) — смесеният
+  достъп е data race по C11. Оправено с `__atomic_load_n(..., ACQUIRE)`.
+- Верификатор: `wcache_*` е отделна категория (`is_world_scratch_call`) —
+  ЛЕГАЛНА върху frozen(1) и mutable(0), ОБРОЧЕНО след `world_free` (2) и след
+  move (3). W1.6 seatbelt-ът НЕ я брои за мутатор (иначе фичата е мъртва), а
+  use-after-free пак се хваща от MEM-2 проверката на ident.
+- Оркълът расте на 24 доказани ensures + 18 оброчени протокола
+  (`cached_reader` — кеш върху замразен param с `requires: world_frozen`,
+  W2.1+W2.3 заедно; `bad_cache_after_free`, `bad_cache_after_move`). Нов
+  `tests/wcache_test.baga` (21 проверки: miss/hit, dump_stable, used_stable,
+  loaded_cache_empty, del/clear, конкурентно пълнене, растеж до 5500 ключа).
+  Bench: wcache_set ~72 ns/оп, get ~15 ns/оп (mutex-ът ~7 ns), dump идентичен
+  след 200k кеш-записа.
+- Честни граници в docs/worlds-bg.md §5: кешът е i64→i64 (str/struct стойности
+  искат scratch регион); идемпотентността е договор, не проверка; много
+  читатели на един свят остават извън верифицирания модел (move дава
+  собственост на един получател — read-only capability за N читателя е W2).
+
 ### W2.2 — светове: runtime memory safety (ASan одит)
 - **Поправен heap-use-after-free в `wvec_push_str`**: `wvec_push_str(w, v2,
   wvec_get_str(w, v, 0))` при растеж на арената четеше освободения стар `base`

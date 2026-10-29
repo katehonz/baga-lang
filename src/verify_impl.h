@@ -214,6 +214,7 @@ int is_par_builtin_call(Node *n);   /* 1688 */
 int is_drop_call(Node *n);   /* 1704 */
 int is_mem_alloc_call(Node *n);   /* 1715 */
 int is_world_new_call(Node *n);   /* W0: world_new() */
+int is_world_scratch_call(Node *n);   /* W2.3: wcache_* — вътрешна променяемост */
 int is_world_op_call(Node *n);    /* W0: world_alloc/world_freeze/world_free — пипат състоянието */
 int is_world_expr_call(Node *n);  /* W0: world_new/world_alloc/world_state — изразни */
 int is_world_stmt_call(Node *n);  /* W0: world_freeze/world_free — statement-level (като drop) */

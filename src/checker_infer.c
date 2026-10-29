@@ -837,6 +837,12 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             {"world_used",   TYPE_I64, "i", 0, 0},
             {"wvec_push_str", TYPE_VOID, "iis", 0, 0},
             {"wvec_get_str",  TYPE_STR, "iii", 0, 0},
+            {"wcache_set",    TYPE_VOID, "iii", 0, 0},
+            {"wcache_get",    TYPE_I64, "ii", 0, 0},
+            {"wcache_has",    TYPE_I64, "ii", 0, 0},
+            {"wcache_del",    TYPE_VOID, "ii", 0, 0},
+            {"wcache_clear",  TYPE_VOID, "i", 0, 0},
+            {"wcache_len",    TYPE_I64, "i", 0, 0},
             {"mem_mark",    TYPE_I64, "", 0, 0},
             {"mem_rewind",  TYPE_VOID, "i", 0, 0},
             {"mem_arena_bytes", TYPE_I64, "", 0, 0},
@@ -1145,6 +1151,8 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                 "map_new", "map_set", "map_get", "map_has", "map_del",
                 "map_len", "map_keys", "map_h", "h_map", "bytes_h", "h_bytes",
                 "go", "go_bg", "pool_map",
+                "wcache_set", "wcache_get", "wcache_has", "wcache_del",
+                "wcache_clear", "wcache_len",
             };
             int nb = (int)(sizeof builtins / sizeof builtins[0]);
             int ns = (int)(sizeof special / sizeof special[0]);

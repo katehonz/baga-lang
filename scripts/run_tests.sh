@@ -705,20 +705,46 @@ else
 	exit 1
 fi
 
-echo "=== W2.2 ASan прогон на wvec_test (UB регресии в region runtime-а) ==="
-# Компилира генерирания C с AddressSanitizer: use-after-free при растеж на
-# региона и out-of-bounds при счупен офсет излизат веднага. Leak-овете са
-# изключени — bump арената по дизайн не се освобождава (MEM-6 я мери).
-"$BIN" $BAGAIFLAGS --emit-c tests/wvec_test.baga > /tmp/baga_wvec_asan.c 2>/tmp/baga_wvec_asan_err.txt \
-	&& gcc -g -O1 -fsanitize=address -o /tmp/baga_wvec_asan /tmp/baga_wvec_asan.c -lm -pthread 2>>/tmp/baga_wvec_asan_err.txt
-RC=0
-ASAN_OPTIONS=detect_leaks=0 /tmp/baga_wvec_asan > /tmp/baga_wvec_asan_out.txt 2>&1 || RC=$?
-if [[ $RC -eq 0 ]] && grep -q "wvec_test: all passed" /tmp/baga_wvec_asan_out.txt; then
-	echo "OK: wvec_test минава и под AddressSanitizer (region copy при растеж включен)"
+echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
+# Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
+# и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и
+# в join флага (TSan). Leak-овете са изключени — bump арената по дизайн не се
+# освобождава (MEM-6 я мери). Sanitizer-ите са опционални в CI: ако gcc не ги
+# поддържа, блокът е SKIP, не FAIL.
+printf 'int main(void){return 0;}\n' > /tmp/baga_san_probe.c
+rm -f /tmp/baga_wvec_asan /tmp/baga_wcache_tsan
+if ! gcc -fsanitize=address -o /tmp/baga_san_probe /tmp/baga_san_probe.c >/dev/null 2>&1; then
+	echo "SKIP: gcc без AddressSanitizer — sanitizer gate-овете са пропуснати"
 else
-	echo "FAIL: ASan прогонът на wvec_test трябваше да е чист"
-	cat /tmp/baga_wvec_asan_out.txt /tmp/baga_wvec_asan_err.txt
-	exit 1
+	"$BIN" $BAGAIFLAGS --emit-c tests/wvec_test.baga > /tmp/baga_wvec_asan.c 2>/tmp/baga_wvec_asan_err.txt
+	gcc -g -O1 -fsanitize=address -o /tmp/baga_wvec_asan /tmp/baga_wvec_asan.c -lm -pthread 2>>/tmp/baga_wvec_asan_err.txt
+	RC=0
+	ASAN_OPTIONS=detect_leaks=0 /tmp/baga_wvec_asan > /tmp/baga_wvec_asan_out.txt 2>&1 || RC=$?
+	if [[ $RC -eq 0 ]] && grep -q "wvec_test: all passed" /tmp/baga_wvec_asan_out.txt; then
+		echo "OK: wvec_test под ASan (region copy при растеж — UAF регресията)"
+	else
+		echo "FAIL: ASan прогонът на wvec_test трябваше да е чист"
+		cat /tmp/baga_wvec_asan_out.txt /tmp/baga_wvec_asan_err.txt
+		exit 1
+	fi
+	if gcc -fsanitize=thread -pthread -o /tmp/baga_san_probe /tmp/baga_san_probe.c >/dev/null 2>&1; then
+		# 4 работника пълнят ЕДИН замразен свят; без mutex-а на кеша TSan
+		# дава 15 race-а, без атомното четене на detached — още 4.
+		"$BIN" $BAGAIFLAGS --emit-c tests/wcache_test.baga > /tmp/baga_wcache_tsan.c 2>/tmp/baga_wvec_asan_err.txt
+		gcc -g -O1 -fsanitize=thread -pthread -o /tmp/baga_wcache_tsan /tmp/baga_wcache_tsan.c -lm 2>>/tmp/baga_wvec_asan_err.txt
+		RC=0
+		/tmp/baga_wcache_tsan > /tmp/baga_wcache_tsan_out.txt 2>&1 || RC=$?
+		if [[ $RC -eq 0 ]] && grep -q "wcache_test: all passed" /tmp/baga_wcache_tsan_out.txt &&
+			! grep -q "WARNING: ThreadSanitizer" /tmp/baga_wcache_tsan_out.txt; then
+			echo "OK: wcache_test под TSan — кешът на замразен свят е без race (mutex + атомен join флаг)"
+		else
+			echo "FAIL: TSan прогонът на wcache_test трябваше да е чист"
+			cat /tmp/baga_wcache_tsan_out.txt
+			exit 1
+		fi
+	else
+		echo "SKIP: gcc без ThreadSanitizer"
+	fi
 fi
 
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="

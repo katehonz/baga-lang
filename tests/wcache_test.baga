@@ -1,0 +1,99 @@
+// wcache_test — W2.3: вътрешна променяемост на замразен свят.
+//
+// Идеята: замразен свят е непроменлив ПО СТОЙНОСТ (четенията и dump-ът са
+// идентични), но може да носи lazy кеш/индекс, който се попълва при четене.
+// Кешът е прикачен към handle-а, ИЗВЪН региона — затова:
+//   • dump/load не го носи (зареденият свят стартира с празен кеш);
+//   • world_used не го брои;
+//   • всеки достъп е под mutex, защото замразените светове се споделят.
+// Договорът е идиомът на Rust OnceCell: стойността е ФУНКЦИЯ на замразените
+// данни (идемпотентна) — тук всички работници пишат едно и също за всеки ключ.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn filler(w: i64) -> i64 !Par {
+    let mut i = 0
+    while i < 500 {
+        wcache_set(w, i, i * 3)
+        i = i + 1
+    }
+    return wcache_len(w)
+}
+
+fn main() -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 7)
+    wvec_push(w, v, 9)
+    world_freeze(w)
+
+    // Кеш върху замразен свят е легален — това е escape hatch-ът.
+    check("empty_cache", wcache_len(w) == 0)
+    check("miss_has", wcache_has(w, 0) == 0)
+    check("miss_get", wcache_get(w, 0) == 0)
+    wcache_set(w, 0, wvec_get(w, v, 0) * 2)
+    check("hit_has", wcache_has(w, 0) == 1)
+    check("hit_get", wcache_get(w, 0) == 14)
+    check("len_after_set", wcache_len(w) == 1)
+
+    // Кешът НЕ е част от стойността на света: dump-ът е идентичен преди и
+    // след попълване, а зареденият свят стартира празен (индексът се строи
+    // наново при нужда).
+    let used_before = world_used(w)
+    let d1 = world_dump(w)
+    wcache_set(w, 1, 100)
+    wcache_set(w, 2, 200)
+    let d2 = world_dump(w)
+    check("dump_stable", bytes_len(d1) == bytes_len(d2))
+    check("used_stable", world_used(w) == used_before)
+    let w2 = world_load(d2)
+    check("loaded_cache_empty", wcache_len(w2) == 0)
+    check("loaded_data_intact", wvec_get(w2, v, 0) == 7 && wvec_get(w2, v, 1) == 9)
+    world_free(w2)
+
+    // Кешът е и на мутабелен свят (няма смисъл да се забранява — същата
+    // таблица, просто светът още не е споделен).
+    wcache_del(w, 1)
+    check("del_removes", wcache_has(w, 1) == 0 && wcache_len(w) == 2)
+    wcache_clear(w)
+    check("clear_empties", wcache_len(w) == 0 && wcache_has(w, 0) == 0)
+
+    // Конкурентно попълване: четири работника пълнят ЕДИН замразен свят с
+    // едни и същи (идемпотентни) стойности. Резултатът е детерминиран —
+    // 500 ключа, стойност i*3. Без mutex-а това е data race (TSan).
+    let h1 = go(filler, w)
+    let h2 = go(filler, w)
+    let h3 = go(filler, w)
+    let h4 = go(filler, w)
+    let r1 = join(h1)
+    let r2 = join(h2)
+    let r3 = join(h3)
+    let r4 = join(h4)
+    check("workers_return_len", r1 >= 500 && r2 >= 500 && r3 >= 500 && r4 >= 500)
+    check("concurrent_len", wcache_len(w) == 500)
+    check("concurrent_first", wcache_get(w, 0) == 0)
+    check("concurrent_mid", wcache_get(w, 250) == 750)
+    check("concurrent_last", wcache_get(w, 499) == 1497)
+    check("concurrent_miss", wcache_has(w, 500) == 0)
+
+    // Много ключове: растежът на таблицата (0.75 load factor) през растежи.
+    let mut i = 0
+    while i < 5000 {
+        wcache_set(w, i + 1000, i)
+        i = i + 1
+    }
+    check("growth_len", wcache_len(w) == 5500)
+    check("growth_last", wcache_get(w, 5999) == 4999)
+    check("growth_first", wcache_get(w, 1000) == 0)
+
+    world_free(w)
+    print("wcache_test: all passed")
+    return 0
+}

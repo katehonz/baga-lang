@@ -226,7 +226,8 @@ grep -q "ok_lifecycle:" /tmp/baga_verify_out.txt && grep -q "ok_shared_frozen:" 
 	&& grep -q "ok_shared_reader:" /tmp/baga_verify_out.txt && grep -q "ok_pass_frozen:" /tmp/baga_verify_out.txt \
 	&& grep -q "bad_shared_writer:" /tmp/baga_verify_out.txt && grep -q "bad_pass_twice:" /tmp/baga_verify_out.txt \
 	&& grep -q "conj_reader:" /tmp/baga_verify_out.txt && grep -q "ok_pass_conj:" /tmp/baga_verify_out.txt \
-	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^21$' \
+	&& grep -q "cached_reader:" /tmp/baga_verify_out.txt && grep -q "bad_cache_after_move:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^24$' \
 	&& grep -q "протокол (mutate-after-freeze: world_alloc.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (повторен world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (използване след world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
@@ -240,9 +241,11 @@ grep -q "ok_lifecycle:" /tmp/baga_verify_out.txt && grep -q "ok_shared_frozen:" 
 	&& grep -q "протокол (requires world_frozen.*предаден освободен свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (requires world_frozen.*предаден вече преместен свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "извикване (requires на 'conj_reader' при извикване): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wcache_set след world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wcache_set след move.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 	&& ! grep -q "извикване.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
-	&& echo "OK: worlds — W0/W1/W1.5/W1.6/W2.1: жизнен цикъл, замразено споделяне, четци (i64+str); mutate-after-freeze (alloc/push/push_str), двоен free, use-after-free и use-after-move (chan_send И go) са оброчени с контрапримери; W2.1 двустранен протокол — worker с requires world_frozen ДОКАЗВА, че не пише (mutate-after-freeze върху 'ctx' е обречен в неговото тяло), а предаване на мутабелен/освободен/преместен свят е обречено при извикването (и като конюнкт с аритметично requires) (оркълът е path-sensitive — праволинейните версии ги хваща W1.6 seatbelt-ът на компилация)" \
+	&& echo "OK: worlds — W0/W1/W1.5/W1.6/W2.1/W2.3: жизнен цикъл, замразено споделяне, четци (i64+str); mutate-after-freeze (alloc/push/push_str), двоен free, use-after-free и use-after-move (chan_send И go) са оброчени с контрапримери; W2.1 двустранен протокол — worker с requires world_frozen ДОКАЗВА, че не пише, а предаване на мутабелен/освободен/преместен свят е обречено при извикването (и като конюнкт с аритметично requires); W2.3 вътрешна променяемост — wcache върху замразен свят е легален (cached_reader е чист), но след free/move е обречен (оркълът е path-sensitive — праволинейните версии ги хваща W1.6 seatbelt-ът на компилация)" \
 	|| { echo "FAIL: worlds"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \

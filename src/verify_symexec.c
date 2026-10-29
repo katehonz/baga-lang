@@ -489,9 +489,17 @@ int is_world_op_call(Node *n) {
     const char *nm = n->callee->name;
     int is_op = strcmp(nm, "world_alloc") == 0 || strcmp(nm, "world_freeze") == 0 ||
                 strcmp(nm, "world_free") == 0 || strcmp(nm, "wvec_push") == 0 ||
-                strcmp(nm, "wvec_push_str") == 0;
+                strcmp(nm, "wvec_push_str") == 0 || is_world_scratch_call(n);
     if (!is_op || world_builtin_shadowed(nm)) return 0;
     return n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT;
+}
+
+/* W2.3: вътрешна променяемост — кеш върху handle-а, ИЗВЪН региона. Легален е
+ * върху замразен свят (това е смисълът му); нарушение е само след free/move. */
+int is_world_scratch_call(Node *n) {
+    if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    const char *nm = n->callee->name;
+    return strncmp(nm, "wcache_", 7) == 0;
 }
 int is_world_expr_call(Node *n) {
     if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
@@ -501,7 +509,8 @@ int is_world_expr_call(Node *n) {
                   strcmp(nm, "wvec_push") == 0 || strcmp(nm, "wvec_get") == 0 ||
                   strcmp(nm, "wvec_len") == 0 || strcmp(nm, "world_dump") == 0 ||
                   strcmp(nm, "world_load") == 0 || strcmp(nm, "world_used") == 0 ||
-                  strcmp(nm, "wvec_push_str") == 0 || strcmp(nm, "wvec_get_str") == 0;
+                  strcmp(nm, "wvec_push_str") == 0 || strcmp(nm, "wvec_get_str") == 0 ||
+                  is_world_scratch_call(n);   /* W2.3: wcache_* са изразни и statement-ни */
     return is_expr && !world_builtin_shadowed(nm);
 }
 int is_world_stmt_call(Node *n) {
