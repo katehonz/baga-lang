@@ -1,0 +1,431 @@
+// worlds_cap.baga — светове: ДОГОВОРИ и СПОДЕЛЯНЕ (W2.1 / W2.3 / W2.4).
+//
+// Втората половина на световния оркъл (ядрото на региона — жизнен цикъл,
+// freeze/mutate, free, move — е в examples/verify/worlds.baga; файлът е
+// разделен заради 600-редовия gate).
+//
+//   • W2.1 двустранен протокол: `requires: world_frozen(ctx)` е verifier-only
+//     ghost предикат (като sorted(v)). В тялото на получателя регистрира ctx
+//     като HK_WORLD(1) — мутатор там е ОБРОЧЕНО; при извикването се
+//     разтоварва срещу състоянието на аргумента (frozen → ДОКАЗАНО,
+//     мутабелен/освободен → ОБРОЧЕНО с witness). Важи и като конюнкт.
+//   • W2.3 вътрешна променяемост: `wcache_*` е извън региона, затова е
+//     легален върху замразен свят, но след free/move е ОБРОЧЕНО.
+//   • W2.4 замразен свят = споделена read-only capability: frozen + go е
+//     SHARE (N читателя), mutable + go е MOVE (второ предаване е ОБРОЧЕНО);
+//     `world_free` преди join на читателите е ОБРОЧЕНО. Получателят държи
+//     ЗАЕМАН свят — free и препредаване от негова страна са ОБРОЧЕНИ.
+//
+//   ./baga --verify examples/verify/worlds_cap.baga
+
+// ---------------------------------------------------------------------------
+// W2.1: двустранен протокол за споделен свят. Ghost предикатът
+// `requires: world_frozen(ctx)` е verifier-only (като sorted(v)):
+//   • в тялото на ПРИЕМАЩИЯ регистрира ctx като HK_WORLD(1) — мутатор върху
+//     получения свят е ОБРОЧЕНО там, а не мълчание (досега работникът беше
+//     sound silence: параметърът не беше ghost-регистриран);
+//   • при ИЗВИКВАНЕТО се разтоварва срещу състоянието на аргумента — frozen
+//     е ДОКАЗАНО, а мутабелен/освободен/преместен свят е ОБРОЧЕНО с witness.
+// Работник без spec (w_worker) остава честен silence: няма какво да се поеме.
+// ---------------------------------------------------------------------------
+
+spec ok_shared_reader {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Легалният читател: получил е замразен свят и само чете (world_state/
+// world_used). Собствената му верификация е чиста — ghost състоянието е
+// frozen, а четците са легални върху frozen.
+fn ok_shared_reader(ctx: i64) -> i64 {
+    let s = world_state(ctx)
+    let u = world_used(ctx)
+    return ctx - ctx
+}
+
+spec bad_shared_writer {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Същият договор, но тялото ПИШЕ в получения свят. Checker-ът мълчи (за него
+// параметърът е „неизвестно" състояние — W1.6 не измисля), верификаторът
+// оборва в самото тяло: втори писател върху споделен замразен свят = race.
+fn bad_shared_writer(ctx: i64) -> i64 {
+    let p = world_alloc(ctx, 16)
+    return ctx - ctx
+}
+
+spec ok_pass_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Извикващият замразява и предава: requires-ът на читателя се разтоварва
+// (ДОКАЗАНО), ensures-ът му се поема. Това е zero-copy споделянето, доказано
+// и от двете страни.
+fn ok_pass_frozen(n: i64) -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 5)
+    world_freeze(w)
+    let h = go(ok_shared_reader, w)
+    let r = join(h)
+    return r - r
+}
+
+spec bad_pass_mutable {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Freeze-ът е само в then-клона ⇒ по пътя n = 0 светът е мутабелен и
+// предаването нарушава requires-а на читателя — ОБРОЧЕНО с контрапример.
+fn bad_pass_mutable(n: i64) -> i64 {
+    let w = world_new()
+    if n > 0 {
+        world_freeze(w)
+    }
+    let r = ok_shared_reader(w)
+    world_free(w)
+    return r - r
+}
+
+spec bad_pass_freed {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Освободен свят не може да се предава: requires world_frozen е ОБРОЧЕНО
+// (заедно с use-after-free на самия аргумент) по пътя n = 1.
+fn bad_pass_freed(n: i64) -> i64 {
+    let w = world_new()
+    world_freeze(w)
+    if n > 0 {
+        world_free(w)
+    }
+    let r = ok_shared_reader(w)
+    return r - r
+}
+
+spec ok_pass_twice {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W2.4: замразен свят е СПОДЕЛЕНА read-only capability — двама (и повече)
+// читатели на един и същ свят са легални, защото никой не може да пише в
+// региона (runtime-enforced). Преди W2.4 вторият go беше „предаване на вече
+// преместен свят"; сега е споделба. Mutable свят остава изключителен
+// (виж bad_move_twice).
+fn ok_pass_twice(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let h1 = go(ok_shared_reader, w)
+    let h2 = go(ok_shared_reader, w)
+    let a = join(h1)
+    let b = join(h2)
+    return n - n
+}
+
+spec conj_reader {
+    input:
+        ctx: i64
+        n: i64
+    output: i64
+    requires:
+        world_frozen(ctx) && n >= 0
+    ensures:
+        output >= 0
+}
+
+// W2.1: ghost предикатът като КОНЮНКТ. extract_world_ghost минава през AND,
+// значи callee-то пак регистрира ctx като frozen — и discharge-ът от страна на
+// извикващия трябва да го направи също, иначе assume-guarantee се разминава
+// (callee допуска frozen, caller не е длъжен да го гарантира).
+fn conj_reader(ctx: i64, n: i64) -> i64 {
+    let s = world_state(ctx)
+    return n - n
+}
+
+spec ok_pass_conj {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 0
+}
+
+// Замразен свят и n >= 0 от собственото requires — и двата конъюнкта се
+// разтоварват, ensures-ът на читателя се поема.
+fn ok_pass_conj(n: i64) -> i64 {
+    let w = world_new()
+    world_freeze(w)
+    let r = conj_reader(w, n)
+    world_free(w)
+    return r - r
+}
+
+spec bad_pass_conj {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Мутабелен свят и n без предусловие: ОБРОЧЕНИ са и двата конъюнкта —
+// ghost-ът (при всеки вход) и аритметиката (контрапример n = -1).
+fn bad_pass_conj(n: i64) -> i64 {
+    let w = world_new()
+    let r = conj_reader(w, n)
+    world_free(w)
+    return r - r
+}
+
+spec cached_reader {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// W2.3: читателят попълва lazy индекс В замразения свят — легално, защото
+// кешът е прикачен към handle-а, не към региона: данните и dump-ът са
+// непроменени, значи договорът world_frozen не е нарушен. Мутаторите на
+// региона (world_alloc/wvec_push) остават обречени и тук (bad_shared_writer).
+// Връщаме израз над входа, защото стойностите от wcache_get са opaque за
+// линейния фрагмент — същият стил като ok_frozen_read.
+fn cached_reader(ctx: i64) -> i64 {
+    wcache_set(ctx, 1, 42)
+    let c = wcache_get(ctx, 1)
+    let u = world_used(ctx)
+    return ctx - ctx
+}
+
+spec bad_cache_after_free {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Кешът е вътрешна променяемост, не второ życie: след world_free handle-ът не
+// е твой — писане в кеша е ОБРОЧЕНО (free е само в then-клона ⇒ checker-ът
+// мълчи, верификаторът оборва пътя n = 1).
+fn bad_cache_after_free(n: i64) -> i64 {
+    let w = world_new()
+    if n > 0 {
+        world_free(w)
+    }
+    wcache_set(w, 1, 2)
+    return n - n
+}
+
+spec bad_cache_after_move {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Собствеността е прехвърлена на работника (mutable свят ⇒ move, не споделба)
+// — локалният кеш след това е use-after-move: handle-ът вече не е твой.
+fn bad_cache_after_move(n: i64) -> i64 !Par {
+    let w = world_new()
+    let h = go(w_worker, w)
+    wcache_set(w, 2, 3)
+    let r = join(h)
+    return r - r
+}
+
+// ---------------------------------------------------------------------------
+// W2.4: замразен свят = споделена read-only capability. Mutable свят е
+// изключителна собственост (move, Pony iso); frozen свят може да се даде на N
+// читатели (Pony val). Цената на споделянето: докато читател не е join-нат,
+// `world_free` е обречено — free би съблякъл региона под него.
+// ---------------------------------------------------------------------------
+
+spec ok_shared_many {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Трима читатели на един замразен свят, всички join-нати, после free —
+// чист жизнен цикъл на споделен регион (преди W2.4 вторият и третият go бяха
+// „предаване на вече преместен свят").
+fn ok_shared_many(n: i64) -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 5)
+    world_freeze(w)
+    let h1 = go(ok_shared_reader, w)
+    let h2 = go(ok_shared_reader, w)
+    let h3 = go(ok_shared_reader, w)
+    let a = join(h1)
+    let b = join(h2)
+    let c = join(h3)
+    world_free(w)
+    return n - n
+}
+
+spec ok_free_after_join {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// join декрементира споделбите: след като всички читатели са завършили,
+// собствеността се връща при извикващия и free е легален.
+fn ok_free_after_join(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let h1 = go(ok_shared_reader, w)
+    let h2 = go(ok_shared_reader, w)
+    let a = join(h1)
+    let b = join(h2)
+    world_free(w)
+    return n - n
+}
+
+spec bad_free_while_shared {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Споделянето не е безплатно: free преди join освобождава региона, докато
+// читателят още го държи — use-after-free в друга нишка. ОБРОЧЕНО.
+fn bad_free_while_shared(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let h = go(ok_shared_reader, w)
+    world_free(w)
+    let r = join(h)
+    return r - r
+}
+
+spec bad_free_after_chan_share {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Каналният приемник не може да се join-ва ⇒ споделбата е перманентна и free
+// остава обречено. Честно: верификаторът не знае кога читателят е приключил.
+fn bad_free_after_chan_share(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let ch = chan_new(1)
+    chan_send(ch, w)
+    chan_close(ch)
+    world_free(w)
+    return n - n
+}
+
+spec bad_move_twice {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// MUTABLE свят е изключителна собственост: второто предаване дава двама
+// писатели върху един регион — ОБРОЧЕНО (дупка преди W2.4: скенът мълчеше).
+fn bad_move_twice(n: i64) -> i64 !Par {
+    let w = world_new()
+    let h1 = go(w_worker, w)
+    let h2 = go(w_worker, w)
+    let a = join(h1)
+    let b = join(h2)
+    return n - n
+}
+
+spec bad_reader_frees {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// W2.4: получателят има ПРАВО НА ЧЕТЕНЕ, не собственост. Free на заеман свят
+// би съблякъл региона под останалите читатели (и под извикващия, който join-ва
+// и после free-ва) — ОБРОЧЕНО.
+fn bad_reader_frees(ctx: i64) -> i64 {
+    world_free(ctx)
+    return 0
+}
+
+spec bad_reader_delegates {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Правото не се препредава: извикващият join-ва САМО своя работник и после
+// free-ва, докато внук-читателят още държи региона. Транзитивно отчитане на
+// споделбите е W2 (връзките между светове) — дотогава е ОБРОЧЕНО, не тихо.
+fn bad_reader_delegates(ctx: i64) -> i64 !Par {
+    let h = go(ok_shared_reader, ctx)
+    let r = join(h)
+    return r - r
+}
+
+fn w_worker(ctx: i64) -> i64 !Par {
+    return ctx
+}
+
+
+fn main() {
+    print(bad_pass_mutable(0))
+    print(bad_pass_freed(0))
+    print(ok_pass_conj(1))
+    print(bad_pass_conj(1))
+    print(bad_cache_after_free(0))
+}

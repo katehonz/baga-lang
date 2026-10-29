@@ -630,7 +630,9 @@ static Sym make_status_pair(State *st, Node *c0, Node *c1, int hi) {
     return sym_lin(lin_var(pv));
 }
 
-static void world_move_scan(State *st, Obligations *ob, Node *arg);   /* W1.5 */
+static const char *world_move_scan(State *st, Obligations *ob, Node *arg);   /* W1.5, W2.4 */
+static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
+                                const char *op, int joinable);   /* W2.4 */
 
 Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     const char *nm = call->callee->name;
@@ -692,7 +694,7 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
             res = sym_lin(lin_var(rv));
         }
-        world_move_scan(st, ob, call->args.data[1]);
+        const char *shared_w = world_move_scan(st, ob, call->args.data[1]);   /* W2.4 */
         /* M19: classify the worker's first blocking op on the channel arg */
         HandleEntry *ch = NULL;
         {
@@ -734,6 +736,7 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             if (jh) {
                 jh->worker = strdup(wname);
                 if (ch) jh->chan_arg = strdup(ch->var);
+                if (shared_w) jh->world_arg = strdup(shared_w);   /* W2.4: joinable share */
                 jh->wf_recv = sc.recv_first && !sc.complex;
                 jh->wf_send = sc.send_first && !sc.complex;
                 jh->wf_complex = sc.complex;
@@ -774,6 +777,13 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
         } else {
             e->state = is_join ? 1 : 2;
             if (is_join) wf_check_join(st, ob, e);
+            /* W2.4: читателят е завършил — освободи една споделба. detach НЕ
+             * декрементира (работникът може още да чете), значи free на
+             * споделен свят остава обречено — честно, не тихо прието. */
+            if (is_join && e->world_arg) {
+                HandleEntry *sw = handles_find(&st->handles, e->world_arg);
+                if (sw && sw->kind == HK_WORLD && sw->n_shared > 0) sw->n_shared--;
+            }
         }
         if (!is_join) { lin_free(&hv.lin); return sym_lin(lin_const(rat_int(0))); }
         lin_free(&hv.lin);
@@ -824,21 +834,15 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     }
     /* chan_send */
     if (e) { wf_check_send(st, ob, e); e->n_send++; }   /* M24: full-buffer */
-    /* W0: изпращане на свят през канал = прехвърляне на собствеността
-     * (move, Pony iso стил). Локалният handle минава в state 3 — всяка
-     * по-нататъшна локална употреба е use-after-move (ОБРОЧЕНО). Изпращане
-     * на вече освободен свят е use-after-free. */
+    /* W0/W2.4: изпращане на свят през канал. Mutable = прехвърляне на
+     * собствеността (move, Pony iso) — всяка по-нататъшна локална употреба е
+     * use-after-move. Frozen = споделена read-only capability: локалните
+     * четения остават легални, но приемникът не може да се join-ва, затова
+     * споделбата е перманентна и `world_free` след това е ОБРОЧЕНО. */
     if (call->args.len >= 2 && call->args.data[1] && call->args.data[1]->kind == NODE_IDENT) {
         HandleEntry *we = handles_find(&st->handles, call->args.data[1]->name);
-        if (we && we->kind == HK_WORLD) {
-            if (we->state == 2) {
-                char wlabel[300];
-                snprintf(wlabel, sizeof wlabel, "chan_send на освободен свят '%s'", we->var);
-                push_protocol_violation(st, ob, wlabel);
-            } else if (we->state != 3) {
-                we->state = 3;
-            }
-        }
+        if (we && we->kind == HK_WORLD)
+            world_handoff(st, ob, we, "chan_send", 0);
     }
     Sym v = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
     /* M16: the payload must provably satisfy every content axiom anchored on
@@ -898,36 +902,71 @@ void eval_drop_call(Node *call, State *st, Obligations *ob) {
     }
 }
 
-/* W1.5: обхожда израз за HK_WORLD идентификатори и ги прехвърля в moved
- * (state 3). Покрива cell2/арбитрарни вложени извиквания — рекурсията е
- * по аргументите. Освободен свят в аргумент е use-after-free. */
-static void world_move_scan_rec(Node *e, State *st, Obligations *ob) {
-    if (!e) return;
+/* W2.4: предаване на свят на друг изпълнител. ЗАМРАЗЕН свят е споделена
+ * read-only capability (Pony val / Verona frozen region): n_shared++, а
+ * локалните четения остават легални — свободата да имаш N читателя е цялата
+ * идея на freeze. MUTABLE свят е изключителна собственост (Pony iso): move, и
+ * второ предаване е ОБРОЧЕНО (иначе двама писатели върху един регион).
+ * Връща името на света при joinable споделба (go с гол ident) — join ще
+ * декрементира; за go_bg/канал/пакет връща NULL (читателят не се проследява,
+ * значи free остава обречено — честно, не тихо). */
+static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
+                                const char *op, int joinable) {
+    char label[300];
+    if (we->state == 2) {
+        snprintf(label, sizeof label, "%s на освободен свят '%s'", op, we->var);
+        push_protocol_violation(st, ob, label);
+        return NULL;
+    }
+    if (we->state == 3) {
+        snprintf(label, sizeof label, "%s на вече преместен свят '%s'", op, we->var);
+        push_protocol_violation(st, ob, label);
+        return NULL;
+    }
+    if (we->state == 1) {
+        /* W2.4: заеманото право на четене не се препредава — извикващият
+         * join-ва САМО своя работник и после free-ва; внук-читател би останал
+         * да чете освободен регион. Транзитивно отчитане на споделбите е W2
+         * (връзките между светове), не нещо, което можем да направим тихо. */
+        if (we->borrowed) {
+            snprintf(label, sizeof label,
+                "%s на заеман свят '%s' — requires world_frozen дава четене, не препредаване",
+                op, we->var);
+            push_protocol_violation(st, ob, label);
+            return NULL;
+        }
+        we->n_shared++;
+        return joinable ? we->var : NULL;
+    }
+    we->state = 3;
+    return NULL;
+}
+
+/* W1.5: обхожда израз за HK_WORLD идентификатори (рекурсия по аргументите —
+ * покрива cell2 пакети и вложени извиквания) и прилага world_handoff върху
+ * всеки. Joinable е само голо ident-предаване. */
+static const char *world_move_scan_rec(Node *e, State *st, Obligations *ob, int joinable) {
+    if (!e) return NULL;
     switch (e->kind) {
     case NODE_IDENT: {
         HandleEntry *h = handles_find(&st->handles, e->name);
-        if (!h || h->kind != HK_WORLD) return;
-        if (h->state == 2) {
-            char label[300];
-            snprintf(label, sizeof label, "предаване на освободен свят '%s'", h->var);
-            push_protocol_violation(st, ob, label);
-        } else if (h->state != 3) {
-            h->state = 3;
-        }
-        return;
+        if (!h || h->kind != HK_WORLD) return NULL;
+        return world_handoff(st, ob, h, "предаване", joinable);
     }
     case NODE_CALL:
-        for (int i = 0; i < e->args.len; i++) world_move_scan_rec(e->args.data[i], st, ob);
-        return;
+        for (int i = 0; i < e->args.len; i++) world_move_scan_rec(e->args.data[i], st, ob, 0);
+        return NULL;
     case NODE_BINARY:
-        world_move_scan_rec(e->left, st, ob);
-        world_move_scan_rec(e->right, st, ob);
-        return;
-    default: return;
+        world_move_scan_rec(e->left, st, ob, 0);
+        world_move_scan_rec(e->right, st, ob, 0);
+        return NULL;
+    default: return NULL;
     }
 }
-static void world_move_scan(State *st, Obligations *ob, Node *arg) {
-    world_move_scan_rec(arg, st, ob);
+static const char *world_move_scan(State *st, Obligations *ob, Node *arg) {
+    /* само ГОЛ ident е joinable: при cell2 пакет не знаем кой свят ще бъде
+     * прочетен от работника, значи декремент при join не е възможен */
+    return world_move_scan_rec(arg, st, ob, arg && arg->kind == NODE_IDENT);
 }
 
 /* W0: world_* преходи на HK_WORLD ghost състоянието (като eval_drop_call,
@@ -955,7 +994,22 @@ void eval_world_call(Node *call, State *st, Obligations *ob) {
         }
     } else if (strcmp(op, "world_free") == 0) {
         if (e->state == 0 || e->state == 1) {
-            e->state = 2;
+            /* W2.4: получател с `requires: world_frozen` държи ЗАЕМАН свят —
+             * собствеността е у извикващия, значи free тук би съблякъл региона
+             * под останалите читатели (и под самия извикващ). */
+            if (e->borrowed) {
+                snprintf(label, sizeof label,
+                    "world_free на заеман свят '%s' — собствеността е у извикващия",
+                    e->var);
+                viol = label;
+            } else if (e->n_shared > 0) {
+                snprintf(label, sizeof label,
+                    "world_free на споделен свят '%s' с %d незавършен(и) читател(и) — join преди free",
+                    e->var, e->n_shared);
+                viol = label;
+            } else {
+                e->state = 2;
+            }
         } else if (e->state == 2) {
             snprintf(label, sizeof label, "повторен world_free на '%s'", wn); viol = label;
         } else {

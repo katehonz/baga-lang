@@ -623,8 +623,17 @@ void extract_world_ghost(Node *e, State *st) {
     if (is_world_ghost_call(e)) {
         const char *nm = e->args.data[0]->name;
         HandleEntry *h = handles_find(&st->handles, nm);
-        if (h) { if (h->kind == HK_WORLD) h->state = 1; return; }
+        if (h) {
+            if (h->kind == HK_WORLD) { h->state = 1; h->borrowed = 1; }
+            return;
+        }
         handles_set(&st->handles, nm, HK_WORLD, 1, NULL);
+        /* W2.4: `requires: world_frozen(ctx)` дава ПРАВО НА ЧЕТЕНЕ, не
+         * собственост — получателят не може да освобождава или препредава
+         * света (извикващият join-ва само своите работници и после free-ва;
+         * free на заеман свят би съблякъл региона под останалите читатели). */
+        h = handles_find(&st->handles, nm);
+        if (h) h->borrowed = 1;
         return;
     }
     if (e->kind == NODE_BINARY && e->bin_op == OP_AND) {

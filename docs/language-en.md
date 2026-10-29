@@ -1269,6 +1269,16 @@ invalidates nothing:
   hatch for lazy indexes) and guarded by a mutex, so reader threads can fill it
   safely. The contract is idempotence (the value is a function of the frozen
   data). Verifier: a violation only after `world_free` or a move.
+- W2.4: a frozen world is a shareable read-only capability — `go`/`chan_send`
+  with a FROZEN world is a share (not a move), so N readers of one world are
+  legal and local reads stay valid; with a MUTABLE world it is a move
+  (exclusive ownership) and a second hand-off is REFUTED. Sharing is accounted
+  for: `join` releases a reader, and `world_free` with outstanding readers is
+  REFUTED ("join before free"). `go_bg`, `detach`, `chan_send` and a `cell2`
+  pack cannot be joined ⇒ the share is permanent and free stays refuted. A
+  receiver with `requires: world_frozen(ctx)` holds a BORROWED world:
+  `world_free(ctx)` and handing it on are both REFUTED (the right is to read,
+  not to own).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

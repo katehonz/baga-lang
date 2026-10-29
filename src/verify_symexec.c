@@ -236,7 +236,7 @@ void handles_init(HandleList *l) { l->h = NULL; l->n = 0; l->cap = 0; }
 void handles_free(HandleList *l) {
     for (int i = 0; i < l->n; i++) {
         free(l->h[i].var); lin_free(&l->h[i].result);
-        free(l->h[i].worker); free(l->h[i].chan_arg);
+        free(l->h[i].worker); free(l->h[i].chan_arg); free(l->h[i].world_arg);
     }
     free(l->h);
     handles_init(l);
@@ -254,7 +254,9 @@ void handles_set(HandleList *l, const char *var, int kind, int state, Lin *resul
         e->var = strdup(var);
         Lin empty; lin_init(&empty);
         e->result = empty;
-        e->worker = NULL; e->chan_arg = NULL;
+        e->worker = NULL; e->chan_arg = NULL; e->world_arg = NULL;
+        e->n_shared = 0;
+        e->borrowed = 0;
         e->wf_recv = e->wf_send = e->wf_complex = 0;
         e->wf_n_send = e->wf_n_recv = 0;
         e->wf_child_cons = 0;
@@ -290,6 +292,9 @@ void handles_clone_into(HandleList *dst, HandleList *src) {
         d->wf_maybe_loop = src->h[i].wf_maybe_loop;
         d->worker = src->h[i].worker ? strdup(src->h[i].worker) : NULL;
         d->chan_arg = src->h[i].chan_arg ? strdup(src->h[i].chan_arg) : NULL;
+        d->world_arg = src->h[i].world_arg ? strdup(src->h[i].world_arg) : NULL;
+        d->n_shared = src->h[i].n_shared;
+        d->borrowed = src->h[i].borrowed;
     }
 }
 

@@ -51,6 +51,14 @@ typedef struct {
      * send/recv and anonymous (go_bg) producers. */
     char *worker;     /* HK_JOIN: worker fn name (owned) */
     char *chan_arg;   /* HK_JOIN: channel ghost var, or NULL */
+    char *world_arg;  /* HK_JOIN: W2.4 споделен замразен свят (joinable share) */
+    int n_shared;     /* HK_WORLD: W2.4 брой незавършили читатели на споделен
+                       * замразен свят. frozen + go/chan_send = share (не move);
+                       * join декрементира; world_free при n_shared > 0 е
+                       * ОБРОЧЕНО — иначе free-ът съблича региона под читателите. */
+    int borrowed;     /* HK_WORLD: W2.4 handle-ът е ЗАЕМАН (получател с
+                       * `requires: world_frozen`) — право на четене, не
+                       * собственост: world_free и препредаване са ОБРОЧЕНИ. */
     int wf_recv;      /* HK_JOIN: worker recvs param before send/return */
     int wf_send;      /* HK_JOIN: worker sends param before recv */
     int wf_complex;   /* HK_JOIN: scan inconclusive (if/loop/nested) */
