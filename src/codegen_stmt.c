@@ -472,6 +472,11 @@ static int expr_has_world_contract(Node *e) {
 static int spec_has_world_contract(Node *spec) {
     for (int i = 0; i < spec->spec_requires.len; i++)
         if (expr_has_world_contract(spec->spec_requires.data[i]->ensure_expr)) return 1;
+    /* W3.1: и гаранция за върнат свят прави spec-а неподходящ за property-тест —
+     * резултатът е handle (произволен/лъжлив i64 е segfault при дереференс).
+     * Гарацията се проверява статично от --verify и се поема от seatbelt-а. */
+    for (int i = 0; i < spec->spec_ensures.len; i++)
+        if (expr_has_world_contract(spec->spec_ensures.data[i]->ensure_expr)) return 1;
     return 0;
 }
 

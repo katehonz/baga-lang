@@ -742,6 +742,21 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     if (!skip && has_unsupported(fn->fn_body)) skip = "цикли/рекурсия/повиквания";
 
     int ne = spec->spec_ensures.len;
+    /* W3.1: гаранция за върнат свят — `ensures: world_frozen(output)` /
+     * `world_owned(output)`. Не се дава на аритметичния/BV път (давал е честен
+     * UNKNOWN): вердиктът идва от проверката на всеки ВЪРНАТ handle в
+     * drain_returns (kind-5 задължения + g_guar_unknown). */
+    g_guar_kind = 0; g_guar_unknown = 0;
+    int g_idx = -1;
+    for (int j = 0; j < ne && g_idx < 0; j++) {
+        Node *ge = spec->spec_ensures.data[j]->ensure_expr;
+        int gk = world_contract_of(ge);
+        if (gk && gk != 2 && ge->args.len == 1 && ge->args.data[0]->kind == NODE_IDENT &&
+            strcmp(ge->args.data[0]->name, "output") == 0) {
+            g_guar_kind = gk;
+            g_idx = j;
+        }
+    }
     out->ens = calloc(ne > 0 ? ne : 1, sizeof(EnsVerifyRes));
     out->n_ens = ne;
 
@@ -791,6 +806,40 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     free(states.s);
 
     for (int j = 0; j < ne; j++) {
+        if (g_guar_kind && j == g_idx) {
+            /* W3.1: гарацията — вердикт от kind-5 задълженията (по един на
+             * всеки ПЪТ с несъответстващ върнат handle). REFUTED само с
+             * контрапример от пътя (M8: никога измислена); ако има път с
+             * неследен handle — честен UNKNOWN, дори останалите да са чисти. */
+            VRes gr = R_PROVEN;
+            IBind *gwit = NULL; int gwn = 0;
+            const char *gdetail = NULL;
+            for (int i = 0; i < ob.n && gr != R_REFUTED; i++) {
+                if (ob.o[i].kind != 5) continue;
+                IBind *w2 = NULL; int w2n = 0;
+                VRes r2 = verify_call_req(&ob.o[i], &w2, &w2n);
+                if (r2 == R_REFUTED) {
+                    gr = R_REFUTED; gwit = w2; gwn = w2n;
+                    if (ob.o[i].label) gdetail = strdup(ob.o[i].label);
+                }
+                else if (w2) { for (int k = 0; k < w2n; k++) free(w2[k].name); free(w2); }
+            }
+            if (gr != R_REFUTED && g_guar_unknown) gr = R_UNKNOWN;
+            out->ens[j].res = (int)gr;
+            out->ens[j].ens_text = spec->spec_ensures.data[j]->ensure_text;
+            out->ens[j].detail = (char *)gdetail;
+            out->ens[j].wn = gwn;
+            if (gwn > 0 && gwit) {
+                out->ens[j].wit_names = malloc(gwn * sizeof(char *));
+                out->ens[j].wit_vals = malloc(gwn * sizeof(long long));
+                for (int k = 0; k < gwn; k++) {
+                    out->ens[j].wit_names[k] = gwit[k].name;
+                    out->ens[j].wit_vals[k] = (long long)gwit[k].val;
+                }
+                free(gwit);
+            }
+            continue;
+        }
         IBind *wit = NULL; int wn = 0;
         VRes r = verify_ensures(spec, spec->spec_ensures.data[j]->ensure_expr, &ob, &wit, &wn);
         out->ens[j].res = (int)r;
@@ -915,6 +964,7 @@ void fn_verify_res_free(FnVerifyRes *r) {
                 free(r->ens[j].wit_names);
             }
             free(r->ens[j].wit_vals);
+            free(r->ens[j].detail);   /* W3.1 */
         }
         free(r->ens);
         r->ens = NULL;
@@ -965,6 +1015,7 @@ static int verify_fn(Node *prog, Node *fn) {
             if (e->res == 3) { printf(", \"skip_reason\": "); json_str(e->skip_reason); }
             printf(", \"counterexample\": ");
             json_witness(e->wit_names, e->wit_vals, e->res == 1 ? e->wn : 0);
+            if (e->detail) { printf(", \"detail\": "); json_str(e->detail); }
             printf("}");
             if (e->res == 1) any_refuted = 1;
         }
@@ -1002,6 +1053,7 @@ static int verify_fn(Node *prog, Node *fn) {
                     for (int k = 0; k < e->wn; k++) printf(" %s = %lld", e->wit_names[k], e->wit_vals[k]);
                     if (e->wn == 0) printf(" (без свидетел)");
                     printf("\n");
+                    if (e->detail) printf("    (%s)\n", e->detail);   /* W3.1: причината */
                 }
             }
         }

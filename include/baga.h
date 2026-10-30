@@ -702,6 +702,7 @@ typedef struct {
     char **wit_names;    /* counterexample variable names (owned, may be NULL) */
     long long *wit_vals; /* counterexample values */
     int wn;              /* number of witness bindings */
+    char *detail;        /* W3.1: причината (label на нарушението), owned/NULL */
 } EnsVerifyRes;
 
 typedef struct {

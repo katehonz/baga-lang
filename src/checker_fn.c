@@ -330,6 +330,62 @@ static void check_spec_world_contracts(CheckCtx *ctx, Node *item) {
     }
 }
 
+/* W3.1: гаранция за върнат свят в ensures — `world_frozen(output)` /
+ * `world_owned(output)`. Връща 0/1/3 (frozen/owned) за spec-а на име `fname`;
+ * използва се от expr_is_world (let-резултатът е handle) и от верификатора
+ * през caller-страната. */
+int spec_world_guarantee(CheckCtx *ctx, const char *fname) {
+    Node *item = find_spec_item(ctx, fname);
+    if (!item) return 0;
+    for (int r = 0; r < item->spec_ensures.len; r++) {
+        Node *e = item->spec_ensures.data[r]->ensure_expr;
+        if (!e || e->kind != NODE_CALL || !e->callee || e->callee->kind != NODE_IDENT ||
+            e->args.len != 1) continue;
+        int k = strcmp(e->callee->name, "world_frozen") == 0 ? 1 :
+                strcmp(e->callee->name, "world_owned") == 0 ? 3 : 0;
+        if (k && e->args.data[0]->kind == NODE_IDENT &&
+            strcmp(e->args.data[0]->name, "output") == 0) return k;
+    }
+    return 0;
+}
+
+/* W3.1: диагностика на световните гаранции в ensures. Целта трябва да е
+ * `output` (гаранция за друго име няма смисъл — не е резултатът),
+ * `world_mutable(output)` няма смисъл (резултатът се ОБЕЩАВА, не се пише по
+ * време на повикване), и най-много ЕДНА гаранция — две си противоречат. */
+static void check_spec_world_guarantees(CheckCtx *ctx, Node *item) {
+    const char *gname = NULL; int gk = 0;
+    for (int r = 0; r < item->spec_ensures.len; r++) {
+        Node *e = item->spec_ensures.data[r]->ensure_expr;
+        if (!e || e->kind != NODE_CALL || !e->callee || e->callee->kind != NODE_IDENT ||
+            e->args.len != 1 || e->args.data[0]->kind != NODE_IDENT) continue;
+        const char *f = e->callee->name;
+        int k = strcmp(f, "world_frozen") == 0 ? 1 :
+                strcmp(f, "world_mutable") == 0 ? 2 :
+                strcmp(f, "world_owned") == 0 ? 3 : 0;
+        if (!k) continue;
+        if (strcmp(e->args.data[0]->name, "output") != 0) {
+            check_error(ctx, item->pos,
+                "spec '%s': гаранция за свят важи само за 'output' — '%s(%s)' не е резултатът",
+                item->spec_name, f, e->args.data[0]->name);
+        }
+        if (k == 2) {
+            check_error(ctx, item->pos,
+                "spec '%s': 'world_mutable' няма смисъл като гаранция — резултатът се "
+                "обещава, не се пише по време на повикване; използвай world_frozen "
+                "(върнат замразен свят) или world_owned (прехвърлена собственост)",
+                item->spec_name);
+        }
+        if (gk) {
+            check_error(ctx, item->pos,
+                "spec '%s': две гаранции за свят (%s и %s) — избери една",
+                item->spec_name, gname, f);
+            break;
+        }
+        gk = k; gname = f;
+    }
+}
+
 static void infer_spec_contracts(CheckCtx *ctx, Node *item, Type *fn_ret) {
     if (item->spec_ensures.len > 0) {
         if (fn_ret->kind == TYPE_VOID) {
@@ -375,6 +431,7 @@ static void infer_spec_contracts(CheckCtx *ctx, Node *item, Type *fn_ret) {
         check_spec_world_contracts(ctx, item);   /* W2.7: по един договор на параметър */
         pop_scope(ctx);
     }
+    check_spec_world_guarantees(ctx, item);   /* W3.1: гаранция за върнат свят (без requires също) */
     if (item->spec_decreases) {
         push_scope(ctx);
         for (int j = 0; j < item->spec_inputs.len; j++) {

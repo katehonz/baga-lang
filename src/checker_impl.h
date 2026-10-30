@@ -170,6 +170,7 @@ void freeze_lift_from(CheckCtx *ctx, int base);   /* W1.6 */
 void freeze_join2(CheckCtx *ctx, int log_base, int mid);   /* W1.6 */
 void freeze_join_arms(CheckCtx *ctx, int log_base, const int *arm_end, int narm);   /* W1.6 */
 void world_note_frozen(CheckCtx *ctx, EnvEntry *e);   /* W1.6 */
+int spec_world_guarantee(CheckCtx *ctx, const char *fname);   /* W3.1: 0/1/3 */
 Type *env_lookup(CheckCtx *ctx, const char *name);   /* 1088 */
 int env_is_mut(CheckCtx *ctx, const char *name);   /* 1099 */
 Type *ck_find_fn(CheckCtx *ctx, const char *name);   /* 1110 */

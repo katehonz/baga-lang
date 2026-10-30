@@ -141,6 +141,15 @@ extern int g_inv_cap;
 extern int g_havoc_ctr;
 extern int g_recv_world_kind;   /* W2.8 */
 extern char g_recv_world_chan[64];   /* W2.12: from_chan при chan_recv */
+/* W3.1: гаранция за върнат свят (`ensures: world_frozen(output)` /
+ * `world_owned(output)`). g_guar_kind = какво обещава spec-ът (0/1/3);
+ * drain_returns проверява ВСЕКИ върнат handle и push-ва kind-5 задължение при
+ * несъответствие; g_guar_unknown = има път с неследен върнат handle (честен
+ * UNKNOWN, никога ДОКАЗАНО). g_ret_world_kind е caller-страната: eval_user_call
+ * го слага, LET-вързането го консумира и регистрира резултата като HK_WORLD. */
+extern int g_guar_kind;
+extern int g_guar_unknown;
+extern int g_ret_world_kind;
 extern int g_json;
 extern int g_json_first;
 
@@ -283,6 +292,9 @@ void path_push_le(ConsList *path, const char *pv, int64_t K);   /* 2361 */
 void inject_prod_axioms(State *st);   /* 2395 */
 Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *caller_name);   /* 2797 */
 void push_protocol_violation(State *st, Obligations *ob, const char *label);   /* 2926 */
+/* W3.1: kind-5 задължение — нарушена гаранция за върнат свят. Като kind 3
+ * (path witness), но се докладва като ensures ред, не като протокол. */
+void push_guar_violation(State *st, Obligations *ob, const char *label);
 void push_unjoined_delegation_obls(States *states, Obligations *ob);   /* W2.6: изход без return */
 void push_protocol_ok(State *st, Obligations *ob, const char *label);   /* 2936 */
 Sym eval_par_call(Node *call, State *st, Obligations *ob);   /* 3588 */

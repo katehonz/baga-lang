@@ -640,6 +640,37 @@ void push_unjoined_delegation_obls(States *states, Obligations *ob) {
 static void drain_returns(States *states, Obligations *ob, Node *val_expr) {    for (int i = 0; i < states->n; i++) {
         check_unjoined_delegations(&states->s[i], ob);   /* W2.6 */
         Sym r = se_from_ast(val_expr, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads);
+        /* W3.1: гаранция за върнат свят — всеки върнат handle се проверява
+         * СРЕЩУ обещаното състояние по този път. Името идва от AST-а
+         * (ghost-ите са по име на локала, Sym-ът е вътрешен __pN — както при
+         * check_drop_uses). Несъответствие → kind-5 задължение (с
+         * контрапример); неследен/не-ident върнат handle → g_guar_unknown
+         * (честен UNKNOWN, никога ДОКАЗАНО). Заеманост/незавършени читатели
+         * също са несъответствие — иначе гарацията би скрила живи получатели. */
+        if (g_guar_kind) {
+            const char *hv = (val_expr && val_expr->kind == NODE_IDENT) ? val_expr->name : NULL;
+            HandleEntry *h = hv ? handles_find(&states->s[i].handles, hv) : NULL;
+            if (!h || h->kind != HK_WORLD) {
+                g_guar_unknown = 1;
+            } else {
+                int want_ok = g_guar_kind == 1 ? (h->state == 1) : (h->state == 0 || h->state == 1);
+                if (!h->borrowed && h->n_shared == 0 && want_ok) {
+                    /* състоянието е обещаното и светът е чист — отсъствие на
+                     * нарушение = доказано по този път */
+                } else {
+                    char label[240];
+                    snprintf(label, sizeof label,
+                        "гаранция %s на 'output': върнатият свят '%s' е %s%s%s",
+                        g_guar_kind == 1 ? "world_frozen" : "world_owned",
+                        hv ? hv : "?",
+                        h->state == 1 ? "замразен" : h->state == 2 ? "освободен" :
+                        h->state == 3 ? "преместен" : "мутабелен",
+                        h->borrowed ? ", заеман" : "",
+                        h->n_shared > 0 ? ", с незавършени читатели" : "");
+                    push_guar_violation(&states->s[i], ob, label);
+                }
+            }
+        }
         inject_prod_axioms(&states->s[i]);   /* M8b: преди snapshot на path */
         ConsList nobound; cl_init(&nobound);
         ConsList rc; cl_init(&rc);
@@ -664,6 +695,19 @@ void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvo
                 if (is_user_call(st->let_init)) {   /* M5: assume-guarantee */
                     Sym r = eval_user_call(st->let_init, &states->s[i], ob, g_caller_name);
                     bind_sym(&states->s[i].env, st->let_name, r);
+                    /* W3.1: резултатът от fn с гаранция за свят е HANDLE —
+                     * регистрира се с обещаното състояние (frozen → 1, owned →
+                     * 0) и оттук нататък влиза в целия протокол (free,
+                     * use-after-free, mutate-after-freeze). Без това върнатият
+                     * свят беше неследен (документирана дупка). */
+                    if (g_ret_world_kind) {
+                        int gk = g_ret_world_kind;
+                        g_ret_world_kind = 0;
+                        handles_set(&states->s[i].handles, st->let_name, HK_WORLD,
+                                    gk == 1 ? 1 : 0, NULL);
+                        HandleEntry *hw = handles_find(&states->s[i].handles, st->let_name);
+                        if (hw) { hw->borrowed = 0; hw->wcontract = 0; }
+                    }
                     continue;
                 }
                 if (is_par_builtin_call(st->let_init)) {   /* M14: !Par */

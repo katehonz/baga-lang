@@ -974,6 +974,11 @@ static int expr_is_world(CheckCtx *ctx, Node *n) {
         return (strcmp(f, "world_new") == 0 || strcmp(f, "world_load") == 0 ||
                 strcmp(f, "world_linked") == 0) ? 1 : 0;
     }
+    /* W3.1: потребителска fn с гаранция за върнат свят — резултатът е handle
+     * (досега върнат свят беше неследен за seatbelt-а). */
+    if (n->kind == NODE_CALL && n->callee && n->callee->kind == NODE_IDENT &&
+        find_fn_rec(ctx, n->callee->name))
+        return spec_world_guarantee(ctx, n->callee->name) != 0;
     return 0;
 }
 
@@ -988,6 +993,12 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
         if (init->kind == NODE_IDENT) {
             EnvEntry *src = ck_env_find(ctx, init->name);
             if (src && src->world_frozen) world_note_frozen(ctx, pe);
+        } else if (init->kind == NODE_CALL && init->callee &&
+                   init->callee->kind == NODE_IDENT) {
+            /* W3.1: върнат замразен свят — гарацията на spec-а се поема от
+             * seatbelt-а (мутатор върху него е compile грешка веднага). */
+            if (spec_world_guarantee(ctx, init->callee->name) == 1)
+                world_note_frozen(ctx, pe);
         }
     } else {
         pe->is_world = 0;

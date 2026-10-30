@@ -347,6 +347,22 @@ grep -q "chan_reader:" /tmp/baga_verify_out.txt && grep -q "ok_fanout2:" /tmp/ba
 	&& grep -q "извикване (requires world_frozen на 'rdirect' при извикване): ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& echo "OK: worlds_fanout — W2.12: каналните споделби изтичат при join на всички носители (fan-out на замразен свят към няколко читателя, после free — ДОКАЗАНО; каналният договор се разтоварва при всеки spawn, не само при един), а free при жив/откачен носител, без chan_close, с go_bg/пакет/канал-пейлоад или с самополучаване е обречен с точно послание" \
 	|| { echo "FAIL: worlds_fanout"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/worlds_ret.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "build_frozen:" /tmp/baga_verify_out.txt && grep -q "build_owned:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_build_lies:" /tmp/baga_verify_out.txt && grep -q "bad_share_build:" /tmp/baga_verify_out.txt \
+	&& grep -q "ok_ret_frozen_use:" /tmp/baga_verify_out.txt && grep -q "ok_ret_owned_use:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_ret_frozen_write:" /tmp/baga_verify_out.txt && grep -q "bad_ret_after_free:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_free_while_shared_ret:" /tmp/baga_verify_out.txt && grep -q "ret_untracked:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^8$' \
+	&& grep -q "гаранция world_frozen на 'output': върнатият свят 'w' е мутабелен" /tmp/baga_verify_out.txt \
+	&& grep -q "гаранция world_frozen на 'output': върнатият свят 'w' е замразен, с незавършени читатели" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (mutate-after-freeze: wvec_new върху замразен 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (повторен world_free на 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (world_free на споделен свят 'w' с 1 незавършен(и) читател(и).*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "извикване (requires world_frozen на 'rd' при извикване): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& echo "OK: worlds_ret — W3.1: гаранция за върнат свят — строител ДОКАЗВА състоянието на output по всеки return-път (лъжещият и този с незавършен читател са оброчени с причината в отчета), извикващият регистрира резултата като handle и целият протокол важи (mutate-after-freeze, повторен free, free с жив читател — оброчени с контрапример); неследен върнат handle е честен UNKNOWN" \
+	|| { echo "FAIL: worlds_ret"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
 	&& grep -q "контрапример: n = 9223372036854775807" /tmp/baga_verify_out.txt \

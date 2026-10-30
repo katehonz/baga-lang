@@ -1,0 +1,212 @@
+// worlds_ret.baga — W3.1: гаранция за върнат свят.
+//
+// Досега свят, върнат от потребителска функция, беше НЕСЛЕДЕН — документирана
+// дупка: seatbelt-ът не го познаваше, а верификаторът не знаеше в какво
+// състояние излиза. От W3.1 spec-ът може да обещае:
+//
+//   ensures: world_frozen(output)   — върнатият свят е замразен (и чист:
+//                                     без заемане, без незавършени читатели)
+//   ensures: world_owned(output)    — прехвърлена собственост (mutable или
+//                                     frozen, но пак чиста)
+//
+// Извикваният ДОКАЗВА обещанието по всеки return-път (несъответствие или
+// неследен върнат handle са ОБРОЧЕНО/честен UNKNOWN); извикващият РЕГИСТРИРА
+// резултата като HK_WORLD с обещаното състояние — оттук нататък важи целият
+// протокол (mutate-after-freeze, двоен free, use-after-free). Seatbelt-ът го
+// вижда веднага (compile грешки).
+//
+//   ./baga --verify examples/verify/worlds_ret.baga
+
+// ---------------------------------------------------------------------------
+// Строители: обещават състояние на резултата.
+// ---------------------------------------------------------------------------
+
+spec build_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        world_frozen(output)
+}
+
+fn build_frozen(n: i64) -> i64 {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, n)
+    world_freeze(w)
+    return w
+}
+
+spec build_owned {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        world_owned(output)
+}
+
+// Собственост без freeze — извикващият може да пише, freeze-ва и free-ва.
+fn build_owned(n: i64) -> i64 {
+    let w = world_new()
+    wvec_new(w)
+    return w
+}
+
+spec bad_build_lies {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        world_frozen(output)
+}
+
+// Лъже: обещава замразен, но по пътя n = 0 връща мутабелен свят.
+fn bad_build_lies(n: i64) -> i64 {
+    let w = world_new()
+    if n > 0 {
+        world_freeze(w)
+    }
+    return w
+}
+
+spec rd {
+    input:
+        w: i64
+    output: i64
+    requires:
+        world_frozen(w)
+    ensures:
+        output >= 0
+}
+
+fn rd(w: i64) -> i64 !Par {
+    let s = world_state(w)
+    return w - w
+}
+
+spec bad_share_build {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        world_frozen(output)
+}
+
+// Връща свят с НЕзавършен читател — гарацията би скрила жив получател.
+fn bad_share_build(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let h = go(rd, w)
+    return w
+}
+
+// ---------------------------------------------------------------------------
+// Извикващи: резултатът е HANDLE и влиза в протокола.
+// ---------------------------------------------------------------------------
+
+spec ok_ret_frozen_use {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Върнат замразен свят: четене и free са легални (собствеността е наша).
+fn ok_ret_frozen_use(n: i64) -> i64 {
+    let w = build_frozen(n)
+    let x = wvec_get(w, 1, 0)
+    world_free(w)
+    return n - n
+}
+
+spec ok_ret_owned_use {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Върната собственост: писане, freeze и free — всичко легално.
+fn ok_ret_owned_use(n: i64) -> i64 {
+    let w = build_owned(n)
+    wvec_new(w)
+    world_freeze(w)
+    world_free(w)
+    return n - n
+}
+
+spec bad_ret_frozen_write {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Запис върху върнат свят, замразен по ПЪТ (freeze в then-клона): checker-ът
+// мълчи (maybe-frozen), верификаторът оборва n > 0 — върнатият свят участва в
+// целия path-sensitive протокол.
+fn bad_ret_frozen_write(n: i64) -> i64 {
+    let w = build_owned(n)
+    if n > 0 {
+        world_freeze(w)
+    }
+    wvec_new(w)
+    world_free(w)
+    return n - n
+}
+
+spec bad_ret_after_free {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Двоен free на върнат свят по път (free в then-клона) — повторен world_free.
+fn bad_ret_after_free(n: i64) -> i64 {
+    let w = build_owned(n)
+    if n > 0 {
+        world_free(w)
+    }
+    world_free(w)
+    return n - n
+}
+
+spec bad_free_while_shared_ret {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Върнат замразен свят се споделя и free-ва ПРЕДИ join — читателят още чете.
+fn bad_free_while_shared_ret(n: i64) -> i64 !Par {
+    let w = build_frozen(n)
+    let h = go(rd, w)
+    world_free(w)
+    let r = join(h)
+    return n - n
+}
+
+spec ret_untracked {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        world_frozen(output)
+}
+
+// Връща обикновено число — i64 може да е handle, значи моделът не знае дали
+// обещанието е вярно: честен UNKNOWN, не измислено обвинение.
+fn ret_untracked(n: i64) -> i64 {
+    return 5
+}
+
+fn main() {
+    print("worlds_ret: verify-only oracle")
+}

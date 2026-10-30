@@ -1077,6 +1077,64 @@ else
 	exit 1
 fi
 
+echo "=== W3.1 гаранция за върнат свят (seatbelt + диагностика) ==="
+# Върнат по гаранция замразен свят е HANDLE за seatbelt-а: мутатор върху него
+# е compile грешка веднага (досега върнат свят беше неследен).
+printf 'spec build {\n    input:\n        n: i64\n    output: i64\n    ensures:\n        world_frozen(output)\n}\n\nfn build(n: i64) -> i64 {\n    let w = world_new()\n    world_freeze(w)\n    return w\n}\n\nfn main() {\n    let w = build(1)\n    wvec_push(w, 1, 2)\n}\n' > /tmp/baga_w31_mut.baga
+RC=0
+run --check /tmp/baga_w31_mut.baga > /tmp/baga_w31_mut_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_w31_mut_out.txt; then
+	echo "OK: мутатор върху върнат замразен свят — compile грешка (seatbelt-ът го вижда)"
+else
+	echo "FAIL: върнатият замразен свят трябваше да е handle за seatbelt-а"
+	cat /tmp/baga_w31_mut_out.txt
+	exit 1
+fi
+# Двоен free на върнат свят също е compile грешка (MEM-2/MEM-3).
+printf 'spec build {\n    input:\n        n: i64\n    output: i64\n    ensures:\n        world_owned(output)\n}\n\nfn build(n: i64) -> i64 {\n    let w = world_new()\n    return w\n}\n\nfn main() {\n    let w = build(1)\n    world_free(w)\n    world_free(w)\n}\n' > /tmp/baga_w31_free.baga
+RC=0
+run --check /tmp/baga_w31_free.baga > /tmp/baga_w31_free_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w31_free_out.txt; then
+	echo "OK: двоен free на върнат свят — compile грешка"
+else
+	echo "FAIL: двойният free на върнат свят трябваше да е compile грешка"
+	cat /tmp/baga_w31_free_out.txt
+	exit 1
+fi
+# Диагностика: world_mutable като гаранция няма смисъл; гаранцията е за output.
+printf 'spec bad {\n    input:\n        n: i64\n    output: i64\n    ensures:\n        world_mutable(output)\n}\n\nfn bad(n: i64) -> i64 {\n    return n\n}\n\nfn main() {\n    print("x")\n}\n' > /tmp/baga_w31_diag.baga
+RC=0
+run --check /tmp/baga_w31_diag.baga > /tmp/baga_w31_diag_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "няма смисъл като гаранция" /tmp/baga_w31_diag_out.txt; then
+	echo "OK: world_mutable като гаранция — compile грешка (избери frozen или owned)"
+else
+	echo "FAIL: world_mutable(output) като гаранция трябваше да е грешка"
+	cat /tmp/baga_w31_diag_out.txt
+	exit 1
+fi
+printf 'spec bad {\n    input:\n        n: i64\n    output: i64\n    ensures:\n        world_frozen(n)\n}\n\nfn bad(n: i64) -> i64 {\n    return n\n}\n\nfn main() {\n    print("x")\n}\n' > /tmp/baga_w31_diag2.baga
+RC=0
+run --check /tmp/baga_w31_diag2.baga > /tmp/baga_w31_diag2_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "важи само за 'output'" /tmp/baga_w31_diag2_out.txt; then
+	echo "OK: гаранция върху не-output — compile грешка"
+else
+	echo "FAIL: гаранция върху параметър трябваше да е грешка"
+	cat /tmp/baga_w31_diag2_out.txt
+	exit 1
+fi
+# --test-specs пропуска spec с гаранция за свят (резултатът е handle; лъжлив
+# spec би segfault-нал при дереференс) — гарацията е за --verify.
+printf 'spec build {\n    input:\n        n: i64\n    output: i64\n    ensures:\n        world_frozen(output)\n}\n\nfn build(n: i64) -> i64 {\n    let w = world_new()\n    world_freeze(w)\n    return w\n}\n\nfn main() {\n    print("x")\n}\n' > /tmp/baga_w31_specs.baga
+RC=0
+run --test-specs /tmp/baga_w31_specs.baga > /tmp/baga_w31_specs_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "build: пропусната" /tmp/baga_w31_specs_out.txt; then
+	echo "OK: --test-specs пропуска spec с гаранция за свят"
+else
+	echo "FAIL: --test-specs трябваше да пропусне spec с гаранция"
+	cat /tmp/baga_w31_specs_out.txt
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

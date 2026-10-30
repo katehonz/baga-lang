@@ -1365,6 +1365,17 @@ invalidates nothing:
   missing key for `get_str`/`get_bytes` is one too. Like the rest of
   `wcache_*`, this is scratch: legal on a frozen world, refused after
   free/move.
+- W3.1: a spec can promise the state of a returned world:
+  `ensures: world_frozen(output)` (the result is frozen and clean — no borrows,
+  no unfinished readers) or `ensures: world_owned(output)` (ownership
+  transfer). The callee proves the promise on every return path (a lying
+  builder is refuted with a counterexample; an untracked returned handle is an
+  honest UNKNOWN); the caller registers the result as a
+  world, so the full protocol applies from then on (writing through a returned
+  frozen world is a compile error, a double free likewise). A
+  `world_mutable(output)` guarantee or a guarantee on a name other than
+  `output` is a compile error; `--test-specs` skips such specs (the result is
+  a handle).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

@@ -16,6 +16,8 @@
 
 The **toolchain** is a small C bootstrap (`baga`, optional LLVM backend, package manager **sandak**). **Product code** is written in Baga itself under `std/`, `app-product/`, and `apps/`.
 
+The flagship language concept is **Worlds** — memory regions with machine-checked ownership/freeze/share discipline (see [Worlds](#worlds--machine-checked-regions-w0w213) below).
+
 Canonical repo: [github.com/katehonz/baga-lang](https://github.com/katehonz/baga-lang).
 
 ## Pure-Baga cryptography (no OpenSSL at runtime)
@@ -249,6 +251,36 @@ the **spec-as-source, machine-checked** end of the spectrum.
 > Защо го правим и какъв е смисълът, в крайна сметка —
 > виж [docs/meaning-bg.md](docs/meaning-bg.md).
 
+## Worlds — machine-checked regions (W0…W2.13)
+
+**Worlds** are owned memory regions with a freeze/move/share discipline — and
+the discipline is **machine-checked**, not prose: `--verify` refutes protocol
+violations with concrete counterexamples, while comparable region/actor
+designs state their safety story as documentation.
+
+| Capability | Builtins | Checked by `--verify` |
+|---|---|---|
+| Region: separate arena, position-independent, magic+schema header | `world_new` / `world_alloc` / `world_freeze` / `world_state` / `world_free` | mutate-after-freeze, double-free, use-after-free, use-after-move — with witnesses |
+| Typed containers **inside** the region | `wvec_*` (i64/str/bytes), `wmap_*` (key→value), `wrec_*` (heterogeneous records with per-field schema) | readers on a frozen world are legal; writers refuted (check-only mutators, legal in loops) |
+| The region knows its roots + schema → dump, load, **auto-compaction** | `world_dump` / `world_load` / `world_used` / `world_compact` / `world_dump_compact` | compaction is a read (`world_dump_compact` legal on frozen); a foreign blob is rejected by magic |
+| Interior mutability: lazy index on a frozen world | `wcache_*` (i64/**str**/**bytes** values, mutex-protected) | scratch: legal on frozen, refused after free/move |
+| Sharing & capability links | `go`/`join`, channels, `world_link`/`world_unlink`/`world_linked` | N readers on one frozen world; channel **fan-out** with join accounting; acyclic link graph (target outlives the link) |
+
+Two-sided contracts on world parameters (`world_frozen(p)` — borrow to read,
+`world_mutable(p)` — exclusive write, `world_owned(p)` — ownership transfer):
+the caller's obligation is discharged against ghost state at the call, the
+callee's body is checked under the contract — a write in a reader is refuted
+*there*, not silently accepted. Passing a tracked world to a function without
+a contract is itself refuted.
+
+Every stage (W0…W2.13) is locked by oracle files
+(`examples/verify/worlds*.baga` — proven ensures + refuted protocols with
+counterexamples), ASan/TSan gates, and an honest limits section in the design
+doc. Full write-up (BG): **[docs/worlds-bg.md](docs/worlds-bg.md)** — model,
+bench numbers (dump compaction 2.6×, ~9 ns per record field access), the
+Verona/Pony/Cyclone/Rust comparison, and the open frontier (W3: `world g { … }`
+syntax + region inference).
+
 ## Examples
 
 ```baga
@@ -384,6 +416,7 @@ baga/
 - [Open problems](docs/thesis-open-problems.md) — honest frontier: liveness, full bitvectors, rich polynomials
 - [Language Reference (EN)](docs/language-en.md) — Syntax, types, semantics
 - [Езикова Справка (BG)](docs/language-bg.md) — Синтаксис, типове, семантика
+- [Worlds — дизайн и статус (BG)](docs/worlds-bg.md) — модел, доказателства, bench, честни граници, пътна карта
 - [Compiler Architecture (EN)](docs/compiler-en.md) — Pipeline, AST, codegen
 - [Архитектура на Компилатора (BG)](docs/compiler-bg.md) — Конвейер, AST, кодогенерация
 - [boilaDB](app-product/boilaDB/docs/README.md) — multimodal SQL database (BoilaSQL, PG wire, HTTP)
@@ -410,6 +443,8 @@ baga/
 | 16 | Language arc M19–M24: missing-return checker, effect payloads (`!E(T)`, `raise`/`catch`), generics (fn + struct monomorphization), traits/impl, statically verified `guarantees` | ✅ |
 | 17 | LLVM parity for M20–M24 (payload runtime, generic fns, traits, generic structs) | ✅ |
 | 18 | RC memory model v1.0 (`--rc`, opt-in): RC1–RC5 — ownership, containers, struct/enum fields, owned fn results | ✅ |
+| 19 | **Worlds W0…W2.13**: machine-checked regions — ownership/freeze/move, region containers (`wvec`/`wmap`/`wrec`), dump/load/auto-compaction, `wcache` scratch values, capability links, channel fan-out with join accounting, two-sided world contracts | ✅ |
+| 20 | W3: `world g { … }` syntax + region inference + spec integration | planned |
 
 ### Static verification (`--verify`)
 

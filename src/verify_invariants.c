@@ -943,6 +943,22 @@ Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *caller_na
     Node *cspec = find_spec(g_prog, callee);
     if (caller_name && strcmp(callee, caller_name) == 0) g_partial = 1;
 
+    /* W3.1: callee-гаранция за върнат свят — извикващият регистрира резултата
+     * като HK_WORLD (LET-вързането консумира; не-let повиквания го игнорират,
+     * а следващото повикване го нулира тук). */
+    g_ret_world_kind = 0;
+    if (cspec) {
+        for (int j = 0; j < cspec->spec_ensures.len; j++) {
+            Node *ge = cspec->spec_ensures.data[j]->ensure_expr;
+            int gk = world_contract_of(ge);
+            if (gk && gk != 2 && ge->args.len == 1 && ge->args.data[0]->kind == NODE_IDENT &&
+                strcmp(ge->args.data[0]->name, "output") == 0) {
+                g_ret_world_kind = gk;
+                break;
+            }
+        }
+    }
+
     char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
 
     SEnv env2; env_init(&env2);
@@ -1115,6 +1131,16 @@ void push_protocol_violation(State *st, Obligations *ob, const char *label) {
     ConsList pos; cl_init(&pos);
     cl_push(&pos, mk_cons(lin_const(rat_int(1)), C_LE, rat_zero()));
     obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &st->vlen, &st->reads, 0, 3, label);
+}
+
+/* W3.1: нарушена гаранция за върнат свят — kind 5 (като kind 3 по машинария:
+ * път + witness), но се докладва като ensures реда, който носи гарацията. */
+void push_guar_violation(State *st, Obligations *ob, const char *label) {
+    ConsList opath; cl_init(&opath);
+    for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    ConsList pos; cl_init(&pos);
+    cl_push(&pos, mk_cons(lin_const(rat_int(1)), C_LE, rat_zero()));
+    obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &st->vlen, &st->reads, 0, 5, label);
 }
 
 /* M19: tautological kind-3 obligation (0 <= 0). Discharges as PROVEN on a

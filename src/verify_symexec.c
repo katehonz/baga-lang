@@ -509,6 +509,9 @@ int g_recv_world_kind = 0;   /* W2.8: договор за свят, получе
                               * HK_WORLD под името на променливата. */
 char g_recv_world_chan[64];   /* W2.12: от кой канал е получен (from_chan); копие,
                                * защото resolve_key връща стек буфер */
+int g_guar_kind = 0;          /* W3.1: обещано състояние на върнат свят (0/1/3) */
+int g_guar_unknown = 0;       /* W3.1: път с неследен върнат handle */
+int g_ret_world_kind = 0;     /* W3.1: caller-страната (eval_user_call → LET) */
 int g_partial = 0;        /* direct self-recursion seen during symexec */
 int g_term = 0;           /* spec carries a decreases measure (M6) */
 int g_term_failed = 0;    /* some termination obligation is not PROVEN */
@@ -695,6 +698,7 @@ int is_world_op_call(Node *n) {
                 strcmp(nm, "wmap_new") == 0 || strcmp(nm, "wmap_set") == 0 ||
                 strcmp(nm, "wmap_del") == 0 || strcmp(nm, "wmap_set_str") == 0 ||
                 strcmp(nm, "wvec_push_bytes") == 0 ||   /* W2.9: check-only мутатори */
+                strcmp(nm, "wvec_new") == 0 ||   /* W3.1: липсваше — check-only мутатор */
                 strcmp(nm, "wrec_new") == 0 || strcmp(nm, "wrec_set") == 0 ||
                 strcmp(nm, "wrec_set_str") == 0 || strcmp(nm, "wrec_set_bytes") == 0 ||   /* W2.11 */
                 strcmp(nm, "world_compact") == 0;   /* W2.10 */

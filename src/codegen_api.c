@@ -33,6 +33,16 @@ static void emit_test_driver(Codegen *cg, Node *program) {
     fprintf(f, "int main(int argc, char **argv) {\n");
     fprintf(f, "    baga_argc = argc; baga_argv = argv;\n");
     if (n_tested == 0) {
+        /* W3.1: изпиши ЗАЩО няма тестируеми (spec-ове с договор/гаранция за
+         * свят или неподдържани типове иначе мълчаливо изчезват) */
+        for (int i = 0; i < program->items.len; i++) {
+            Node *it = program->items.data[i];
+            if (it->kind != NODE_SPEC) continue;
+            if (it->spec_ensures.len == 0 && it->spec_requires.len == 0) continue;
+            fprintf(f, "    printf(");
+            emit_c_string(f, it->spec_name);
+            fprintf(f, " \": пропусната (не е property-testable — непознат тип, договор за свят или гаранция за върнат свят)\\n\");\n");
+        }
         fprintf(f, "    printf(\"няма spec-ове за тестване\\n\");\n");
         fprintf(f, "    return 0;\n}\n");
         return;
@@ -45,7 +55,7 @@ static void emit_test_driver(Codegen *cg, Node *program) {
         if (!spec_inputs_testable(it)) {
             fprintf(f, "    printf(");
             emit_c_string(f, it->spec_name);
-            fprintf(f, " \": пропусната (входовете не са property-testable — непознат тип или договор за свят)\\n\");\n");
+            fprintf(f, " \": пропусната (не е property-testable — непознат тип, договор за свят или гаранция за върнат свят)\\n\");\n");
             continue;
         }
         int np = it->spec_inputs.len;
