@@ -240,6 +240,9 @@ void handles_free(HandleList *l) {
     for (int i = 0; i < l->n; i++) {
         free(l->h[i].var); lin_free(&l->h[i].result);
         free(l->h[i].worker); free(l->h[i].chan_arg); free(l->h[i].world_arg);
+        free(l->h[i].from_chan);   /* W2.12 */
+        for (int k = 0; k < l->h[i].n_chs; k++) free(l->h[i].chs[k]);
+        free(l->h[i].chs); free(l->h[i].chsn);
         wlink_clear(&l->h[i]);
     }
     free(l->h);
@@ -262,6 +265,8 @@ void handles_set(HandleList *l, const char *var, int kind, int state, Lin *resul
         e->n_shared = 0;
         e->borrowed = 0;
         e->wcontract = 0;
+        e->chs = NULL; e->chsn = NULL; e->n_chs = 0; e->cap_chs = 0;
+        e->from_chan = NULL; e->wleak = 0;
         e->links = NULL; e->n_links = 0; e->cap_links = 0;
         e->wf_recv = e->wf_send = e->wf_complex = 0;
         e->wf_n_send = e->wf_n_recv = 0;
@@ -302,6 +307,9 @@ void handles_clone_into(HandleList *dst, HandleList *src) {
         d->n_shared = src->h[i].n_shared;
         d->borrowed = src->h[i].borrowed;
         d->wcontract = src->h[i].wcontract;
+        d->from_chan = src->h[i].from_chan ? strdup(src->h[i].from_chan) : NULL;
+        d->wleak = src->h[i].wleak;
+        for (int k = 0; k < src->h[i].n_chs; k++) chshare_add(d, src->h[i].chs[k], src->h[i].chsn[k]);
         for (int k = 0; k < src->h[i].n_links; k++) wlink_add(d, src->h[i].links[k]);
     }
 }
@@ -368,6 +376,119 @@ int wlink_reaches(HandleList *l, const char *from, const char *to) {
     return wlink_reaches_rec(l, from, to, 0, &steps);
 }
 
+/* W2.12: канални споделби — chan_send на замразен свят го споделя; водим сметка
+ * по канали, защото join-ът на носителите на канала (не на самия свят) е
+ * доказателството, че читателите са приключили. */
+void chshare_add(HandleEntry *e, const char *chan, int n) {
+    if (!e || !chan || n <= 0) return;
+    for (int i = 0; i < e->n_chs; i++) {
+        if (strcmp(e->chs[i], chan) == 0) { e->chsn[i] += n; return; }
+    }
+    if (e->n_chs == e->cap_chs) {
+        e->cap_chs = e->cap_chs ? e->cap_chs * 2 : 4;
+        e->chs = realloc(e->chs, (size_t)e->cap_chs * sizeof(char *));
+        e->chsn = realloc(e->chsn, (size_t)e->cap_chs * sizeof(int));
+    }
+    e->chs[e->n_chs] = strdup(chan);
+    e->chsn[e->n_chs] = n;
+    e->n_chs++;
+}
+
+/* Споделбите на канал изтичат при world_free, ако каналът е проследим:
+ *   1. затворен (chan_close — иначе може да дойде нов receive);
+ *   2. не е минал през не-join-нат/непроследим път (wleak: go_bg, пакет,
+ *      chan_send пейлоад, връщане);
+ *   3. всеки носител (HK_JOIN с chan_arg == канала) е JOIN-нат — иначе работникът
+ *      може още да чете; detach също блокира (не е join);
+ *   4. никой жив свят не е ПОЛУЧЕН от този канал (from_chan) — самополучаване.
+ * chan_recv върху затворен канал доставя останалите елементи, затова close не
+ * стига сам по себе си. Условията са достатъчни: след join носителите не четат,
+ * а каналът не може да стигне до нов получател. */
+void chshare_expire(HandleList *l, HandleEntry *e) {
+    if (!e) return;
+    for (int i = 0; i < e->n_chs; ) {
+        const char *c = e->chs[i];
+        HandleEntry *ch = handles_find(l, c);
+        int ok = ch && ch->kind == HK_CHAN && ch->state == 1 && !ch->wleak;
+        if (ok) {
+            for (int j = 0; j < l->n && ok; j++) {
+                HandleEntry *h = &l->h[j];
+                if (h->kind == HK_JOIN && h->chan_arg && strcmp(h->chan_arg, c) == 0
+                    && h->state != 1) ok = 0;                 /* жив/откачен носител */
+                if (h->kind == HK_WORLD && (h->state == 0 || h->state == 1)
+                    && h->from_chan && strcmp(h->from_chan, c) == 0) ok = 0;  /* self-recv */
+            }
+        }
+        if (!ok) { i++; continue; }
+        e->n_shared -= e->chsn[i];
+        if (e->n_shared < 0) e->n_shared = 0;
+        free(e->chs[i]);
+        e->chs[i] = e->chs[--e->n_chs];
+        e->chsn[i] = e->chsn[e->n_chs];
+    }
+}
+
+/* W2.12: „бягство" на канал извън чистата водопроводна употреба. Разрешени са
+ * само: самият канал като канален аргумент на chan_* (recv/send/close/len —
+ * при select2 първите ДВА) и гол ident канал като аргумент на go (проследен
+ * носител: chan_arg се води и join-ът го освобождава). Всичко друго — go_bg,
+ * cell2 пакет, канал като пейлоад на chan_send, предаване на потребителска fn,
+ * запис в контейнер, връщане — прави канала непроследим: wleak, споделбите му
+ * не изтичат при world_free. Консервативно нарочно (M8: по-добре перманентна
+ * споделба, отколкото несигурно освобождаване). */
+void chan_escape_stmt(State *st, Node *n) {
+    if (!n) return;
+    switch (n->kind) {
+    case NODE_IDENT: {
+        /* Каналните handle-и живеят под ghost име (let c = chan_new → __chN),
+         * а идентификаторът е свързан към него през env — резолв като в
+         * eval_par_call. */
+        HandleEntry *h = NULL;
+        Sym av = se_from_ast(n, &st->env, &st->vlen, &st->reads);
+        if (!av.nonlinear) {
+            const char *hv = lin_handle_var(&av.lin);
+            if (hv) h = handles_find(&st->handles, hv);
+        }
+        lin_free(&av.lin);
+        if (!h) h = handles_find(&st->handles, n->name);
+        if (h && h->kind == HK_CHAN) h->wleak = 1;
+        return;
+    }
+    case NODE_CALL: {
+        const char *f = (n->callee && n->callee->kind == NODE_IDENT) ? n->callee->name : NULL;
+        int chan_op = f && strncmp(f, "chan_", 5) == 0;
+        int n_keep = chan_op ? (strncmp(f, "chan_select2", 12) == 0 ? 2 : 1) : 0;
+        int is_go = f && strcmp(f, "go") == 0;
+        for (int i = 0; i < n->args.len; i++) {
+            Node *a = n->args.data[i];
+            if (i < n_keep) continue;                       /* самите канали */
+            if (is_go && i == 1 && a && a->kind == NODE_IDENT) continue;   /* носител */
+            chan_escape_stmt(st, a);
+        }
+        return;
+    }
+    case NODE_BINARY: chan_escape_stmt(st, n->left); chan_escape_stmt(st, n->right); return;
+    case NODE_UNARY: chan_escape_stmt(st, n->operand); return;
+    case NODE_IF: chan_escape_stmt(st, n->cond); chan_escape_stmt(st, n->then_br); chan_escape_stmt(st, n->else_br); return;
+    case NODE_BLOCK:
+        for (int i = 0; i < n->stmts.len; i++) chan_escape_stmt(st, n->stmts.data[i]);
+        return;
+    case NODE_LET: chan_escape_stmt(st, n->let_init); return;
+    case NODE_ASSIGN: chan_escape_stmt(st, n->assign_target); chan_escape_stmt(st, n->assign_val); return;
+    case NODE_RETURN: chan_escape_stmt(st, n->ret_val); return;
+    /* while_invariants са анотации (world_frozen(c[*]) и пр.), не употреби */
+    case NODE_WHILE: chan_escape_stmt(st, n->while_cond); chan_escape_stmt(st, n->while_body); return;
+    case NODE_EXPR_STMT: chan_escape_stmt(st, n->expr); return;
+    case NODE_MATCH: {
+        chan_escape_stmt(st, n->match_expr);
+        for (int i = 0; i < n->match_arms.len; i++) chan_escape_stmt(st, n->match_arms.data[i]);
+        return;
+    }
+    case NODE_MATCH_ARM: chan_escape_stmt(st, n->arm_pattern); chan_escape_stmt(st, n->arm_body); return;
+    default: return;   /* извън фрагмента — gated */
+    }
+}
+
 
 void state_free(State *s) { env_free(&s->env); vlen_free(&s->vlen); ax_free(&s->ax); cl_free(&s->path); cl_free(&s->read_cons); reads_free(&s->reads); handles_free(&s->handles); }
 void states_push(States *ss, State s) {
@@ -386,6 +507,8 @@ int g_recv_world_kind = 0;   /* W2.8: договор за свят, получе
                               * 0=няма, 1=frozen, 3=owned. eval_par_call го
                               * слага, LET-вързането го консумира и регистрира
                               * HK_WORLD под името на променливата. */
+char g_recv_world_chan[64];   /* W2.12: от кой канал е получен (from_chan); копие,
+                               * защото resolve_key връща стек буфер */
 int g_partial = 0;        /* direct self-recursion seen during symexec */
 int g_term = 0;           /* spec carries a decreases measure (M6) */
 int g_term_failed = 0;    /* some termination obligation is not PROVEN */

@@ -1348,6 +1348,14 @@ invalidates nothing:
   error), the readers are legal on a frozen world and do not block sharing.
   Access is ~9 ns — cheaper than `wmap_get` (~22 ns, no hashing or probing),
   comparable to `wvec` (~7 ns).
+- W2.12: a frozen world can be sent over a channel to several readers and
+  freed after their joins. The channel shares expire at `world_free` when the
+  channel is closed (`chan_close`), every carrier (`go` with the channel as its
+  argument) has been joined, and the channel never went through a non-joinable
+  path (`go_bg`, a `cell2` package, a channel payload, a return). Before this,
+  the rule was "shared forever" and freeing after the joins was falsely
+  refuted. The `invariant world_frozen(c[*])` contract discharges at every
+  spawn — two and three readers are proven, not just one.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

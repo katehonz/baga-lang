@@ -1,0 +1,64 @@
+// wchan_fanout_test — W2.12: замразен свят през канал към няколко читателя,
+// join на всичките и free. Верификаторът доказва протокола (worlds_fanout),
+// този тест показва, че шаблонът се ИЗПЪЛНЯВА чисто: данните се виждат през
+// канала, няма race (само четене на замразен регион), free след join-овете е
+// безопасен, а неполучен елемент в затворена опашка не пречи.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// Читател: получава свят от канала и чете i64 контейнера в него. Контейнерът е
+// първият в света, значи id-то му е 1 (id-тата са стабилни — W2.10).
+fn chan_reader(c: i64) -> i64 !Par {
+    let w = chan_recv(c)
+    let mut s: i64 = 0
+    let mut i: i64 = 0
+    while i < wvec_len(w, 1) {
+        s = s + wvec_get(w, 1, i)
+        i = i + 1
+    }
+    return s
+}
+
+fn main() -> i64 !Par {
+    // Двама читателя, всеки получава по един елемент (същият свят).
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 5)
+    wvec_push(w, v, 7)
+    world_freeze(w)
+    let c = chan_new(2)
+    chan_send(c, w)
+    chan_send(c, w)
+    chan_close(c)
+    let h1 = go(chan_reader, c)
+    let h2 = go(chan_reader, c)
+    let a1 = join(h1)
+    let a2 = join(h2)
+    check("fanout_sums", a1 == 12 && a2 == 12)
+    world_free(w)
+
+    // Повече изпращания от читатели: неполученият елемент си остава в опашката
+    // на затворения канал — free е безопасен, join-овете са факт.
+    let w2 = world_new()
+    let v2 = wvec_new(w2)
+    wvec_push(w2, v2, 42)
+    world_freeze(w2)
+    let c2 = chan_new(2)
+    chan_send(c2, w2)
+    chan_send(c2, w2)
+    chan_close(c2)
+    let h3 = go(chan_reader, c2)
+    let a3 = join(h3)
+    check("fanout_leftover", a3 == 42)
+    world_free(w2)
+
+    print("wchan_fanout_test: all passed")
+    return 0
+}

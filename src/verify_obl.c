@@ -656,6 +656,7 @@ void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvo
     for (int si = 0; si < stmts->len; si++) {
         Node *st = stmts->data[si];
         int last = (si == stmts->len - 1);
+        for (int i = 0; i < states->n; i++) chan_escape_stmt(&states->s[i], st);   /* W2.12 */
         if (st->kind == NODE_LET) {
             for (int i = 0; i < states->n; i++) {
                 scan_arith_expr(st->let_init, &states->s[i], ob);   /* M15 */
@@ -681,7 +682,15 @@ void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvo
                         handles_set(&states->s[i].handles, st->let_name, HK_WORLD,
                                     kind == 1 ? 1 : 0, NULL);
                         HandleEntry *hw = handles_find(&states->s[i].handles, st->let_name);
-                        if (hw) { hw->wcontract = kind; hw->borrowed = kind == 1; }
+                        if (hw) {
+                            hw->wcontract = kind;
+                            hw->borrowed = kind == 1;
+                            /* W2.12: от кой канал е получен — world_free на
+                             * изпращащия свят не се разрешава, докато този
+                             * handle е жив (самополучаване). */
+                            free(hw->from_chan);
+                            hw->from_chan = g_recv_world_chan[0] ? strdup(g_recv_world_chan) : NULL;
+                        }
                     }
                     continue;
                 }

@@ -341,7 +341,7 @@ fn bad_free_while_shared(n: i64) -> i64 !Par {
     return r - r
 }
 
-spec bad_free_after_chan_share {
+spec ok_free_after_chan_share {
     input:
         n: i64
     output: i64
@@ -349,9 +349,12 @@ spec bad_free_after_chan_share {
         output >= 0
 }
 
-// Каналният приемник не може да се join-ва ⇒ споделбата е перманентна и free
-// остава обречено. Честно: верификаторът не знае кога читателят е приключил.
-fn bad_free_after_chan_share(n: i64) -> i64 !Par {
+// W2.12: споделбата през канал изтича, когато каналът е затворен и проследимо
+// мъртъв. Тук изобщо НЯМА получател (никой носител, каналът е локален и
+// затворен) — никой не може да получи света от опашката, значи free е легален.
+// До W2.12 това беше фалшиво ОБРОЧЕНО („споделба завинаги"); реално опасните
+// случаи (жив носител, go_bg, самополучаване) са в worlds_fanout.baga.
+fn ok_free_after_chan_share(n: i64) -> i64 !Par {
     let w = world_new()
     world_freeze(w)
     let ch = chan_new(1)

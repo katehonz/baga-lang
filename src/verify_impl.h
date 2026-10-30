@@ -92,6 +92,16 @@ typedef struct {
     int wf_cap;       /* HK_CHAN: constant buffer capacity, -1 = unknown (M24) */
     int wf_sel_unknown; /* HK_CHAN: a select2_wait consumed from an unknown side (M26) */
     int wf_unknown;   /* HK_CHAN: a spawned worker was too complex to classify */
+    /* W2.12: канални споделби. chan_send на замразен свят го споделя; ако
+     * каналът остане проследим (close + всички носители join-нати + не е минал
+     * през не-join-нат път), споделбите му изтичат при world_free. */
+    char **chs;       /* HK_WORLD: канали, в които светът е изпратен замразен */
+    int *chsn;        /* HK_WORLD: брой споделби по всеки канал */
+    int n_chs, cap_chs;
+    char *from_chan;  /* HK_WORLD: светът е получен от този канал (chan_recv) */
+    int wleak;        /* HK_CHAN: минал през не-join-нат/непроследим път
+                       * (go_bg, cell2 пакет, chan_send пейлоад, връщане) —
+                       * каналните споделби не изтичат */
 } HandleEntry;
 typedef struct { HandleEntry *h; int n, cap; } HandleList;
 typedef struct { SEnv env; VLenMap vlen; AxiomList ax; ConsList path; ConsList read_cons; ReadsList reads; HandleList handles; int bad; } State;
@@ -130,6 +140,7 @@ extern int g_inv_n;
 extern int g_inv_cap;
 extern int g_havoc_ctr;
 extern int g_recv_world_kind;   /* W2.8 */
+extern char g_recv_world_chan[64];   /* W2.12: from_chan при chan_recv */
 extern int g_json;
 extern int g_json_first;
 
@@ -235,6 +246,10 @@ HandleEntry *handles_find(HandleList *l, const char *var);   /* 1489 */
 void handles_set(HandleList *l, const char *var, int kind, int state, Lin *result);   /* 1494 */
 void handles_clone_into(HandleList *dst, HandleList *src);   /* 1519 */
 void wlink_add(HandleEntry *o, const char *target);   /* W2.5 */
+/* W2.12: канални споделби на замразен свят */
+void chshare_add(HandleEntry *e, const char *chan, int n);
+void chshare_expire(HandleList *l, HandleEntry *e);   /* при world_free */
+void chan_escape_stmt(State *st, Node *n);   /* W2.12: маркирай wleak */
 void wlink_del(HandleEntry *o, const char *target);   /* W2.5 */
 void wlink_clear(HandleEntry *o);   /* W2.5: връзките на освободен owner */
 const char *wlink_owner_of(HandleList *l, const char *target);   /* W2.5: обратна връзка */

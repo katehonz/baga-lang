@@ -253,13 +253,14 @@ grep -q "ok_shared_reader:" /tmp/baga_verify_out.txt && grep -q "bad_shared_writ
 	&& grep -q "извикване (requires на 'conj_reader' при извикване): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (wcache_set след world_free.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (wcache_set след move.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
-	&& [ "$(grep -c 'протокол (world_free на споделен свят.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 2 ] \
+	&& [ "$(grep -c 'протокол (world_free на споделен свят.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 1 ] \
+	&& grep -q "ok_free_after_chan_share:" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (.*вече преместен свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (world_free на заеман свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (.*на заеман свят.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 	&& ! grep -q "извикване.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
-	&& echo "OK: worlds_cap — W2.1/W2.3/W2.4: двустранен протокол (worker с requires world_frozen ДОКАЗВА, че не пише; предаден мутабелен/освободен свят е обречен, и като конюнкт), вътрешна променяемост (wcache върху замразен свят е легален, след free/move е обречен), и споделена capability (N читателя на замразен свят са чисти; free преди join, второ предаване на mutable свят, free на заеман свят и препредаване на заемано право са обречени)" \
+	&& echo "OK: worlds_cap — W2.1/W2.3/W2.4: двустранен протокол (worker с requires world_frozen ДОКАЗВА, че не пише; предаден мутабелен/освободен свят е обречен, и като конюнкт), вътрешна променяемост (wcache върху замразен свят е легален, след free/move е обречен), и споделена capability (N читателя на замразен свят са чисти; free преди join, второ предаване на mutable свят, free на заеман свят и препредаване на заемано право са обречени; от W2.12 free след споделба през затворен канал БЕЗ читатели е доказан — не обречен)" \
 	|| { echo "FAIL: worlds_cap"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/worlds_graph.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "ok_graph:" /tmp/baga_verify_out.txt && grep -q "ok_unlink_then_free:" /tmp/baga_verify_out.txt \
@@ -332,6 +333,18 @@ grep -q "rec_reader:" /tmp/baga_verify_out.txt && grep -q "ok_rec_frozen_read:" 
 	&& grep -c "извикване (requires world_frozen на 'rec_reader' при извикване): ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^2$' \
 	&& echo "OK: worlds_rec — W2.11: структурни стойности в региона (wrec) — мутаторите са check-only като wvec_push (запис върху замразен/освободен свят е обречен с контрапример, включително в тялото на читател с договор world_frozen), четците на полета са легални върху замразен свят и не пречат на споделянето (двама join-нати читателя, после free), подаване на мутабелен свят на читател е обречено; поле-контейнер е просто id, значи вложени структури са позиционно независими" \
 	|| { echo "FAIL: worlds_rec"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/worlds_fanout.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "chan_reader:" /tmp/baga_verify_out.txt && grep -q "ok_fanout2:" /tmp/baga_verify_out.txt \
+	&& grep -q "ok_fanout_extra:" /tmp/baga_verify_out.txt && grep -q "ok_fanout_mixed:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_free_before_join:" /tmp/baga_verify_out.txt && grep -q "bad_bg_carrier:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_self_recv:" /tmp/baga_verify_out.txt && grep -q "bad_no_close:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_payload_escape:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^10$' \
+	&& grep -c "протокол (world_free на споделен свят 'w' — канал '__ch.*още го държи.*ОБРОЧЕНО" /tmp/baga_verify_out.txt | grep -q '^5$' \
+	&& grep -c "извикване (елементен/канален инвариант на 'chan_reader' при извикване): ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^9$' \
+	&& grep -q "извикване (requires world_frozen на 'rdirect' при извикване): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& echo "OK: worlds_fanout — W2.12: каналните споделби изтичат при join на всички носители (fan-out на замразен свят към няколко читателя, после free — ДОКАЗАНО; каналният договор се разтоварва при всеки spawn, не само при един), а free при жив/откачен носител, без chan_close, с go_bg/пакет/канал-пейлоад или с самополучаване е обречен с точно послание" \
+	|| { echo "FAIL: worlds_fanout"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
 	&& grep -q "контрапример: n = 9223372036854775807" /tmp/baga_verify_out.txt \

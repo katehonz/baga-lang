@@ -633,11 +633,13 @@ static Sym make_status_pair(State *st, Node *c0, Node *c1, int hi) {
 static const char *world_move_scan(State *st, Obligations *ob, Node *arg, int delegate_ok,
                                   int can_join, const char *skip);   /* W1.5…W2.7 */
 static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
-                                const char *op, int joinable, int delegate_ok);   /* W2.4/W2.6 */
+                                const char *op, int joinable, int delegate_ok,
+                                const char *chan);   /* W2.4/W2.6; W2.12: chan != NULL при chan_send */
 
 Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     const char *nm = call->callee->name;
     g_recv_world_kind = 0;   /* W2.8: само този recv може да го сложи */
+    g_recv_world_chan[0] = 0;   /* W2.12 */
 
     /* M17: pair-returning channel APIs */
     if (strncmp(nm, "chan_select2", 12) == 0 || strcmp(nm, "chan_recv2") == 0 ||
@@ -858,6 +860,7 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
                      * symexec_stmts) — ghost-ите са по ИМЕ на променливата, а
                      * recv връща вътрешна __cN стойност. */
                     g_recv_world_kind = st->ax.a[i].world_kind;
+                    snprintf(g_recv_world_chan, sizeof g_recv_world_chan, "%s", key);   /* W2.12 */
                     continue;
                 }
                 cl_push(&st->path, axiom_instantiate(&st->ax.a[i], rv));
@@ -908,7 +911,7 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     if (call->args.len >= 2 && call->args.data[1] && call->args.data[1]->kind == NODE_IDENT) {
         HandleEntry *we = handles_find(&st->handles, call->args.data[1]->name);
         if (we && we->kind == HK_WORLD)
-            world_handoff(st, ob, we, "chan_send", 0, 0);   /* W2.6: каналът не се join-ва */
+            world_handoff(st, ob, we, "chan_send", 0, 0, e ? e->var : NULL);   /* W2.6/W2.12 */
     }
     char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
     if (e && e->state == 1) {
@@ -954,7 +957,8 @@ void eval_drop_call(Node *call, State *st, Obligations *ob) {
  * декрементира; за go_bg/канал/пакет връща NULL (читателят не се проследява,
  * значи free остава обречено — честно, не тихо). */
 static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
-                                const char *op, int joinable, int delegate_ok) {
+                                const char *op, int joinable, int delegate_ok,
+                                const char *chan) {
     char label[300];
     if (we->state == 2) {
         snprintf(label, sizeof label, "%s на освободен свят '%s'", op, we->var);
@@ -1015,9 +1019,11 @@ static const char *world_handoff(State *st, Obligations *ob, HandleEntry *we,
                 return NULL;
             }
             we->n_shared++;
+            if (chan) chshare_add(we, chan, 1);   /* W2.12: споделба по канала */
             return we->var;
         }
         we->n_shared++;
+        if (chan) chshare_add(we, chan, 1);   /* W2.12 */
         return joinable ? we->var : NULL;
     }
     we->state = 3;
@@ -1036,7 +1042,7 @@ static const char *world_move_scan_rec(Node *e, State *st, Obligations *ob,
         if (skip && strcmp(e->name, skip) == 0) return NULL;   /* W2.7: owned — вече прехвърлен */
         HandleEntry *h = handles_find(&st->handles, e->name);
         if (!h || h->kind != HK_WORLD) return NULL;
-        return world_handoff(st, ob, h, "предаване", joinable, delegate_ok);
+        return world_handoff(st, ob, h, "предаване", joinable, delegate_ok, NULL);
     }
     case NODE_CALL:
         for (int i = 0; i < e->args.len; i++) world_move_scan_rec(e->args.data[i], st, ob, 0, 0, NULL);
@@ -1095,6 +1101,10 @@ void eval_world_call(Node *call, State *st, Obligations *ob) {
         }
     } else if (strcmp(op, "world_free") == 0) {
         if (e->state == 0 || e->state == 1) {
+            /* W2.12: каналните споделби изтичат, ако каналите са затворени и
+             * проследими и всички носители са join-нати — тогава никой не може
+             * нито да чете, нито да получи света по-късно. */
+            chshare_expire(&st->handles, e);
             const char *owner = wlink_owner_of(&st->handles, e->var);   /* W2.5 */
             /* W2.4: получател с `requires: world_frozen` държи ЗАЕМАН свят —
              * собствеността е у извикващия, значи free тук би съблякъл региона
@@ -1105,9 +1115,19 @@ void eval_world_call(Node *call, State *st, Obligations *ob) {
                     e->var);
                 viol = label;
             } else if (e->n_shared > 0) {
-                snprintf(label, sizeof label,
-                    "world_free на споделен свят '%s' с %d незавършен(и) читател(и) — join преди free",
-                    e->var, e->n_shared);
+                if (e->n_chs > 0) {
+                    /* W2.12: оцелели са канални споделби — кажи за кой канал и
+                     * защо не изтича (жив/откачен носител или непроследим). */
+                    snprintf(label, sizeof label,
+                        "world_free на споделен свят '%s' — канал '%s' още го държи "
+                        "(join на всички носители, chan_close и никакъв go_bg/пакет/връщане "
+                        "преди free)",
+                        e->var, e->chs[0]);
+                } else {
+                    snprintf(label, sizeof label,
+                        "world_free на споделен свят '%s' с %d незавършен(и) читател(и) — join преди free",
+                        e->var, e->n_shared);
+                }
                 viol = label;
             } else if (owner) {
                 /* W2.5: целта на връзката трябва да я надживее — иначе owner-ът

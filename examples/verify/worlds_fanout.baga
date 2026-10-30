@@ -1,0 +1,264 @@
+// worlds_fanout.baga — W2.12: канални споделби се освобождават при join на
+// всички носители.
+//
+// Досега chan_send на ЗАМРАЗЕН свят правеше вечна споделба: приемникът не се
+// join-ва през самия send, затова нито един join не сваляше брояча и
+// `world_free` след join-овете беше ОБРОЧЕНО — фалшиво обвинение спрямо
+// безопасна програма (M8: „никога измислена"). Освен това docs твърдеше, че
+// каналният договор покрива ЕДИН приемник — грешно: инвариантът се разтоварва
+// при всеки spawn (по-долу двама и трима читателя са ДОКАЗАНО).
+//
+// Правилото от W2.12: споделбите на канал изтичат при `world_free`, ако
+//   1. каналът е затворен (chan_close);
+//   2. не е минал през не-join-нат/непроследим път (go_bg, cell2 пакет,
+//      канал като пейлоад на chan_send, връщане);
+//   3. всеки носител (go с канал като аргумент) е JOIN-нат — detach не брои;
+//   4. никой жив свят не е получен от този канал (самополучаване).
+// Иначе споделбата остава перманентна и free е ОБРОЧЕНО — както преди.
+//
+//   ./baga --verify examples/verify/worlds_fanout.baga
+
+// ---------------------------------------------------------------------------
+// Получателят: договорът от канала регистрира получения свят като замразен.
+// Двама и трима такива читатели са легални — инвариантът се разтоварва при
+// всеки spawn поотделно (това беше документирано погрешно като „ЕДИН приемник").
+// ---------------------------------------------------------------------------
+
+spec chan_reader {
+    input:
+        c: i64
+    output: i64
+    requires:
+        world_frozen(c[*])
+    ensures:
+        output >= 0
+}
+
+fn chan_reader(c: i64) -> i64 !Par {
+    let w = chan_recv(c)
+    let s = world_state(w)
+    let u = world_used(w)
+    return c - c
+}
+
+spec rdirect {
+    input:
+        w: i64
+    output: i64
+    requires:
+        world_frozen(w)
+    ensures:
+        output >= 0
+}
+
+// Директен читател (за смесения случай: go с аргумент-свят).
+fn rdirect(w: i64) -> i64 !Par {
+    let s = world_state(w)
+    return w - w
+}
+
+// ---------------------------------------------------------------------------
+// Легалният fan-out: изпрати замразен свят на няколко читателя, join-ни ги
+// ВСИЧКИ, затвори канала и free-ни — всичко доказано.
+// ---------------------------------------------------------------------------
+
+spec ok_fanout2 {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Двама читателя през един канал, join и след това free.
+fn ok_fanout2(n: i64) -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 5)
+    world_freeze(w)
+    let c = chan_new(2)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    chan_send(c, w)
+    chan_close(c)
+    let h1 = go(chan_reader, c)
+    let h2 = go(chan_reader, c)
+    let a = join(h1)
+    let b = join(h2)
+    world_free(w)
+    return n - n
+}
+
+spec ok_fanout_extra {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Повече изпращания от читатели: неполученият елемент си остава в опашката на
+// затворения канал — никой не може да го получи (носителите са join-нати),
+// значи free е легален.
+fn ok_fanout_extra(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let c = chan_new(2)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    chan_send(c, w)
+    chan_close(c)
+    let h = go(chan_reader, c)
+    let a = join(h)
+    world_free(w)
+    return n - n
+}
+
+spec ok_fanout_mixed {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Двете отчитания заедно: споделба като аргумент на go (join я сваля) и
+// споделба през канал (носителите на канала я свалят).
+fn ok_fanout_mixed(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let c = chan_new(1)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    chan_close(c)
+    let h1 = go(rdirect, w)
+    let h2 = go(chan_reader, c)
+    let a = join(h1)
+    let b = join(h2)
+    world_free(w)
+    return n - n
+}
+
+// ---------------------------------------------------------------------------
+// Обречени: free преди join, go_bg носител, самополучаване, без close,
+// канал-пейлоад. И петте дават същото точно послание — каналът още държи
+// света, защото някой може да го получи/чете.
+// ---------------------------------------------------------------------------
+
+spec bad_free_before_join {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Работникът още не е join-нат — може да чете, докато free-ваме.
+fn bad_free_before_join(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let c = chan_new(1)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    chan_close(c)
+    let h = go(chan_reader, c)
+    world_free(w)
+    let a = join(h)
+    return n - n
+}
+
+spec bad_bg_carrier {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// go_bg не се join-ва — носителят е непроследим, споделбата е перманентна.
+fn bad_bg_carrier(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let c = chan_new(1)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    chan_close(c)
+    go_bg(chan_reader, c)
+    world_free(w)
+    return n - n
+}
+
+spec bad_self_recv {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Самополучаване: след join-овете изпращачът сам получава света от канала и
+// държи жив заеман handle — free би го съблякъл под него.
+fn bad_self_recv(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let c = chan_new(1)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    chan_close(c)
+    let h = go(chan_reader, c)
+    let a = join(h)
+    let w2 = chan_recv(c)
+    world_free(w)
+    return n - n
+}
+
+spec bad_no_close {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Без chan_close каналът е жив: нов получател може да дойде.
+fn bad_no_close(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let c = chan_new(1)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    let h = go(chan_reader, c)
+    let a = join(h)
+    world_free(w)
+    return n - n
+}
+
+spec bad_payload_escape {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Каналът изтича като пейлоад на друг канал — вече не е проследим: който го
+// получи, може да вземе света от опашката му.
+fn bad_payload_escape(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let c = chan_new(1)
+    let c2 = chan_new(1)
+    invariant world_frozen(c[*])
+    chan_send(c, w)
+    chan_send(c2, c)
+    chan_close(c)
+    chan_close(c2)
+    let h = go(chan_reader, c)
+    let a = join(h)
+    world_free(w)
+    return n - n
+}
+
+fn main() {
+    print("worlds_fanout: verify-only oracle")
+}
