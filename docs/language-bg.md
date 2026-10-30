@@ -1215,7 +1215,8 @@ let w2 = world_load(dump)    // нова арена, същите офсети �
 print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
 ```
 
-- `wvec_new(w) -> i64` (офсет), `wvec_push(w, v, x)`, `wvec_get(w, v, i)`,
+- `wvec_new(w) -> i64` — **id** на контейнер (W2.10; в W1 беше суров офсет),
+  `wvec_push(w, v, x)`, `wvec_get(w, v, i)`,
   `wvec_len(w, v)`, `world_dump(w) -> bytes`, `world_load(b) -> i64`.
 - Достъпът е O(1) (i64 елементи са inline); offset таблица за променливи
   елементи (str/bytes/вложени) е W1.5.

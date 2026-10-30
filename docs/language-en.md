@@ -1205,7 +1205,7 @@ RC cannot handle — as a single transferable, freezable value:
 The base is re-read on every access — growth realloc moves the region but
 invalidates nothing:
 
-- `wvec_new(w) -> i64` (returns the header OFFSET, not a pointer),
+- `wvec_new(w) -> i64` — a container **id** (W2.10; in W1 it was a raw offset),
   `wvec_push(w, v, x)`, `wvec_get(w, v, i)`, `wvec_len(w, v)`,
   `world_dump(w) -> bytes` (memcpy of `base[0..used]`), `world_load(b) -> i64`
   (fresh arena, same offsets — no fixup; loaded worlds are mutable).

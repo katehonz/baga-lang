@@ -16,7 +16,7 @@
 
 The **toolchain** is a small C bootstrap (`baga`, optional LLVM backend, package manager **sandak**). **Product code** is written in Baga itself under `std/`, `app-product/`, and `apps/`.
 
-The flagship language concept is **Worlds** — memory regions with machine-checked ownership/freeze/share discipline (see [Worlds](#worlds--machine-checked-regions-w0w213) below).
+The flagship language concept is **Worlds** — memory regions with machine-checked ownership/freeze/share discipline (see [Worlds](#worlds--machine-checked-regions-w0w214--w3) below).
 
 Canonical repo: [github.com/katehonz/baga-lang](https://github.com/katehonz/baga-lang).
 
@@ -251,7 +251,7 @@ the **spec-as-source, machine-checked** end of the spectrum.
 > Защо го правим и какъв е смисълът, в крайна сметка —
 > виж [docs/meaning-bg.md](docs/meaning-bg.md).
 
-## Worlds — machine-checked regions (W0…W2.13)
+## Worlds — machine-checked regions (W0…W2.14 + W3)
 
 **Worlds** are owned memory regions with a freeze/move/share discipline — and
 the discipline is **machine-checked**, not prose: `--verify` refutes protocol
@@ -273,13 +273,20 @@ callee's body is checked under the contract — a write in a reader is refuted
 *there*, not silently accepted. Passing a tracked world to a function without
 a contract is itself refuted.
 
-Every stage (W0…W2.13) is locked by oracle files
+`world g { … }` is a scoped block (ownership leaves with `return g`), and region
+inference tracks worlds through `if`/`match` expressions. A returned world is
+covered by a guarantee — `ensures: world_frozen(output)` / `world_owned(output)`
+— which the builder proves per return path and the caller registers as a handle,
+so the whole protocol applies to results, not just locals.
+
+Every stage (W0…W2.14 + W3.1–W3.4) is locked by oracle files
 (`examples/verify/worlds*.baga` — proven ensures + refuted protocols with
 counterexamples), ASan/TSan gates, and an honest limits section in the design
 doc. Full write-up (BG): **[docs/worlds-bg.md](docs/worlds-bg.md)** — model,
-bench numbers (dump compaction 2.6×, ~9 ns per record field access), the
-Verona/Pony/Cyclone/Rust comparison, and the open frontier (W3: `world g { … }`
-syntax + region inference).
+bench numbers (dump compaction 2.6×; ~3 ns per in-cache container access,
+~5.7 ns streaming, after W2.14 cut access cost 30–51% **without removing a
+single check**), the Verona/Pony/Cyclone/Rust comparison, and the open frontier
+(deeper value flows, e.g. record fields as region-tracked values).
 
 ## Examples
 
@@ -443,7 +450,7 @@ baga/
 | 16 | Language arc M19–M24: missing-return checker, effect payloads (`!E(T)`, `raise`/`catch`), generics (fn + struct monomorphization), traits/impl, statically verified `guarantees` | ✅ |
 | 17 | LLVM parity for M20–M24 (payload runtime, generic fns, traits, generic structs) | ✅ |
 | 18 | RC memory model v1.0 (`--rc`, opt-in): RC1–RC5 — ownership, containers, struct/enum fields, owned fn results | ✅ |
-| 19 | **Worlds W0…W2.13**: machine-checked regions — ownership/freeze/move, region containers (`wvec`/`wmap`/`wrec`), dump/load/auto-compaction, `wcache` scratch values, capability links, channel fan-out with join accounting, two-sided world contracts | ✅ |
+| 19 | **Worlds W0…W2.14**: machine-checked regions — ownership/freeze/move, region containers (`wvec`/`wmap`/`wrec`), dump/load/auto-compaction, `wcache` scratch values, capability links, channel fan-out with join accounting, two-sided world contracts, 30–51% cheaper container access | ✅ |
 | 20 | W3: `world g { … }` scoped world blocks + region inference + spec integration (`ensures: world_frozen(output)`) | ✅ (W3.1/W3.2 — match-инференцията остава) |
 
 ### Static verification (`--verify`)

@@ -1,0 +1,87 @@
+// bench/worlds_micro.baga — W2.14 bench: достъп до контейнер, когато всичко е в
+// кеша. За разлика от bench/worlds.baga (200k елемента = streaming през L2/L3),
+// тук контейнерите са малки и операциите са много — значи числата показват
+// цената на САМИЯ код за достъп (резолв на id + валидация), не на паметта.
+//
+// Смисълът му е възпроизводимост на таблицата в docs/worlds-bg.md §4 (W2.14):
+// там всяка стъпка е мерена с този файл — инлайнване, дублиран резолв, кеш на
+// id-резолва, флаг `wvalid`.
+//
+// `ns_x100` е наносекунди × 100 (i64 няма дроб), защото разликите между
+// вариантите са под 1 ns.
+//
+//   ./baga -I . bench/worlds_micro.baga
+
+import "std/time/time.baga"
+
+fn bench_hot(ops: i64) -> i64 !Time {
+    let w = world_new()
+    let v = wvec_new(w)
+    let mut i: i64 = 0
+    while i < 64 {
+        wvec_push(w, v, i * 7)
+        i = i + 1
+    }
+    let m = wmap_new(w)
+    let mut q: i64 = 0
+    while q < 64 {
+        wmap_set(w, m, q, q * 3)
+        q = q + 1
+    }
+    let r = wrec_new(w, 8)
+    let mut z: i64 = 0
+    while z < 8 {
+        wrec_set(w, r, z, z * 5)
+        z = z + 1
+    }
+
+    let mut s: i64 = 0
+    let t0 = monotonic_us()
+    let mut j: i64 = 0
+    while j < ops {
+        s = s + wvec_get(w, v, j % 64)
+        j = j + 1
+    }
+    let t1 = monotonic_us()
+    let mut s2: i64 = 0
+    let mut k: i64 = 0
+    while k < ops {
+        s2 = s2 + wmap_get(w, m, k % 64)
+        k = k + 1
+    }
+    let t2 = monotonic_us()
+    let mut s3: i64 = 0
+    let mut p: i64 = 0
+    while p < ops {
+        s3 = s3 + wrec_get(w, r, p % 8)
+        p = p + 1
+    }
+    let t3 = monotonic_us()
+    // push върху същия вектор: растежът е част от цената (както в §4)
+    let mut s4: i64 = 0
+    let mut d: i64 = 0
+    while d < ops {
+        wvec_push(w, v, d)
+        s4 = s4 + 1
+        d = d + 1
+    }
+    let t4 = monotonic_us()
+    print(concat("ops            ", i64_to_str(ops)))
+    print(concat("wvec_get_us    ", i64_to_str(t1 - t0)))
+    print(concat("wvec_get_ns_x100 ", i64_to_str((t1 - t0) * 100000 / ops)))
+    print(concat("wmap_get_us    ", i64_to_str(t2 - t1)))
+    print(concat("wmap_get_ns_x100 ", i64_to_str((t2 - t1) * 100000 / ops)))
+    print(concat("wrec_get_us    ", i64_to_str(t3 - t2)))
+    print(concat("wrec_get_ns_x100 ", i64_to_str((t3 - t2) * 100000 / ops)))
+    print(concat("wvec_push_us   ", i64_to_str(t4 - t3)))
+    print(concat("wvec_push_ns_x100 ", i64_to_str((t4 - t3) * 100000 / ops)))
+    print(concat("checksum       ", i64_to_str(s + s2 + s3 + s4)))
+    world_free(w)
+    return 0
+}
+
+fn main() -> i64 !Time {
+    let ops: i64 = 20000000
+    bench_hot(ops)
+    return 0
+}

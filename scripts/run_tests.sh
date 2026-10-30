@@ -1328,6 +1328,54 @@ else
 	exit 1
 fi
 
+echo "=== W2.14 достъп до контейнер: по-бързо, но със ВСИЧКИ проверки ==="
+# W2.14 премахна дублирания резолв: push_raw/set_raw вече взимат (wh, w, off),
+# не (wh, id). Ако видовата проверка се беше изместила или изгубила, тези две
+# проби щяха да минат тихо или да съобщят грешката с името на вътрешния помощник.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    let m = wmap_new(w)\n    wvec_push_str(w, v, "низ")\n    wvec_push_str(w, m, "грешен id")\n}\n' > /tmp/baga_w214_kind.baga
+RC=0
+run /tmp/baga_w214_kind.baga > /tmp/baga_w214_kind_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "wvec_push_str: id не е wvec" /tmp/baga_w214_kind_out.txt; then
+	echo "OK: wmap id в wvec_push_str — чиста грешка с името на публичния builtin"
+else
+	echo "FAIL: видовата проверка при push_str трябваше да остане при извикващия"
+	cat /tmp/baga_w214_kind_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    let m = wmap_new(w)\n    wmap_set_str(w, m, 1, "низ")\n    wmap_set_str(w, v, 2, "грешен id")\n}\n' > /tmp/baga_w214_kind2.baga
+RC=0
+run /tmp/baga_w214_kind2.baga > /tmp/baga_w214_kind2_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "wmap_set_str: id не е wmap" /tmp/baga_w214_kind2_out.txt; then
+	echo "OK: wvec id в wmap_set_str — същото (set_raw не резолвва, проверката е при извикващия)"
+else
+	echo "FAIL: видовата проверка при set_str трябваше да остане"
+	cat /tmp/baga_w214_kind2_out.txt
+	exit 1
+fi
+# Несъществуващ id през МУТАТОР (пътят, който расте и мести base) — чиста грешка,
+# не писане извън региона.
+printf 'fn main() {\n    let w = world_new()\n    wvec_push(w, 99, 1)\n}\n' > /tmp/baga_w214_id.baga
+RC=0
+run /tmp/baga_w214_id.baga > /tmp/baga_w214_id_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "wvec_push: невалиден контейнер id" /tmp/baga_w214_id_out.txt; then
+	echo "OK: несъществуващ id при push — чиста грешка, не out-of-bounds"
+else
+	echo "FAIL: несъществуващ id трябваше да е чиста грешка"
+	cat /tmp/baga_w214_id_out.txt
+	exit 1
+fi
+# Резолвът остава верен ПРЕЗ компакция — точно сценарият, в който отхвърленият
+# кеш на id-резолва би върнал стар офсет.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push(w, v, 1)\n    world_compact(w)\n    wvec_push(w, v, 2)\n    print(i64_to_str(wvec_get(w, v, 1)))\n    world_free(w)\n}\n' > /tmp/baga_w214_compact.baga
+run /tmp/baga_w214_compact.baga > /tmp/baga_w214_compact_out.txt 2>&1
+if grep -qx "2" /tmp/baga_w214_compact_out.txt; then
+	echo "OK: push/get след world_compact — id-то сочи новия офсет (2)"
+else
+	echo "FAIL: след компакция контейнерът трябваше да е същият"
+	cat /tmp/baga_w214_compact_out.txt
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

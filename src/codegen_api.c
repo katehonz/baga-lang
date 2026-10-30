@@ -1636,7 +1636,31 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    fprintf(stderr, \"baga: %%s: %%s (%%lld, used/len=%%lld)\\n\", op, what, a, b);\n");
     fprintf(out, "    exit(1);\n");
     fprintf(out, "}\n");
-    fprintf(out, "static baga_Arena *baga_world_a(int64_t h, const char *op) {\n");
+    /* W2.14: достъпът до контейнер поевтиня с 30–51%, без да е махната нито
+     * една проверка. Промяната е в начина на КОМПИЛИРАНЕ, не в логиката:
+     *
+     *  1. `baga_world_a` и резолвът на id са always_inline. Като out-of-line
+     *     функции не се инлайнваха (error-пътищата с fprintf ги правеха твърде
+     *     големи), значи всяка операция плащаше пролог/епилог и губеше CSE със
+     *     съседните проверки. Мерено: wvec_get 6.10 → 3.05 ns само от това.
+     *  2. Мутаторите не резолвват id-то два пъти: `wvec_push` → `push_raw` и
+     *     `wmap_set` → `set_raw` повтаряха world_a + mut_check + резолв, защото
+     *     помощниците взимаха (wh, id). Сега взимат (wh, w, off) — офсетът
+     *     остава валиден и след alloc, защото регионът е offset-адресиран, а
+     *     указателите се презареждат след растеж. wvec_push 13.35 → 11.90 ns.
+     *
+     * Две хипотези бяха реализирани, мерени и ОТХВЪРЛЕНИ (шест билда,
+     * docs/worlds-bg.md §4):
+     *  • кеш на id-резолва с „поколение" на региона — НЕУТРАЛЕН (2.96 срещу
+     *    2.97 ns при четене), затова не е в кода: носи инвариант за остаряване
+     *    на три места срещу нулева измерима полза. Ако някога се върне, записът
+     *    трябва да е степен на две (8×24 B прави индекса умножение: +0.79 ns);
+     *  • флаг `wvalid` вместо magic/версия — РЕГРЕСИЯ (4.34 срещу 2.96 ns със
+     *    същия кеш). Хипотеза за причината (не е от profiler): проверките
+     *    зареждат `base`/`used`, които резолвът веднага преизползва.
+     *  Извод: „по-малко проверки" не значи „по-бързо", а два билда, различаващи
+     *  се по две неща, не доказват нищо за нито едно от тях. */
+    fprintf(out, "static inline __attribute__((always_inline)) baga_Arena *baga_world_a(int64_t h, const char *op) {\n");
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
     fprintf(out, "    if (!a) { fprintf(stderr, \"baga: %%s: null world handle\\n\", op); exit(1); }\n");
     fprintf(out, "    if (a->used < (int64_t)sizeof(baga_WHdr))\n");
@@ -1668,7 +1692,16 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static const char *baga_wkind_name(int64_t k) {\n");
     fprintf(out, "    return k == 1 ? \"wvec\" : k == 2 ? \"wmap\" : k == 3 ? \"wrec\" : \"контейнер\";\n");
     fprintf(out, "}\n");
-    fprintf(out, "static baga_WEnt *baga_went(baga_Arena *w, int64_t id, int64_t kind, const char *op) {\n");
+    /* W2.14: always_inline (виж бележката над baga_world_a). Студеният път за
+     * kind-грешката е изнесен: snprintf-ът на 24 места уголемява кода, а не се
+     * изпълнява никога. Проверките са ВСИЧКИТЕ — нито една гаранция от W2.2
+     * (офсет в региона, kind на контейнера, повредена таблица) не е отслабена. */
+    fprintf(out, "static __attribute__((noinline)) void baga_wres_kind_err(int64_t id, int64_t kind, int64_t have, const char *op) {\n");
+    fprintf(out, "    char kmsg[48];\n");
+    fprintf(out, "    snprintf(kmsg, sizeof kmsg, \"id не е %%s\", baga_wkind_name(kind));\n");
+    fprintf(out, "    baga_world_bad(op, kmsg, (long long)id, (long long)have);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static inline __attribute__((always_inline)) int64_t baga_wres(baga_Arena *w, int64_t id, int64_t kind, const char *op) {\n");
     fprintf(out, "    baga_WHdr *hd = baga_whdr(w);\n");
     fprintf(out, "    if (id <= 0 || id > hd->tbl_len)\n");
     fprintf(out, "        baga_world_bad(op, \"невалиден контейнер id\", (long long)id, (long long)hd->tbl_len);\n");
@@ -1676,14 +1709,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        hd->tbl_cap * (int64_t)sizeof(baga_WEnt) > w->used - hd->tbl_off)\n");
     fprintf(out, "        baga_world_bad(op, \"повредена таблица на контейнерите\", (long long)hd->tbl_off, (long long)w->used);\n");
     fprintf(out, "    baga_WEnt *e = (baga_WEnt *)(w->base + hd->tbl_off) + (id - 1);\n");
-    fprintf(out, "    if (e->kind != kind) {\n");
-    fprintf(out, "        char kmsg[48];\n");
-    fprintf(out, "        snprintf(kmsg, sizeof kmsg, \"id не е %%s\", baga_wkind_name(kind));\n");
-    fprintf(out, "        baga_world_bad(op, kmsg, (long long)id, (long long)e->kind);\n");
-    fprintf(out, "    }\n");
+    fprintf(out, "    if (e->kind != kind) baga_wres_kind_err(id, kind, e->kind, op);\n");
     fprintf(out, "    if (e->off < 0 || e->off > w->used)\n");
     fprintf(out, "        baga_world_bad(op, \"контейнерът сочи извън региона\", (long long)e->off, (long long)w->used);\n");
-    fprintf(out, "    return e;\n");
+    fprintf(out, "    return e->off;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wtbl_add(int64_t wh, int64_t off, int64_t kind) {\n");
     fprintf(out, "    baga_Arena *w = (baga_Arena *)(intptr_t)wh;\n");
@@ -1832,10 +1861,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    v->data_off = baga_woff(w, nd);\n");
     fprintf(out, "    v->cap = nc;\n");
     fprintf(out, "}\n");
-    fprintf(out, "static void baga_wvec_push_raw(int64_t wh, int64_t id, int64_t x) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push\");\n");
-    fprintf(out, "    baga_world_mut_check(w, \"wvec_push\");\n");
-    fprintf(out, "    int64_t voff = baga_went(w, id, 1, \"wvec_push\")->off;\n");
+    /* W2.14: извикващият вече е направил world_a + mut_check + резолв на id —
+     * push_raw ги повтаряше, значи всеки push плащаше ДВА резолва. Офсетът
+     * остава валиден и след alloc (растеж/низ в региона), защото регионът е
+     * offset-адресиран; указателите се презареждат след grow. */
+    fprintf(out, "static void baga_wvec_push_raw(int64_t wh, baga_Arena *w, int64_t voff, int64_t x) {\n");
     fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_push\");\n");
     fprintf(out, "    if (v->len == v->cap) { baga_wvec_grow(wh, w, voff); v = baga_wvec_at(w, voff, \"wvec_push\"); }\n");
     fprintf(out, "    *baga_wvec_data(w, v, v->len, \"wvec_push\") = x;\n");
@@ -1846,18 +1876,19 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_wvec_push(int64_t wh, int64_t id, int64_t x) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wvec_push\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_push\")->off, \"wvec_push\");\n");
+    fprintf(out, "    int64_t voff = baga_wres(w, id, 1, \"wvec_push\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_push\");\n");
     fprintf(out, "    baga_kind_set(&v->ekind, 1, \"wvec_push\");\n");
-    fprintf(out, "    baga_wvec_push_raw(wh, id, x);\n");
+    fprintf(out, "    baga_wvec_push_raw(wh, w, voff, x);\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wvec_len(int64_t wh, int64_t id) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_len\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_len\")->off, \"wvec_len\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_wres(w, id, 1, \"wvec_len\"), \"wvec_len\");\n");
     fprintf(out, "    return v->len;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wvec_get(int64_t wh, int64_t id, int64_t i) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_get\")->off, \"wvec_get\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_wres(w, id, 1, \"wvec_get\"), \"wvec_get\");\n");
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get\", i, v->len);\n");
     fprintf(out, "    baga_kind_chk(v->ekind, 1, \"wvec_get\", \"контейнерът не е от i64 елементи\");\n");
     fprintf(out, "    return *baga_wvec_data(w, v, i, \"wvec_get\");\n");
@@ -1865,14 +1896,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_wvec_push_str(int64_t wh, int64_t id, const char *s) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push_str\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wvec_push_str\");\n");
-    fprintf(out, "    int64_t voff = baga_went(w, id, 1, \"wvec_push_str\")->off;\n");
+    fprintf(out, "    int64_t voff = baga_wres(w, id, 1, \"wvec_push_str\");\n");
     fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_push_str\");\n");
     fprintf(out, "    baga_kind_set(&v->ekind, 2, \"wvec_push_str\");\n");
-    fprintf(out, "    baga_wvec_push_raw(wh, id, baga_wreg_put_str(wh, w, s));\n");
+    fprintf(out, "    baga_wvec_push_raw(wh, w, voff, baga_wreg_put_str(wh, w, s));\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_wvec_get_str(int64_t wh, int64_t id, int64_t i) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get_str\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_get_str\")->off, \"wvec_get_str\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_wres(w, id, 1, \"wvec_get_str\"), \"wvec_get_str\");\n");
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get_str\", i, v->len);\n");
     fprintf(out, "    baga_kind_chk(v->ekind, 2, \"wvec_get_str\", \"контейнерът не е от низове\");\n");
     fprintf(out, "    return w->base + baga_wreg_str_off(w, *baga_wvec_data(w, v, i, \"wvec_get_str\"), \"wvec_get_str\");\n");
@@ -1880,14 +1911,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_wvec_push_bytes(int64_t wh, int64_t id, baga_bytes b) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push_bytes\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wvec_push_bytes\");\n");
-    fprintf(out, "    int64_t voff = baga_went(w, id, 1, \"wvec_push_bytes\")->off;\n");
+    fprintf(out, "    int64_t voff = baga_wres(w, id, 1, \"wvec_push_bytes\");\n");
     fprintf(out, "    baga_WVec *v = baga_wvec_at(w, voff, \"wvec_push_bytes\");\n");
     fprintf(out, "    baga_kind_set(&v->ekind, 3, \"wvec_push_bytes\");\n");
-    fprintf(out, "    baga_wvec_push_raw(wh, id, baga_wreg_put_bytes(wh, w, b, \"wvec_push_bytes\"));\n");
+    fprintf(out, "    baga_wvec_push_raw(wh, w, voff, baga_wreg_put_bytes(wh, w, b, \"wvec_push_bytes\"));\n");
     fprintf(out, "}\n");
     fprintf(out, "static baga_bytes baga_wvec_get_bytes(int64_t wh, int64_t id, int64_t i) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get_bytes\");\n");
-    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_went(w, id, 1, \"wvec_get_bytes\")->off, \"wvec_get_bytes\");\n");
+    fprintf(out, "    baga_WVec *v = baga_wvec_at(w, baga_wres(w, id, 1, \"wvec_get_bytes\"), \"wvec_get_bytes\");\n");
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get_bytes\", i, v->len);\n");
     fprintf(out, "    baga_kind_chk(v->ekind, 3, \"wvec_get_bytes\", \"контейнерът не е от bytes елементи\");\n");
     fprintf(out, "    int64_t soff = *baga_wvec_data(w, v, i, \"wvec_get_bytes\");\n");
@@ -1935,10 +1966,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    m->len = 0; m->cap = 16; m->slots_off = soff; m->vkind = 0;\n");
     fprintf(out, "    return baga_wtbl_add(wh, hoff, 2);\n");
     fprintf(out, "}\n");
-    fprintf(out, "static void baga_wmap_set_raw(int64_t wh, int64_t id, int64_t k, int64_t v) {\n");
-    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_set\");\n");
-    fprintf(out, "    baga_world_mut_check(w, \"wmap_set\");\n");
-    fprintf(out, "    int64_t moff = baga_went(w, id, 2, \"wmap_set\")->off;\n");
+    /* W2.14: като wvec_push_raw — извикващият вече е резолвнал id-то. */
+    fprintf(out, "static void baga_wmap_set_raw(int64_t wh, baga_Arena *w, int64_t moff, int64_t k, int64_t v) {\n");
     fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_set\");\n");
     fprintf(out, "    if ((m->len + 1) * 4 > m->cap * 3) {\n");
     fprintf(out, "        int64_t ocap = m->cap, ooff = m->slots_off, ncap = ocap * 2;\n");
@@ -1960,44 +1989,45 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_wmap_set(int64_t wh, int64_t id, int64_t k, int64_t v) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_set\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wmap_set\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_set\")->off, \"wmap_set\");\n");
+    fprintf(out, "    int64_t moff = baga_wres(w, id, 2, \"wmap_set\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_set\");\n");
     fprintf(out, "    baga_kind_set(&m->vkind, 1, \"wmap_set\");\n");
-    fprintf(out, "    baga_wmap_set_raw(wh, id, k, v);\n");
+    fprintf(out, "    baga_wmap_set_raw(wh, w, moff, k, v);\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wmap_get(int64_t wh, int64_t id, int64_t k) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_get\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_get\")->off, \"wmap_get\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_wres(w, id, 2, \"wmap_get\"), \"wmap_get\");\n");
     fprintf(out, "    baga_kind_chk(m->vkind, 1, \"wmap_get\", \"контейнерът не е от i64 стойности\");\n");
     fprintf(out, "    baga_WSlot *s = baga_wm_find(w, m, k, \"wmap_get\");\n");
     fprintf(out, "    return s ? s->v : 0;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wmap_has(int64_t wh, int64_t id, int64_t k) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_has\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_has\")->off, \"wmap_has\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_wres(w, id, 2, \"wmap_has\"), \"wmap_has\");\n");
     fprintf(out, "    return baga_wm_find(w, m, k, \"wmap_has\") ? 1 : 0;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_wmap_del(int64_t wh, int64_t id, int64_t k) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_del\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wmap_del\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_del\")->off, \"wmap_del\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_wres(w, id, 2, \"wmap_del\"), \"wmap_del\");\n");
     fprintf(out, "    baga_WSlot *s = baga_wm_find(w, m, k, \"wmap_del\");\n");
     fprintf(out, "    if (s) { s->st = 2; m->len--; }\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wmap_len(int64_t wh, int64_t id) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_len\");\n");
-    fprintf(out, "    return baga_wmap_at(w, baga_went(w, id, 2, \"wmap_len\")->off, \"wmap_len\")->len;\n");
+    fprintf(out, "    return baga_wmap_at(w, baga_wres(w, id, 2, \"wmap_len\"), \"wmap_len\")->len;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_wmap_set_str(int64_t wh, int64_t id, int64_t k, const char *s) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_set_str\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wmap_set_str\");\n");
-    fprintf(out, "    int64_t moff = baga_went(w, id, 2, \"wmap_set_str\")->off;\n");
+    fprintf(out, "    int64_t moff = baga_wres(w, id, 2, \"wmap_set_str\");\n");
     fprintf(out, "    baga_WMap *m = baga_wmap_at(w, moff, \"wmap_set_str\");\n");
     fprintf(out, "    baga_kind_set(&m->vkind, 2, \"wmap_set_str\");\n");
-    fprintf(out, "    baga_wmap_set_raw(wh, id, k, baga_wreg_put_str(wh, w, s));\n");
+    fprintf(out, "    baga_wmap_set_raw(wh, w, moff, k, baga_wreg_put_str(wh, w, s));\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_wmap_get_str(int64_t wh, int64_t id, int64_t k) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wmap_get_str\");\n");
-    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_went(w, id, 2, \"wmap_get_str\")->off, \"wmap_get_str\");\n");
+    fprintf(out, "    baga_WMap *m = baga_wmap_at(w, baga_wres(w, id, 2, \"wmap_get_str\"), \"wmap_get_str\");\n");
     fprintf(out, "    baga_kind_chk(m->vkind, 2, \"wmap_get_str\", \"контейнерът не е от низове\");\n");
     fprintf(out, "    baga_WSlot *s = baga_wm_find(w, m, k, \"wmap_get_str\");\n");
     fprintf(out, "    if (!s) { fprintf(stderr, \"baga: wmap_get_str: липсващ ключ %%lld\\n\", (long long)k); exit(1); }\n");
@@ -2030,11 +2060,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wrec_len(int64_t wh, int64_t id) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wrec_len\");\n");
-    fprintf(out, "    return baga_wrec_at(w, baga_went(w, id, 3, \"wrec_len\")->off, \"wrec_len\")->n;\n");
+    fprintf(out, "    return baga_wrec_at(w, baga_wres(w, id, 3, \"wrec_len\"), \"wrec_len\")->n;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wrec_has(int64_t wh, int64_t id, int64_t i) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wrec_has\");\n");
-    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_went(w, id, 3, \"wrec_has\")->off, \"wrec_has\");\n");
+    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_wres(w, id, 3, \"wrec_has\"), \"wrec_has\");\n");
     fprintf(out, "    return *baga_wrec_fld(w, r, i, 1, \"wrec_has\") != 0;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_wrec_kind(baga_Arena *w, baga_WRec *r, int64_t i, int64_t want, const char *op) {\n");
@@ -2046,14 +2076,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_wrec_set(int64_t wh, int64_t id, int64_t i, int64_t v) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wrec_set\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wrec_set\");\n");
-    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_went(w, id, 3, \"wrec_set\")->off, \"wrec_set\");\n");
+    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_wres(w, id, 3, \"wrec_set\"), \"wrec_set\");\n");
     fprintf(out, "    baga_wrec_kind(w, r, i, 1, \"wrec_set\");\n");
     fprintf(out, "    *baga_wrec_fld(w, r, i, 0, \"wrec_set\") = v;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_wrec_set_str(int64_t wh, int64_t id, int64_t i, const char *s) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wrec_set_str\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wrec_set_str\");\n");
-    fprintf(out, "    int64_t roff = baga_went(w, id, 3, \"wrec_set_str\")->off;\n");
+    fprintf(out, "    int64_t roff = baga_wres(w, id, 3, \"wrec_set_str\");\n");
     fprintf(out, "    baga_WRec *r = baga_wrec_at(w, roff, \"wrec_set_str\");\n");
     fprintf(out, "    baga_wrec_kind(w, r, i, 2, \"wrec_set_str\");\n");
     fprintf(out, "    int64_t soff = baga_wreg_put_str(wh, w, s);\n");
@@ -2063,7 +2093,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_wrec_set_bytes(int64_t wh, int64_t id, int64_t i, baga_bytes b) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wrec_set_bytes\");\n");
     fprintf(out, "    baga_world_mut_check(w, \"wrec_set_bytes\");\n");
-    fprintf(out, "    int64_t roff = baga_went(w, id, 3, \"wrec_set_bytes\")->off;\n");
+    fprintf(out, "    int64_t roff = baga_wres(w, id, 3, \"wrec_set_bytes\");\n");
     fprintf(out, "    baga_WRec *r = baga_wrec_at(w, roff, \"wrec_set_bytes\");\n");
     fprintf(out, "    baga_wrec_kind(w, r, i, 3, \"wrec_set_bytes\");\n");
     fprintf(out, "    int64_t off = baga_wreg_put_bytes(wh, w, b, \"wrec_set_bytes\");\n");
@@ -2078,18 +2108,18 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wrec_get(int64_t wh, int64_t id, int64_t i) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wrec_get\");\n");
-    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_went(w, id, 3, \"wrec_get\")->off, \"wrec_get\");\n");
+    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_wres(w, id, 3, \"wrec_get\"), \"wrec_get\");\n");
     fprintf(out, "    return baga_wrec_rd(w, r, i, 1, \"wrec_get\");\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_wrec_get_str(int64_t wh, int64_t id, int64_t i) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wrec_get_str\");\n");
-    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_went(w, id, 3, \"wrec_get_str\")->off, \"wrec_get_str\");\n");
+    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_wres(w, id, 3, \"wrec_get_str\"), \"wrec_get_str\");\n");
     fprintf(out, "    int64_t soff = baga_wrec_rd(w, r, i, 2, \"wrec_get_str\");\n");
     fprintf(out, "    return w->base + baga_wreg_str_off(w, soff, \"wrec_get_str\");\n");
     fprintf(out, "}\n");
     fprintf(out, "static baga_bytes baga_wrec_get_bytes(int64_t wh, int64_t id, int64_t i) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wrec_get_bytes\");\n");
-    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_went(w, id, 3, \"wrec_get_bytes\")->off, \"wrec_get_bytes\");\n");
+    fprintf(out, "    baga_WRec *r = baga_wrec_at(w, baga_wres(w, id, 3, \"wrec_get_bytes\"), \"wrec_get_bytes\");\n");
     fprintf(out, "    int64_t soff = baga_wrec_rd(w, r, i, 3, \"wrec_get_bytes\");\n");
     fprintf(out, "    int64_t n = baga_wreg_bytes_off(w, soff, \"wrec_get_bytes\");\n");
     fprintf(out, "    baga_bytes res; res.len = n; res.data = (unsigned char *)(w->base + soff + 8);\n");
