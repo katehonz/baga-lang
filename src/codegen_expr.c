@@ -233,6 +233,17 @@ static void emit_catch_handler_block(Codegen *cg, Node *hb, Type *ty) {
     fprintf(f, " })");
 }
 
+/* W3.2: C тип на стойност за if-израз temp (контейнерите/структурите са
+ * int64 handle-и; str/bytes/f64 имат собствени представяния) */
+static const char *w32_ctype(Type *t) {
+    if (t) {
+        if (t->kind == TYPE_STR) return "const char *";
+        if (t->kind == TYPE_BYTES) return "baga_bytes";
+        if (t->kind == TYPE_F64) return "double";
+    }
+    return "int64_t";
+}
+
 void emit_expr(Codegen *cg, Node *n) {
     FILE *f = cg->out;
     if (!n) return;
@@ -1292,21 +1303,29 @@ void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_IF: {
-            /* if as expression → GCC statement expression.
-             * RC4 v1.1: клоновете имат собствени temp wrap-ове — last expr
-             * е bound (стойността на if-израза); предишните EXPR_STMT са
-             * дискарднати. Cond вече минава през emit_rc_stmt_expr (v0.3). */
-            fprintf(f, "({");
+            /* if as expression → GCC statement expression с temp:
+             *   ({ T __t = (T){0}; if (c) { …; __t = v1; } else { …; __t = v2; }
+             *      __t; })
+             * Стойността на ({…}) идва от ПОСЛЕДНИЯ expr-stmt — ако това е
+             * if-изявление, конструкцият е void. Преди W3.2 `let x = if c { 1 }
+             * else { 2 }` изобщо не се компилираше. */
+            int tv = cg->tmp_counter++;
+            const char *ct = w32_ctype(n->type);
+            fprintf(f, "({ %s __w32if%d = (%s){0}; ", ct, tv, ct);
             fprintf(f, "if (");
             emit_rc_stmt_expr(cg, n->cond);
             fprintf(f, ") { ");
             if (n->then_br && n->then_br->kind == NODE_BLOCK) {
                 for (int i = 0; i < n->then_br->stmts.len; i++) {
                     Node *s = n->then_br->stmts.data[i];
-                    if (s->kind == NODE_EXPR_STMT) {
-                        int last = (i == n->then_br->stmts.len - 1);
-                        emit_rc_stmt_expr_root(cg, s->expr, last);
+                    int last = (i == n->then_br->stmts.len - 1);
+                    if (s->kind == NODE_EXPR_STMT && last) {
+                        fprintf(f, "__w32if%d = ", tv);
+                        emit_rc_stmt_expr_root(cg, s->expr, 1);
                         fprintf(f, "; ");
+                    } else {
+                        emit_stmt(cg, s);   /* let/if/… в рамо (не се губи) */
+                        fprintf(f, " ");
                     }
                 }
             }
@@ -1316,16 +1335,20 @@ void emit_expr(Codegen *cg, Node *n) {
                 if (n->else_br->kind == NODE_BLOCK) {
                     for (int i = 0; i < n->else_br->stmts.len; i++) {
                         Node *s = n->else_br->stmts.data[i];
-                        if (s->kind == NODE_EXPR_STMT) {
-                            int last = (i == n->else_br->stmts.len - 1);
-                            emit_rc_stmt_expr_root(cg, s->expr, last);
+                        int last = (i == n->else_br->stmts.len - 1);
+                        if (s->kind == NODE_EXPR_STMT && last) {
+                            fprintf(f, "__w32if%d = ", tv);
+                            emit_rc_stmt_expr_root(cg, s->expr, 1);
                             fprintf(f, "; ");
+                        } else {
+                            emit_stmt(cg, s);
+                            fprintf(f, " ");
                         }
                     }
                 }
                 fprintf(f, "} ");
             }
-            fprintf(f, "})");
+            fprintf(f, "__w32if%d; })", tv);
             break;
         }
 

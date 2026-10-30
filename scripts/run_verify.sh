@@ -353,15 +353,19 @@ grep -q "build_frozen:" /tmp/baga_verify_out.txt && grep -q "build_owned:" /tmp/
 	&& grep -q "ok_ret_frozen_use:" /tmp/baga_verify_out.txt && grep -q "ok_ret_owned_use:" /tmp/baga_verify_out.txt \
 	&& grep -q "bad_ret_frozen_write:" /tmp/baga_verify_out.txt && grep -q "bad_ret_after_free:" /tmp/baga_verify_out.txt \
 	&& grep -q "bad_free_while_shared_ret:" /tmp/baga_verify_out.txt && grep -q "ret_untracked:" /tmp/baga_verify_out.txt \
-	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^8$' \
+	&& grep -q "build_block:" /tmp/baga_verify_out.txt && grep -q "ok_block_scoped:" /tmp/baga_verify_out.txt \
+	&& grep -q "bad_block_lies:" /tmp/baga_verify_out.txt && grep -q "bad_block_shared:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^11$' \
 	&& grep -q "гаранция world_frozen на 'output': върнатият свят 'w' е мутабелен" /tmp/baga_verify_out.txt \
+	&& grep -q "гаранция world_frozen на 'output': върнатият свят 'g' е мутабелен" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (world_free на споделен свят 'g'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "гаранция world_frozen на 'output': върнатият свят 'w' е замразен, с незавършени читатели" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (mutate-after-freeze: wvec_new върху замразен 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (повторен world_free на 'w'.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "протокол (world_free на споделен свят 'w' с 1 незавършен(и) читател(и).*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& grep -q "извикване (requires world_frozen на 'rd' при извикване): ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
-	&& echo "OK: worlds_ret — W3.1: гаранция за върнат свят — строител ДОКАЗВА състоянието на output по всеки return-път (лъжещият и този с незавършен читател са оброчени с причината в отчета), извикващият регистрира резултата като handle и целият протокол важи (mutate-after-freeze, повторен free, free с жив читател — оброчени с контрапример); неследен върнат handle е честен UNKNOWN" \
+	&& echo "OK: worlds_ret — W3.1/W3.2: гаранция за върнат свят (и в блокова форма world g { … }) — строител ДОКАЗВА състоянието на output по всеки return-път (лъжещият и този с незавършен читател са оброчени с причината в отчета), извикващият регистрира резултата като handle и целият протокол важи (mutate-after-freeze, повторен free, free с жив читател — оброчени с контрапример); неследен върнат handle е честен UNKNOWN" \
 	|| { echo "FAIL: worlds_ret"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \

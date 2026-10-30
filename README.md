@@ -444,7 +444,7 @@ baga/
 | 17 | LLVM parity for M20–M24 (payload runtime, generic fns, traits, generic structs) | ✅ |
 | 18 | RC memory model v1.0 (`--rc`, opt-in): RC1–RC5 — ownership, containers, struct/enum fields, owned fn results | ✅ |
 | 19 | **Worlds W0…W2.13**: machine-checked regions — ownership/freeze/move, region containers (`wvec`/`wmap`/`wrec`), dump/load/auto-compaction, `wcache` scratch values, capability links, channel fan-out with join accounting, two-sided world contracts | ✅ |
-| 20 | W3: `world g { … }` syntax + region inference + spec integration | planned |
+| 20 | W3: `world g { … }` scoped world blocks + region inference + spec integration (`ensures: world_frozen(output)`) | ✅ (W3.1/W3.2 — match-инференцията остава) |
 
 ### Static verification (`--verify`)
 

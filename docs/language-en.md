@@ -1376,6 +1376,16 @@ invalidates nothing:
   `world_mutable(output)` guarantee or a guarantee on a name other than
   `output` is a compile error; `--test-specs` skips such specs (the result is
   a handle).
+- W3.2: `world g { … }` — a block that owns its world: `world_free(g)` runs
+  automatically on exit (including before `return`/`break`/`continue`/
+  `raise`), and `return g` moves ownership out (paired with
+  `ensures: world_frozen(output)` — W3.1). A value leaving the block is
+  evaluated before the free; a borrowed string/bytes cannot leak out (compile
+  error). Region inference: `let w = if c { world_new() } else { world_new() }`
+  is registered as a world — double free and mutating a frozen world are
+  compile errors through the whole chain (frozen is inherited only when every
+  branch carries a frozen world). Side fix: if-expressions as values now
+  compile (`let x = if c { 1 } else { 2 }`).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

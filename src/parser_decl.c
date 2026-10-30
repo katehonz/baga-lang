@@ -6,6 +6,257 @@
  *  Statement parsing
  * ============================================================ */
 
+/* ---- W3.2: world g { … } — scoped world блок (desugaring в парсера) ----
+ * Свежда се до `let g = world_new(); …; world_free(g)` с инжектиране на
+ * world_free(g) преди всеки изход, който напуска блока:
+ *   • return v (v не е g): v се връзва в temp, за да се оцени ПРЕДИ free-а;
+ *     `return g` изнася собствеността (W3.1 гарация) — free не се инжектира;
+ *   • break/continue, които не са в цикъл В блока (напускат блока);
+ *   • raise — като return (payload-ът се връзва в temp).
+ * Свитата форма е обикновена let/free — целият checker/verifier протокол
+ * (W1.6 seatbelt, HK_WORLD) работи без промяна. Граници: raise/`?` в дълбока
+ * изразна позиция не се инжектира (пътят дивергира — регионът остава вдигнат:
+ * leak, не UB); ръчен world_free(g) в блока е compile грешка (двоен free). */
+static int w32_ctr = 0;
+
+static Node *w32_ident(const char *name, SrcPos pos) {
+    Node *n = node_alloc(NODE_IDENT, pos);
+    n->name = strdup(name);
+    return n;
+}
+
+static Node *w32_call1(const char *fn, Node *arg, SrcPos pos) {
+    Node *c = node_alloc(NODE_CALL, pos);
+    c->callee = w32_ident(fn, pos);
+    c->args.len = 0; c->args.cap = 0; c->args.data = NULL;
+    if (arg) vec_push(c->args, arg);
+    return c;
+}
+
+static Node *w32_free_stmt(const char *name, SrcPos pos) {
+    Node *s = node_alloc(NODE_EXPR_STMT, pos);
+    s->expr = w32_call1("world_free", w32_ident(name, pos), pos);
+    return s;
+}
+
+/* дали изразът споменава name (стойност, която напуска блока, се оценява
+ * предварително — иначе free-ът я прави use-after-free) */
+static int w32_uses(Node *e, const char *name) {
+    if (!e) return 0;
+    switch (e->kind) {
+    case NODE_IDENT: return e->name && strcmp(e->name, name) == 0;
+    case NODE_PATH:
+    case NODE_INT_LIT: case NODE_FLOAT_LIT: case NODE_STR_LIT:
+    case NODE_BYTES_LIT: case NODE_BOOL_LIT: case NODE_LAMBDA:
+        return 0;
+    case NODE_BINARY: return w32_uses(e->left, name) || w32_uses(e->right, name);
+    case NODE_UNARY: return w32_uses(e->operand, name);
+    case NODE_CALL:
+        for (int i = 0; i < e->args.len; i++) if (w32_uses(e->args.data[i], name)) return 1;
+        return 0;
+    case NODE_IF: return w32_uses(e->cond, name) || w32_uses(e->then_br, name) || w32_uses(e->else_br, name);
+    case NODE_INDEX: return w32_uses(e->obj, name) || w32_uses(e->index, name);
+    case NODE_ELEM_REF: return w32_uses(e->elem_obj, name);
+    case NODE_FIELD: return w32_uses(e->field_obj, name);
+    case NODE_RANGE: return w32_uses(e->range_lo, name) || w32_uses(e->range_hi, name);
+    case NODE_STRUCT_LIT:
+        for (int i = 0; i < e->lit_values.len; i++) if (w32_uses(e->lit_values.data[i], name)) return 1;
+        return 0;
+    case NODE_TRY: return w32_uses(e->try_expr, name);
+    case NODE_CATCH: return w32_uses(e->catch_expr, name) || w32_uses(e->catch_handler, name);
+    case NODE_RAISE: return w32_uses(e->raise_payload, name);
+    case NODE_TO_STR: return w32_uses(e->to_str_expr, name);
+    case NODE_MATCH:
+        if (w32_uses(e->match_expr, name)) return 1;
+        for (int i = 0; i < e->match_arms.len; i++) if (w32_uses(e->match_arms.data[i], name)) return 1;
+        return 0;
+    case NODE_MATCH_ARM: return w32_uses(e->arm_pattern, name) || w32_uses(e->arm_body, name);
+    default: return 1;   /* непознат възел — консервативно „споменава" */
+    }
+}
+
+/* едно изявление → нула или повече, с инжектирани free-ове (възлите се
+ * ПРЕМЕСТВАТ, не се клонират) */
+static void w32_inject_stmt(NodeVec *dst, Node *s, const char *name, SrcPos pos, int in_loop);
+
+static void w32_inject_vec(NodeVec *dst, NodeVec *src, const char *name, SrcPos pos, int in_loop) {
+    for (int i = 0; i < src->len; i++)
+        w32_inject_stmt(dst, src->data[i], name, pos, in_loop);
+}
+
+/* рамо на if (блок, вложено if при else-if, или израз) — на място */
+static void w32_inject_arm(Node **arm, const char *name, SrcPos pos, int in_loop) {
+    if (!arm || !*arm) return;
+    if ((*arm)->kind == NODE_BLOCK) {
+        NodeVec nv = {0};
+        w32_inject_vec(&nv, &(*arm)->stmts, name, pos, in_loop);
+        free((*arm)->stmts.data);
+        (*arm)->stmts = nv;
+    } else if ((*arm)->kind == NODE_IF) {
+        Node *iff = *arm;
+        w32_inject_arm(&iff->then_br, name, pos, in_loop);
+        w32_inject_arm(&iff->else_br, name, pos, in_loop);
+    }
+    /* друг вид рамо (израз) — не съдържа изходи от блока */
+}
+
+static void w32_inject_stmt(NodeVec *dst, Node *s, const char *name, SrcPos pos, int in_loop) {
+    if (!s) return;
+    switch (s->kind) {
+    case NODE_RETURN: {
+        if (s->ret_val && s->ret_val->kind == NODE_IDENT &&
+            s->ret_val->name && strcmp(s->ret_val->name, name) == 0) {
+            vec_push(*dst, s);   /* return g — собствеността излиза */
+            return;
+        }
+        if (s->ret_val && w32_uses(s->ret_val, name)) {
+            /* оцени стойността ПРЕДИ free-а */
+            char tn[64]; snprintf(tn, sizeof tn, "__w32t%d", w32_ctr++);
+            Node *lt = node_alloc(NODE_LET, pos);
+            lt->let_name = strdup(tn); lt->is_mut = 0; lt->let_type = NULL;
+            lt->let_init = s->ret_val;
+            s->ret_val = w32_ident(tn, pos);
+            vec_push(*dst, lt);
+            vec_push(*dst, w32_free_stmt(name, pos));
+            vec_push(*dst, s);
+            return;
+        }
+        vec_push(*dst, w32_free_stmt(name, pos));
+        vec_push(*dst, s);
+        return;
+    }
+    case NODE_BREAK: case NODE_CONTINUE:
+        if (!in_loop) vec_push(*dst, w32_free_stmt(name, pos));   /* напускат блока */
+        vec_push(*dst, s);
+        return;
+    case NODE_RAISE: {
+        if (s->raise_payload && w32_uses(s->raise_payload, name)) {
+            char tn[64]; snprintf(tn, sizeof tn, "__w32t%d", w32_ctr++);
+            Node *lt = node_alloc(NODE_LET, pos);
+            lt->let_name = strdup(tn); lt->is_mut = 0; lt->let_type = NULL;
+            lt->let_init = s->raise_payload;
+            s->raise_payload = w32_ident(tn, pos);
+            vec_push(*dst, lt);
+        }
+        vec_push(*dst, w32_free_stmt(name, pos));
+        vec_push(*dst, s);
+        return;
+    }
+    case NODE_EXPR_STMT:
+        if (s->expr && s->expr->kind == NODE_RAISE) {
+            /* raise като изявление — същата обработка, но възелът е израз */
+            Node *r = s->expr;
+            if (r->raise_payload && w32_uses(r->raise_payload, name)) {
+                char tn[64]; snprintf(tn, sizeof tn, "__w32t%d", w32_ctr++);
+                Node *lt = node_alloc(NODE_LET, pos);
+                lt->let_name = strdup(tn); lt->is_mut = 0; lt->let_type = NULL;
+                lt->let_init = r->raise_payload;
+                r->raise_payload = w32_ident(tn, pos);
+                vec_push(*dst, lt);
+            }
+            vec_push(*dst, w32_free_stmt(name, pos));
+            vec_push(*dst, s);
+            return;
+        }
+        vec_push(*dst, s);
+        return;
+    case NODE_BLOCK:
+        {
+            NodeVec nv = {0};
+            w32_inject_vec(&nv, &s->stmts, name, pos, in_loop);
+            free(s->stmts.data);
+            s->stmts = nv;
+        }
+        vec_push(*dst, s);
+        return;
+    case NODE_IF:
+        /* инжекция ВЪТРЕ в раменете (блокове или вложени if при else-if);
+         * самият if-възел остава цял */
+        w32_inject_arm(&s->then_br, name, pos, in_loop);
+        w32_inject_arm(&s->else_br, name, pos, in_loop);
+        vec_push(*dst, s);
+        return;
+    case NODE_WHILE: case NODE_FOR:
+        /* тялото е блок; вътре break/continue не напускат световния блок */
+        {
+            Node *body = (s->kind == NODE_WHILE) ? s->while_body : s->for_body;
+            NodeVec nv = {0};
+            if (body) w32_inject_vec(&nv, &body->stmts, name, pos, in_loop + 1);
+            if (body) { free(body->stmts.data); body->stmts = nv; }
+        }
+        vec_push(*dst, s);
+        return;
+    case NODE_MATCH:
+        for (int i = 0; i < s->match_arms.len; i++) {
+            Node *a = s->match_arms.data[i];
+            if (!a || a->kind != NODE_MATCH_ARM || !a->arm_body) continue;
+            NodeVec nv = {0};
+            w32_inject_vec(&nv, &a->arm_body->stmts, name, pos, in_loop);
+            free(a->arm_body->stmts.data);
+            a->arm_body->stmts = nv;
+        }
+        vec_push(*dst, s);
+        return;
+    default:
+        vec_push(*dst, s);
+        return;
+    }
+}
+
+/* свежда world name { body } до вложен блок:
+ *   { let name = world_new(); …; world_free(name) }
+ * Обвивката пази scope-а на блока (sibling блокове не си бъркат имената);
+ * trailing free-ът липсва при сигурен изход (return/raise напускат с/без
+ * стойност), а преди всеки изход free-ът е инжектиран. */
+static int w32_stmt_exits(Node *s);
+
+static int w32_vec_exits(NodeVec *v) {
+    return v->len > 0 && w32_stmt_exits(v->data[v->len - 1]);
+}
+
+static int w32_arm_exits(Node *arm) {
+    if (!arm) return 0;
+    if (arm->kind == NODE_BLOCK) return w32_vec_exits(&arm->stmts);
+    if (arm->kind == NODE_IF) return w32_stmt_exits(arm);
+    return 0;
+}
+
+/* дали изписанието НЕ може да продължи нататък (return/raise/изход от блока) */
+static int w32_stmt_exits(Node *s) {
+    if (!s) return 0;
+    switch (s->kind) {
+    case NODE_RETURN: case NODE_BREAK: case NODE_CONTINUE: case NODE_RAISE:
+        return 1;
+    case NODE_EXPR_STMT:
+        return s->expr && s->expr->kind == NODE_RAISE;
+    case NODE_BLOCK: return w32_vec_exits(&s->stmts);
+    case NODE_IF: return w32_arm_exits(s->then_br) && w32_arm_exits(s->else_br);
+    default: return 0;
+    }
+}
+
+static Node *w32_lower(NodeVec *src, const char *name, SrcPos pos) {
+    Node *blk = node_alloc(NODE_BLOCK, pos);
+    blk->stmts.len = 0; blk->stmts.cap = 0; blk->stmts.data = NULL;
+    Node *lt = node_alloc(NODE_LET, pos);
+    lt->let_name = strdup(name); lt->is_mut = 0; lt->let_type = NULL;
+    lt->let_init = w32_call1("world_new", NULL, pos);
+    vec_push(blk->stmts, lt);
+    NodeVec body = {0};
+    w32_inject_vec(&body, src, name, pos, 0);
+    /* trailing free само при възможен fall-through — след безусловен изход е
+     * мъртъв код, а мъртвият world_free(g) след free-а по-горе лъжеше и
+     * seatbelt-а („използване след free"), и missing-return проверката */
+    int exits = w32_vec_exits(&body);
+    for (int i = 0; i < body.len; i++) vec_push(blk->stmts, body.data[i]);
+    free(body.data);
+    if (!exits)
+        vec_push(blk->stmts, w32_free_stmt(name, pos));
+    free(src->data);
+    src->data = NULL; src->len = 0; src->cap = 0;
+    return blk;
+}
+
 Node *parse_block(Parser *p) {
     SrcPos pos = cur(p)->pos;
     expect(p, TOK_LBRACE);
@@ -13,6 +264,20 @@ Node *parse_block(Parser *p) {
     block->stmts.len = 0; block->stmts.cap = 0; block->stmts.data = NULL;
 
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+        /* W3.2: world g { … } — contextual ключова дума (world си остава
+         * валиден идентификатор извън този контекст: IDENT + IDENT + `{`) */
+        if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "world") == 0 &&
+            p->pos + 2 < p->len && p->tokens[p->pos + 1].kind == TOK_IDENT &&
+            p->tokens[p->pos + 2].kind == TOK_LBRACE) {
+            SrcPos wpos = cur(p)->pos;
+            advance(p);
+            char *wname = expect_ident(p);
+            Node *body = parse_block(p);
+            vec_push(block->stmts, w32_lower(&body->stmts, wname, wpos));
+            free(wname);
+            node_free(body);
+            continue;
+        }
         Node *s = parse_stmt(p);
         if (s) vec_push(block->stmts, s);
     }

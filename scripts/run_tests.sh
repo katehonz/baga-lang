@@ -1135,6 +1135,85 @@ else
 	exit 1
 fi
 
+echo "=== W3.2 world g { … } синтаксис + region inference ==="
+# world е contextual ключова дума — извън `world IDENT {` си остава идентификатор.
+printf 'fn main() {\n    let world = 5\n    print(world)\n}\n' > /tmp/baga_w32_ident.baga
+RC=0
+run /tmp/baga_w32_ident.baga > /tmp/baga_w32_ident_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "^5$" /tmp/baga_w32_ident_out.txt; then
+	echo "OK: world остава валиден идентификатор извън блока"
+else
+	echo "FAIL: world като идентификатор трябваше да работи"
+	cat /tmp/baga_w32_ident_out.txt
+	exit 1
+fi
+# Блокът free-ва своя свят при изхода — ръчен free вътре е двоен (compile).
+printf 'fn main() {\n    world g {\n        world_free(g)\n    }\n}\n' > /tmp/baga_w32_dfree.baga
+RC=0
+run --check /tmp/baga_w32_dfree.baga > /tmp/baga_w32_dfree_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w32_dfree_out.txt; then
+	echo "OK: ръчен world_free в блока — compile грешка (двоен free)"
+else
+	echo "FAIL: ръчният free в блока трябваше да е грешка"
+	cat /tmp/baga_w32_dfree_out.txt
+	exit 1
+fi
+# Стойност, която напуска блока, се оценява ПРЕДИ free-а — заеман низ не може
+# да изтече (MEM-3 убива копието/заемането със света).
+printf 'fn f() -> str {\n    world g {\n        let v = wvec_new(g)\n        wvec_push_str(g, v, "hi")\n        return wvec_get_str(g, v, 0)\n    }\n}\n\nfn main() {\n    print(f())\n}\n' > /tmp/baga_w32_borrow.baga
+RC=0
+run --check /tmp/baga_w32_borrow.baga > /tmp/baga_w32_borrow_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w32_borrow_out.txt; then
+	echo "OK: заеман низ напуска блока — compile грешка"
+else
+	echo "FAIL: заеманият низ трябваше да е грешка"
+	cat /tmp/baga_w32_borrow_out.txt
+	exit 1
+fi
+# Region inference: if-израз с world клони е свят — двоен free и мутатор върху
+# замразен са compile грешки; maybe-frozen клони НЕ се обвиняват.
+printf 'fn main() {\n    let n: i64 = 1\n    let w = if n > 0 {\n        world_new()\n    } else {\n        world_new()\n    }\n    world_free(w)\n    world_free(w)\n}\n' > /tmp/baga_w32_ri1.baga
+RC=0
+run --check /tmp/baga_w32_ri1.baga > /tmp/baga_w32_ri1_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w32_ri1_out.txt; then
+	echo "OK: двоен free през if-израз — compile грешка (region inference)"
+else
+	echo "FAIL: if-израз с world клони трябваше да е свят"
+	cat /tmp/baga_w32_ri1_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let n: i64 = 1\n    let w1 = world_new()\n    world_freeze(w1)\n    let w2 = world_new()\n    world_freeze(w2)\n    let w = if n > 0 {\n        w1\n    } else {\n        w2\n    }\n    wvec_new(w)\n}\n' > /tmp/baga_w32_ri2.baga
+RC=0
+run --check /tmp/baga_w32_ri2.baga > /tmp/baga_w32_ri2_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_w32_ri2_out.txt; then
+	echo "OK: мутатор върху замразен през if-израз — compile грешка (всички клони)"
+else
+	echo "FAIL: замразен през if-израз трябваше да се вижда"
+	cat /tmp/baga_w32_ri2_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let n: i64 = 1\n    let w1 = world_new()\n    world_freeze(w1)\n    let w2 = world_new()\n    let w = if n > 0 {\n        w1\n    } else {\n        w2\n    }\n    wvec_new(w)\n    print("ok")\n}\n' > /tmp/baga_w32_ri3.baga
+RC=0
+run --check /tmp/baga_w32_ri3.baga > /tmp/baga_w32_ri3_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "ok" /tmp/baga_w32_ri3_out.txt; then
+	echo "OK: maybe-frozen през if-израз — без измислена грешка"
+else
+	echo "FAIL: maybe-frozen клони не бива да се обвиняват"
+	cat /tmp/baga_w32_ri3_out.txt
+	exit 1
+fi
+# If-израз като стойност (W3.2 fix: преди беше void в codegen).
+printf 'fn main() {\n    let n: i64 = 1\n    let x = if n > 0 {\n        1\n    } else {\n        2\n    }\n    print(x)\n}\n' > /tmp/baga_w32_ifv.baga
+RC=0
+run /tmp/baga_w32_ifv.baga > /tmp/baga_w32_ifv_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "^1$" /tmp/baga_w32_ifv_out.txt; then
+	echo "OK: if-израз като стойност се компилира и работи"
+else
+	echo "FAIL: if-изразът трябваше да връща стойност"
+	cat /tmp/baga_w32_ifv_out.txt
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

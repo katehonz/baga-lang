@@ -979,6 +979,48 @@ static int expr_is_world(CheckCtx *ctx, Node *n) {
     if (n->kind == NODE_CALL && n->callee && n->callee->kind == NODE_IDENT &&
         find_fn_rec(ctx, n->callee->name))
         return spec_world_guarantee(ctx, n->callee->name) != 0;
+    /* W3.2: region inference — if-израз, чиито клони носят свят, също е свят
+     * (стойността на блок-рамо е последният му израз). */
+    if (n->kind == NODE_IF) {
+        if (!n->then_br || !n->else_br) return 0;
+        Node *tv = n->then_br->kind == NODE_BLOCK
+            ? (n->then_br->stmts.len > 0 ? n->then_br->stmts.data[n->then_br->stmts.len - 1] : NULL)
+            : n->then_br;
+        Node *ev = n->else_br->kind == NODE_BLOCK
+            ? (n->else_br->stmts.len > 0 ? n->else_br->stmts.data[n->else_br->stmts.len - 1] : NULL)
+            : n->else_br;
+        if (!tv || !ev || tv->kind != NODE_EXPR_STMT || ev->kind != NODE_EXPR_STMT) return 0;
+        return expr_is_world(ctx, tv->expr) && expr_is_world(ctx, ev->expr);
+    }
+    return 0;
+}
+
+/* W3.2: дали изразът е СИГУРНО замразен свят (за наследяване на world_frozen
+ * при let-връзка) — всеки клон/клон на if носи замразен свят */
+static int expr_frozen_world(CheckCtx *ctx, Node *n) {
+    if (!n) return 0;
+    if (n->kind == NODE_IDENT) {
+        EnvEntry *e = ck_env_find(ctx, n->name);
+        return (e && e->is_world && e->world_frozen) ? 1 : 0;
+    }
+    if (n->kind == NODE_CALL && n->callee && n->callee->kind == NODE_IDENT) {
+        if (!find_fn_rec(ctx, n->callee->name)) {
+            /* world_load — неизвестно състояние; world_new — мутабелен */
+            return 0;
+        }
+        return spec_world_guarantee(ctx, n->callee->name) == 1;
+    }
+    if (n->kind == NODE_IF) {
+        if (!n->then_br || !n->else_br) return 0;
+        Node *tv = n->then_br->kind == NODE_BLOCK
+            ? (n->then_br->stmts.len > 0 ? n->then_br->stmts.data[n->then_br->stmts.len - 1] : NULL)
+            : n->then_br;
+        Node *ev = n->else_br->kind == NODE_BLOCK
+            ? (n->else_br->stmts.len > 0 ? n->else_br->stmts.data[n->else_br->stmts.len - 1] : NULL)
+            : n->else_br;
+        if (!tv || !ev || tv->kind != NODE_EXPR_STMT || ev->kind != NODE_EXPR_STMT) return 0;
+        return expr_frozen_world(ctx, tv->expr) && expr_frozen_world(ctx, ev->expr);
+    }
     return 0;
 }
 
@@ -990,16 +1032,10 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
     if (expr_is_world(ctx, init)) {
         pe->is_world = 1;
         pe->world_frozen = 0;
-        if (init->kind == NODE_IDENT) {
-            EnvEntry *src = ck_env_find(ctx, init->name);
-            if (src && src->world_frozen) world_note_frozen(ctx, pe);
-        } else if (init->kind == NODE_CALL && init->callee &&
-                   init->callee->kind == NODE_IDENT) {
-            /* W3.1: върнат замразен свят — гарацията на spec-а се поема от
-             * seatbelt-а (мутатор върху него е compile грешка веднага). */
-            if (spec_world_guarantee(ctx, init->callee->name) == 1)
-                world_note_frozen(ctx, pe);
-        }
+        /* W3.2: наследяване на замразеното — alias, fn с гаранция world_frozen
+         * или if-израз, чиито клони носят замразени светове (всички клони,
+         * иначе е maybe-frozen и seatbelt-ът мълчи — като при freeze-join). */
+        if (expr_frozen_world(ctx, init)) world_note_frozen(ctx, pe);
     } else {
         pe->is_world = 0;
         pe->world_frozen = 0;

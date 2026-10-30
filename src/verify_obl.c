@@ -922,6 +922,13 @@ void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvo
             *states = out;
         } else if (st->kind == NODE_WHILE) {
             symexec_while(st, states, ob, is_nonvoid, spec);
+        } else if (st->kind == NODE_BLOCK) {
+            /* W3.2: свит world блок (и всяко друго вложено блок-изявление) —
+             * същият поток състояния през вложените изявления. is_nonvoid = 0:
+             * последният expr-stmt на ВЛОЖЕН блок не е implicit return (като
+             * рамо на if — иначе инжектираният world_free ставаше „return" и
+             * изяде останалата част от функцията). */
+            symexec_block(st, states, ob, 0, spec);
         } else if (st->kind == NODE_INVARIANT) {
             /* M16: annotation statement — content axioms (c[*] ...) and
              * scalar assumptions */

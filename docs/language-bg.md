@@ -1375,6 +1375,16 @@ print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
   грешка, двоен free — също). `world_mutable(output)` като гаранция и гаранция
   върху име, различно от `output`, са compile грешки; `--test-specs` пропуска
   такива spec-ове (резултатът е handle).
+- W3.2: `world g { … }` — блок, който притежава своя свят: `world_free(g)` се
+  изпълнява автоматично при изхода (вкл. преди `return`/`break`/`continue`/
+  `raise`), а `return g` изнася собствеността (заедно с
+  `ensures: world_frozen(output)` — W3.1). Стойност, която напуска блока, се
+  оценява преди free-а; заеман низ/bytes не може да изтече (compile грешка).
+  Region inference: `let w = if c { world_new() } else { world_new() }` се
+  регистрира като свят — двоен free и мутатор върху замразен са compile грешки
+  през цялата верига (замразеното се наследява само когато всички клони носят
+  замразен свят). Съпътстващ fix: if-израз като стойност вече се компилира
+  (`let x = if c { 1 } else { 2 }`).
 - Пълният дизайн-документ — модел, сравнение с Verona/Pony/Cyclone, bench,
   честни граници и пътна карта: `docs/worlds-bg.md`.
 

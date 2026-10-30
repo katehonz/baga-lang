@@ -1,0 +1,84 @@
+// world_block_test — W3.2: `world g { … }` — scoped world блок.
+//
+// Блокът се свежда в парсера до `let g = world_new(); …; world_free(g)` с
+// free преди всеки изход (return/break/continue/raise), освен при `return g`
+// — там собствеността излиза (W3.1). Тестът показва ИЗПЪЛНЕНИЕТО: стойности
+// напускат блока като копия, светът се освобождава автоматично (видимо през
+// пускането на capability-връзка), `return g` дава жив handle.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// Строител: светът излиза от блока като резултат — блокът не го free-ва.
+fn build_frozen(n: i64) -> i64 {
+    world g {
+        let v = wvec_new(g)
+        wvec_push(g, v, n)
+        world_freeze(g)
+        return g
+    }
+}
+
+fn main() -> i64 {
+    // 1. Стойност напуска блока; светът се освобождава при изхода.
+    let mut out: i64 = 0
+    world g {
+        let v = wvec_new(g)
+        wvec_push(g, v, 7)
+        out = wvec_get(g, v, 0)
+    }
+    check("value_out", out == 7)
+
+    // 2. Авто-free се вижда през capability-връзка: ако p не беше free-нат при
+    //    изхода на блока, world_free(c) щеше да е „unlink преди free".
+    let c = world_new()
+    world p {
+        world_link(p, c)
+    }
+    world_free(c)
+    check("auto_free_releases_link", 1 == 1)
+
+    // 3. return g — собствеността излиза (W3.1), handle-ът е жив.
+    let w = build_frozen(5)
+    check("return_world", world_state(w) == 1)
+    check("return_world_data", wvec_get(w, 1, 0) == 5)
+    world_free(w)
+
+    // 4. Вложени блокове — free-овете са LIFO.
+    world a {
+        world b {
+            wvec_new(b)
+        }
+        wvec_new(a)
+    }
+    check("nested_blocks", 1 == 1)
+
+    // 5. Низ напуска блока като КОПИЕ (заеман указател би умрял с free-а).
+    let mut s: str = ""
+    world g2 {
+        let v = wvec_new(g2)
+        wvec_push_str(g2, v, "hi")
+        s = concat(wvec_get_str(g2, v, 0), "")
+    }
+    check("str_copy_out", s == "hi")
+
+    // 6. Region inference: if-израз с world клони е свят — двойният free
+    //    е compile грешка (проба в run_tests), тук само изпълнението.
+    let n: i64 = 1
+    let wi = if n > 0 {
+        world_new()
+    } else {
+        world_new()
+    }
+    world_free(wi)
+    check("if_world_runs", 1 == 1)
+
+    print("world_block_test: all passed")
+    return 0
+}

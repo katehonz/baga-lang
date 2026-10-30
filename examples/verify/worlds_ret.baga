@@ -207,6 +207,84 @@ fn ret_untracked(n: i64) -> i64 {
     return 5
 }
 
+// ---------------------------------------------------------------------------
+// W3.2: world g { … } — блокът се свежда до let/world_free с инжектирани
+// free-ове преди изходите; протоколът работи върху свитата форма без промяна.
+// ---------------------------------------------------------------------------
+
+spec build_block {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        world_frozen(output)
+}
+
+// Строител в блокова форма: `return g` изнася собствеността — блокът не го
+// free-ва по този път (W3.1 гарацията се доказва от свитата форма).
+fn build_block(n: i64) -> i64 {
+    world g {
+        wvec_new(g)
+        world_freeze(g)
+        return g
+    }
+}
+
+spec ok_block_scoped {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Fall-through: блокът free-ва своя свят при изхода — нищо не изтича.
+fn ok_block_scoped(n: i64) -> i64 {
+    let mut out: i64 = 0
+    world g {
+        let v = wvec_new(g)
+        wvec_push(g, v, 7)
+        out = wvec_get(g, v, 0)
+    }
+    return out - out
+}
+
+spec bad_block_lies {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        world_frozen(output)
+}
+
+// Обещава замразен, но по пътя n = 0 връща мутабелен — гарацията е оброчена.
+fn bad_block_lies(n: i64) -> i64 {
+    world g {
+        if n > 0 {
+            world_freeze(g)
+        }
+        return g
+    }
+}
+
+spec bad_block_shared {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Блокът ПАЗИ от изтичане: незатворен читател + инжектираният free при изхода
+// е „join преди free" — светът не се губи тихо.
+fn bad_block_shared(n: i64) -> i64 !Par {
+    world g {
+        world_freeze(g)
+        let h = go(rd, g)
+    }
+    return n - n
+}
+
 fn main() {
     print("worlds_ret: verify-only oracle")
 }
