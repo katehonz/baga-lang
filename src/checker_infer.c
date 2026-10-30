@@ -489,6 +489,12 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                 check_error(ctx, n->pos, "%s: елемент от тип %s, но векторът е %s",
                             name, type_str(xt), type_str(vt));
             }
+            /* W3.5: заемана стойност от регион (свят/арена), записана във
+             * вектор, увисва при free — векторът е в bump арената и надживява
+             * региона. ASan: heap-use-after-free при print на vec_get след
+             * world_free. Отбелязваме контейнера, не елемента. */
+            mem3_taint_container(ctx, n->args.data[0],
+                                 region_of_expr(ctx, n->args.data[xidx]));
             return type_new(TYPE_VOID);
         }
         if (strcmp(name, "vec_get") == 0 || strcmp(name, "vec_get_str") == 0) {
@@ -646,6 +652,9 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                         type_str(vt), type_str(mt));
                 }
             }
+            /* W3.5: като vec_push — заемана стойност в карта увисва при free */
+            mem3_taint_container(ctx, n->args.data[0],
+                                 region_of_expr(ctx, n->args.data[2]));
             return type_new(TYPE_VOID);
         }
         if (strcmp(name, "map_get") == 0 || strcmp(name, "map_has") == 0 ||
@@ -1046,7 +1055,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                             check_error(ctx, n->pos,
                                 "arena_free на външна за цикъла арена '%s'", ah->name);
                         else {
-                            mem3_drop_handle(ctx, e);
+                            mem3_drop_handle(ctx, e, n->pos);
                         }
                     }
                 }
@@ -1090,7 +1099,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                         /* W2.2: умират и алиасите, и заеманите от региона
                          * низове (wvec_get_str) — иначе `print(s)` след free е
                          * heap-use-after-free, който минаваше проверката */
-                        mem3_free_world(ctx, e);
+                        mem3_free_world(ctx, e, n->pos);
                 } else if (is_freeze) {
                     if (e->world_frozen)
                         check_error(ctx, n->pos, "повторен world_freeze на '%s'", wh->name);

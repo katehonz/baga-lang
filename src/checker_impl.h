@@ -20,6 +20,9 @@
 /* ============================ типове ============================ */
 
 typedef struct EnvEntry EnvEntry;
+/* W3.5: колко региона може да „замърсяват" един контейнер едновременно. Над
+ * капацитета спираме да следим — пропусната грешка, никога измислена (M8). */
+#define W35_TAINT_MAX 4
 struct EnvEntry {
     char *name;
     Type *type;
@@ -36,6 +39,14 @@ struct EnvEntry {
     int is_arena;     /* arena handle (arena_new или алиас на такъв) */
     int arena_id;     /* >0: identity на handle-а (споделена от let b = a) */
     int region_id;    /* >0: payload от arena_alloc с този arena_id */
+    /* W3.5: контейнер (Vec/Map), в който е записана ЗАЕМЕНА стойност от регион
+     * (свят или арена). Самият контейнер живее в bump арената, но елементите
+     * му сочат в региона — след free той държи висящи указатели, които
+     * `vec_get` връща като обикновени стойности. Затова се следи отделно от
+     * region_id: payload-локалата умира при free, контейнерът трябва да бъде
+     * ОБВИНЕН на мястото на free-а. */
+    int taint[W35_TAINT_MAX];
+    int taint_n;
     SrcPos pos;       /* позиция на let (за leak предупреждения) */
 };
 typedef struct {
@@ -156,8 +167,10 @@ void pop_scope_skip(CheckCtx *ctx, const char *skip_name);   /* 775 */
 void pop_scope(CheckCtx *ctx);   /* 780 */
 void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos);   /* 784 */
 void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_mut, SrcPos pos);   /* 809 */
-void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h);   /* 857 */
-void mem3_free_world(CheckCtx *ctx, EnvEntry *h);   /* W2.2: free на свят + заеманите низове */
+void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h, SrcPos pos);   /* 857 */
+void mem3_free_world(CheckCtx *ctx, EnvEntry *h, SrcPos pos);   /* W2.2: free на свят + заеманите низове */
+void mem3_taint_container(CheckCtx *ctx, Node *container, int rid);   /* W3.5: заемана стойност влиза в контейнер */
+int mem3_container_region(CheckCtx *ctx, Node *container);   /* W3.5: единственият регион на контейнер или 0 */
 EnvEntry *ck_env_find(CheckCtx *ctx, const char *name);   /* 877 */
 const char *ck_suggest(const char *name, const char *const *cands, int n);
 int region_of_expr(CheckCtx *ctx, Node *n);   /* 891 */

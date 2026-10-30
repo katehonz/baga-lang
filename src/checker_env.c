@@ -705,6 +705,7 @@ void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) {
         s->entries[s->count].region_id = 0;
         s->entries[s->count].is_world = 0;
         s->entries[s->count].world_frozen = 0;
+        s->entries[s->count].taint_n = 0;   /* W3.5 */
         s->entries[s->count].pos = pos;
         s->count++;
     }
@@ -732,6 +733,7 @@ void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_mut, Src
         s->entries[s->count].region_id = 0;
         s->entries[s->count].is_world = 0;
         s->entries[s->count].world_frozen = 0;
+        s->entries[s->count].taint_n = 0;   /* W3.5 */
         s->entries[s->count].pos = pos;
         s->count++;
     }
@@ -759,12 +761,66 @@ static void mem3_invalidate_region(CheckCtx *ctx, int arena_id) {
     }
 }
 
+/* W3.5: локалата-контейнер, към която сочи изразът — голо име или верига от
+ * полета (`p.items`). Друга форма (резултат от извикване, индекс) не се следи:
+ * M8 — пропускаме, не измисляме. */
+static EnvEntry *w35_container(CheckCtx *ctx, Node *e) {
+    if (!e) return NULL;
+    while (e->kind == NODE_FIELD) e = e->field_obj;
+    if (e->kind != NODE_IDENT) return NULL;
+    return ck_env_find(ctx, e->name);
+}
+
+void mem3_taint_container(CheckCtx *ctx, Node *container, int rid) {
+    if (rid <= 0) return;
+    EnvEntry *e = w35_container(ctx, container);
+    if (!e || e->taint_n >= W35_TAINT_MAX) return;
+    for (int i = 0; i < e->taint_n; i++) if (e->taint[i] == rid) return;
+    e->taint[e->taint_n++] = rid;
+}
+
+/* Регионът на стойност, прочетена от контейнер. При повече от един регион не
+ * знаем кой е елементът → 0 (честен пропуск, не измислено обвинение). */
+int mem3_container_region(CheckCtx *ctx, Node *container) {
+    EnvEntry *e = w35_container(ctx, container);
+    return (e && e->taint_n == 1) ? e->taint[0] : 0;
+}
+
+/* W3.5: при free на регион — живите контейнери, които държат заемани стойности
+ * от него, остават с висящи указатели. Обвинението е на мястото на free-а,
+ * защото по-късното четене (`vec_get`) връща обикновена стойност и изглежда
+ * невинно; ASan потвърди heap-use-after-free при print на такъв елемент.
+ * `dropped` контейнери се пропускат — `drop(v)` преди free е легалният изход. */
+static void mem3_report_tainted(CheckCtx *ctx, int rid, SrcPos pos, const char *what) {
+    if (rid <= 0) return;
+    for (int d = 0; d < ctx->depth; d++) {
+        EnvScope *s = &ctx->scopes[d];
+        for (int i = 0; i < s->count; i++) {
+            EnvEntry *e = &s->entries[i];
+            if (e->dropped || e->taint_n == 0) continue;
+            for (int k = 0; k < e->taint_n; k++) {
+                if (e->taint[k] != rid) continue;
+                check_error(ctx, pos,
+                    "контейнерът '%s' държи заемана стойност от %s — след free елементите му са висящи указатели; "
+                    "копирай стойността преди free (concat(s, \"\") за низ) или освободи контейнера първо (drop(%s))",
+                    e->name, what, e->name);
+                break;
+            }
+        }
+    }
+}
+
 /* MEM-3: free на handle — payload-и + всички алиаси на същия arena_id */
-void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h) {
+void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h, SrcPos pos) {
     if (!h) return;
     int id = h->arena_id;
     arena_note_freed(ctx, id);
     mem3_invalidate_region(ctx, id);
+    if (id > 0) {
+        char what[96];
+        snprintf(what, sizeof what, "арената '%s', която се освобождава тук", h->name);
+        mem3_report_tainted(ctx, id, pos, what);   /* W3.5 */
+    }
     if (id <= 0) {
         mem3_note_dropped(ctx, h);
         return;
@@ -783,12 +839,17 @@ void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h) {
  * print(s)` беше heap-use-after-free, който checker-ът приемаше (ASan го
  * потвърди). Същата region-tagging машина като MEM-3, но за is_world —
  * без arena_freed_ids и без is_arena алиас-логиката (световете не са арени). */
-void mem3_free_world(CheckCtx *ctx, EnvEntry *h) {
+void mem3_free_world(CheckCtx *ctx, EnvEntry *h, SrcPos pos) {
     if (!h) return;
     int id = h->arena_id;
     mem3_note_dropped(ctx, h);
     if (id <= 0) return;
     mem3_invalidate_region(ctx, id);   /* заеманите от региона низове */
+    {
+        char what[96];
+        snprintf(what, sizeof what, "света '%s', който се освобождава тук", h->name);
+        mem3_report_tainted(ctx, id, pos, what);   /* W3.5: изтекли през контейнер */
+    }
     for (int d = 0; d < ctx->depth; d++) {
         EnvScope *s = &ctx->scopes[d];
         for (int i = 0; i < s->count; i++) {
@@ -897,6 +958,15 @@ int region_of_expr(CheckCtx *ctx, Node *n) {
                 EnvEntry *h = ck_env_find(ctx, n->args.data[0]->name);
                 return (h && h->is_world && h->arena_id > 0) ? h->arena_id : 0;
             }
+            /* W3.5: `vec_get(v, i)` върща ЗАЕМАНATA стойност, ако контейнерът
+             * е замърсен — регионът се предава нататък, за да може
+             * mem3_invalidate_region да я убие при free (и `let s2 = vec_get(…)`
+             * да е следена локална, не невидимо копие). */
+            if (n->callee && n->callee->kind == NODE_IDENT && n->args.len >= 1 &&
+                (strcmp(n->callee->name, "vec_get") == 0 ||
+                 strcmp(n->callee->name, "vec_get_str") == 0 ||
+                 strcmp(n->callee->name, "map_get") == 0))
+                return mem3_container_region(ctx, n->args.data[0]);
             if (n->callee && n->callee->kind == NODE_IDENT &&
                 strcmp(n->callee->name, "arena_alloc") == 0 &&
                 n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT) {
@@ -1122,6 +1192,15 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
      * копирано от източника по-горе — заеманията са за РЕГИОНА, не за името. */
     if (pe->is_world && pe->arena_id == 0)
         pe->arena_id = ++ctx->next_arena_id;
+    /* W3.5: замърсяването на контейнер се наследява от алиас (`let b = v` —
+     * иначе висящите елементи минават през новото име невидимо) и се чисти при
+     * всяка друга инициализация (`v = vec_new()`). */
+    pe->taint_n = 0;
+    if (init->kind == NODE_IDENT) {
+        EnvEntry *src = ck_env_find(ctx, init->name);
+        for (int i = 0; src && i < src->taint_n && pe->taint_n < W35_TAINT_MAX; i++)
+            pe->taint[pe->taint_n++] = src->taint[i];
+    }
 }
 
 /* MEM-2: drop-join машинерия — споделена от if/else, match и catch.

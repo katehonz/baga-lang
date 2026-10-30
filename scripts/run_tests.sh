@@ -1376,6 +1376,86 @@ else
 	exit 1
 fi
 
+echo "=== W3.5 заемана стойност, която изтича в контейнер (висящ указател след free) ==="
+# Преди W3.5 това минаваше тихо, а ASan даваше heap-use-after-free при четене на
+# елемента след world_free: контейнерът живее в bump арената и надживява региона.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w, v, 0))\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w35_vec.baga
+RC=0
+run --check /tmp/baga_w35_vec.baga > /tmp/baga_w35_vec_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "държи заемана стойност от света" /tmp/baga_w35_vec_out.txt; then
+	echo "OK: заеман низ във Vec надживява света — compile грешка (ASan: heap-use-after-free)"
+else
+	echo "FAIL: vec_push със заеман низ + world_free трябваше да е грешка"
+	cat /tmp/baga_w35_vec_out.txt
+	exit 1
+fi
+# Същото през Map (стойността, не ключът).
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let m = map_new()\n    map_set(m, 1, wvec_get_str(w, v, 0))\n    world_free(w)\n    print(map_get(m, 1))\n}\n' > /tmp/baga_w35_map.baga
+RC=0
+run --check /tmp/baga_w35_map.baga > /tmp/baga_w35_map_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'm' държи заемана стойност" /tmp/baga_w35_map_out.txt; then
+	echo "OK: заеман низ в Map — същата грешка (map_set е sink като vec_push)"
+else
+	echo "FAIL: map_set със заеман низ + world_free трябваше да е грешка"
+	cat /tmp/baga_w35_map_out.txt
+	exit 1
+fi
+# Арените са същият клас: payload от arena_alloc, записан във вектор.
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 8)\n    let out = vec_new()\n    vec_push(out, p)\n    arena_free(a)\n    print(i64_to_str(vec_get(out, 0)))\n}\n' > /tmp/baga_w35_arena.baga
+RC=0
+run --check /tmp/baga_w35_arena.baga > /tmp/baga_w35_arena_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "държи заемана стойност от арената" /tmp/baga_w35_arena_out.txt; then
+	echo "OK: payload от арена във Vec + arena_free — същата грешка (регионите са едно пространство)"
+else
+	echo "FAIL: arena payload във вектор след arena_free трябваше да е грешка"
+	cat /tmp/baga_w35_arena_out.txt
+	exit 1
+fi
+# W3.2 блок: свободата е ИНЖЕКТИРАНА, но изтичането е същото.
+printf 'fn main() {\n    let out = vec_new()\n    world g {\n        let v = wvec_new(g)\n        wvec_push_str(g, v, "hi")\n        vec_push(out, wvec_get_str(g, v, 0))\n    }\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w35_block.baga
+RC=0
+run --check /tmp/baga_w35_block.baga > /tmp/baga_w35_block_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "държи заемана стойност от света 'g'" /tmp/baga_w35_block_out.txt; then
+	echo "OK: изтичане през world g { … } — авто-free-ът се хваща като явен"
+else
+	echo "FAIL: world блок с изтичане в контейнер трябваше да е грешка"
+	cat /tmp/baga_w35_block_out.txt
+	exit 1
+fi
+# Четене от замърсен контейнер ражда СЛЕДЕНА локална (region_of_expr през vec_get).
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w, v, 0))\n    let s2 = vec_get(out, 0)\n    world_free(w)\n    print(s2)\n}\n' > /tmp/baga_w35_read.baga
+RC=0
+run --check /tmp/baga_w35_read.baga > /tmp/baga_w35_read_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "използване на 's2' след free" /tmp/baga_w35_read_out.txt; then
+	echo "OK: стойност, изчетена от замърсен контейнер, умира със света (MEM-3)"
+else
+	echo "FAIL: vec_get от замърсен контейнер трябваше да е следена заемана стойност"
+	cat /tmp/baga_w35_read_out.txt
+	exit 1
+fi
+# Легалните изходи: копие преди push, drop на контейнера преди free, без free.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    vec_push(out, concat(wvec_get_str(w, v, 0), ""))\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w35_copy.baga
+if run /tmp/baga_w35_copy.baga 2>&1 | grep -qx "hi"; then
+	echo "OK: копирана стойност (concat) надживява света — легално и работи"
+else
+	echo "FAIL: копието трябваше да е легално и да се чете след world_free"
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w, v, 0))\n    drop(out)\n    world_free(w)\n}\n' > /tmp/baga_w35_drop.baga
+if run --check /tmp/baga_w35_drop.baga > /tmp/baga_w35_drop_out.txt 2>&1; then
+	echo "OK: drop(out) преди world_free — легален изход (мъртъв контейнер не се обвинява)"
+else
+	echo "FAIL: drop преди free трябваше да минава"
+	cat /tmp/baga_w35_drop_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w, v, 0))\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w35_nofree.baga
+if run /tmp/baga_w35_nofree.baga 2>&1 | grep -qx "hi"; then
+	echo "OK: без free нищо не увисва — заемането в контейнер е легално докато светът живее"
+else
+	echo "FAIL: без world_free програмата трябваше да работи"
+	exit 1
+fi
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

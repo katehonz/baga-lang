@@ -92,5 +92,18 @@ fn main() {
     check("str_region_source_intact", wvec_get_str(w5, va, 0) == "region-string-payload")
     world_free(w5)
 
+    // W3.5 регресия: заеман низ, КОПИРАН в bump-вектор, надживява света.
+    // Некопираното `vec_push(out, wvec_get_str(w, …))` вече е compile грешка —
+    // векторът надживява региона и елементът му става висящ указател (ASan:
+    // heap-use-after-free при четене след world_free). Копието е легалният път.
+    let w6 = world_new()
+    let vc = wvec_new(w6)
+    wvec_push_str(w6, vc, "overlives-the-world")
+    let out = vec_new()
+    vec_push(out, concat(wvec_get_str(w6, vc, 0), ""))
+    world_free(w6)
+    check("borrowed_copy_outlives_world", vec_get(out, 0) == "overlives-the-world")
+    drop(out)
+
     print("wvec_test: all passed")
 }

@@ -1399,6 +1399,14 @@ invalidates nothing:
   return the world with `return g` and a spec guarantee); a value leaving the
   block is evaluated before the free, but a BORROWED value (string/bytes from
   the region) cannot escape — copy it first (`concat(s, "")`).
+- A borrowed value cannot outlive its world/arena through a **container** either
+  (W3.5): `vec_push(out, wvec_get_str(w, v, 0))` + `world_free(w)` is a compile
+  error — that element of `out` would be a dangling pointer. Before this it was a
+  heap-use-after-free that ASan caught while the plain build "worked" (the freed
+  region still held the bytes). Ways out: copy before storing (`concat(s, "")`),
+  `drop(out)` before the free, or don't free at all. Same for `map_set` and for
+  `arena_alloc`/`arena_free`; reading from a tainted container yields a tracked
+  local that dies with the region too.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 
