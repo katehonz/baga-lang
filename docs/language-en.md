@@ -1393,6 +1393,12 @@ invalidates nothing:
   string/bytes flowing through match/if branches keeps its region and dies
   with the world. `return match { … => g }` inside `world g { … }` moves
   ownership out, like `return g`.
+- Traps around `world g { … }` (W3.4, with clear diagnostics): the block frees
+  its world automatically — a manual `world_free(g)` inside is an error; the
+  block is a statement, not a value (`let x = world g { … }` is an error —
+  return the world with `return g` and a spec guarantee); a value leaving the
+  block is evaluated before the free, but a BORROWED value (string/bytes from
+  the region) cannot escape — copy it first (`concat(s, "")`).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

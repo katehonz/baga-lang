@@ -19,6 +19,45 @@
  * leak, не UB); ръчен world_free(g) в блока е compile грешка (двоен free). */
 static int w32_ctr = 0;
 
+/* W3.4: ръчен world_free(<name>) в world <name> { … } е грешка — блокът го
+ * освобождава автоматично; старата диагностика („използване след free") беше
+ * подвеждаща, защото потребителят е написал ЕДИН free. */
+static void w32_check_free(Node *n, const char *name, Parser *p) {
+    if (!n) return;
+    switch (n->kind) {
+    case NODE_CALL:
+        if (n->callee && n->callee->kind == NODE_IDENT && n->callee->name &&
+            strcmp(n->callee->name, "world_free") == 0 &&
+            n->args.len == 1 && n->args.data[0]->kind == NODE_IDENT &&
+            n->args.data[0]->name && strcmp(n->args.data[0]->name, name) == 0)
+            parser_error_at(p, n->pos,
+                "world %s { … } се освобождава автоматично при изхода — махни "
+                "world_free(%s) (за изрично управление ползвай world_new/"
+                "world_free извън блока)", name, name);
+        for (int i = 0; i < n->args.len; i++) w32_check_free(n->args.data[i], name, p);
+        return;
+    case NODE_BINARY: w32_check_free(n->left, name, p); w32_check_free(n->right, name, p); return;
+    case NODE_UNARY: w32_check_free(n->operand, name, p); return;
+    case NODE_IF: w32_check_free(n->cond, name, p); w32_check_free(n->then_br, name, p); w32_check_free(n->else_br, name, p); return;
+    case NODE_BLOCK:
+        for (int i = 0; i < n->stmts.len; i++) w32_check_free(n->stmts.data[i], name, p);
+        return;
+    case NODE_LET: w32_check_free(n->let_init, name, p); return;
+    case NODE_ASSIGN: w32_check_free(n->assign_target, name, p); w32_check_free(n->assign_val, name, p); return;
+    case NODE_RETURN: w32_check_free(n->ret_val, name, p); return;
+    case NODE_WHILE: w32_check_free(n->while_cond, name, p); w32_check_free(n->while_body, name, p); return;
+    case NODE_FOR: w32_check_free(n->for_iter, name, p); w32_check_free(n->for_body, name, p); return;
+    case NODE_EXPR_STMT: w32_check_free(n->expr, name, p); return;
+    case NODE_RAISE: w32_check_free(n->raise_payload, name, p); return;
+    case NODE_MATCH:
+        w32_check_free(n->match_expr, name, p);
+        for (int i = 0; i < n->match_arms.len; i++) w32_check_free(n->match_arms.data[i], name, p);
+        return;
+    case NODE_MATCH_ARM: w32_check_free(n->arm_pattern, name, p); w32_check_free(n->arm_body, name, p); return;
+    default: return;
+    }
+}
+
 static Node *w32_ident(const char *name, SrcPos pos) {
     Node *n = node_alloc(NODE_IDENT, pos);
     n->name = strdup(name);
@@ -309,6 +348,7 @@ Node *parse_block(Parser *p) {
             advance(p);
             char *wname = expect_ident(p);
             Node *body = parse_block(p);
+            w32_check_free(body, wname, p);   /* W3.4: ръчен free = грешка */
             vec_push(block->stmts, w32_lower(&body->stmts, wname, wpos));
             free(wname);
             node_free(body);
@@ -334,6 +374,28 @@ Node *parse_stmt(Parser *p) {
             type = parse_type(p);
         }
         expect(p, TOK_ASSIGN);
+        /* W3.4: `let x = world g { … }` — блокът притежава свят, не е стойност;
+         * поглъщаме го, за да няма каскада от грешки */
+        if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "world") == 0 &&
+            p->pos + 2 < p->len && p->tokens[p->pos + 1].kind == TOK_IDENT &&
+            p->tokens[p->pos + 2].kind == TOK_LBRACE) {
+            SrcPos wpos2 = cur(p)->pos;
+            parser_error_at(p, wpos2,
+                "world %s { … } притежава свят — не е стойност за let; ползвай го "
+                "като изявление, а ако светът трябва да излезе като резултат — "
+                "`return %s` (с гаранция в spec-а)",
+                p->tokens[p->pos + 1].text ? p->tokens[p->pos + 1].text : "g",
+                p->tokens[p->pos + 1].text ? p->tokens[p->pos + 1].text : "g");
+            advance(p);
+            free(expect_ident(p));
+            Node *sw = parse_block(p);
+            node_free(sw);
+            Node *bad = node_alloc(NODE_INT_LIT, wpos2);
+            bad->int_val = 0;
+            Node *n0 = node_alloc(NODE_LET, pos);
+            n0->let_name = name; n0->is_mut = is_mut; n0->let_type = type; n0->let_init = bad;
+            return n0;
+        }
         Node *init = parse_expr(p);
         /* optional semicolon */
         match(p, TOK_SEMICOLON);

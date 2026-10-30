@@ -235,6 +235,23 @@ void parser_error(Parser *p, const char *fmt, ...) {
     va_end(ap);
 }
 
+/* W3.4: грешка с позиция на ВЪЗЕЛ (не на текущия token) — за диагностики,
+ * които гледат цяло поддърво (като world блок) */
+void parser_error_at(Parser *p, SrcPos pos, const char *fmt, ...) {
+    if (p->n_errors >= BAGA_MAX_ERRORS) return;
+    int k = p->n_errors++;
+    char *e = p->errors[k];
+    p->error_pos[k].line = pos.line;
+    p->error_pos[k].col = pos.col;
+    p->error_pos[k].file = p->filename;
+    int off = snprintf(e, 256, "%s:%d:%d: ", p->filename, pos.line, pos.col);
+    p->error_off[k] = off > 255 ? 0 : off;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(e + off, 256 - (size_t)off, fmt, ap);
+    va_end(ap);
+}
+
 Token *expect(Parser *p, TokenKind k) {
     if (check(p, k)) return advance(p);
     parser_error(p, "очаквах '%s', получих '%s'",

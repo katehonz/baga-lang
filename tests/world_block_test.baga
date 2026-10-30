@@ -107,6 +107,17 @@ fn main() -> i64 {
     check("return_match_world", world_state(wr) == 1 && wvec_get(wr, 1, 0) == 3)
     world_free(wr)
 
+    // 9. Свят на итерация в for — всеки завърт си прави и освобождава свят.
+    let mut acc: i64 = 0
+    for i in 0..3 {
+        world gw {
+            let v = wvec_new(gw)
+            wvec_push(gw, v, i)
+            acc = acc + wvec_get(gw, v, 0)
+        }
+    }
+    check("per_iteration_worlds", acc == 3)
+
     print("world_block_test: all passed")
     return 0
 }

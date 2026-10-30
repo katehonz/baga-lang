@@ -1151,8 +1151,8 @@ fi
 printf 'fn main() {\n    world g {\n        world_free(g)\n    }\n}\n' > /tmp/baga_w32_dfree.baga
 RC=0
 run --check /tmp/baga_w32_dfree.baga > /tmp/baga_w32_dfree_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w32_dfree_out.txt; then
-	echo "OK: ръчен world_free в блока — compile грешка (двоен free)"
+if [[ $RC -ne 0 ]] && grep -q "се освобождава автоматично" /tmp/baga_w32_dfree_out.txt; then
+	echo "OK: ръчен world_free в блока — compile грешка (авто-free)"
 else
 	echo "FAIL: ръчният free в блока трябваше да е грешка"
 	cat /tmp/baga_w32_dfree_out.txt
@@ -1163,7 +1163,7 @@ fi
 printf 'fn f() -> str {\n    world g {\n        let v = wvec_new(g)\n        wvec_push_str(g, v, "hi")\n        return wvec_get_str(g, v, 0)\n    }\n}\n\nfn main() {\n    print(f())\n}\n' > /tmp/baga_w32_borrow.baga
 RC=0
 run --check /tmp/baga_w32_borrow.baga > /tmp/baga_w32_borrow_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w32_borrow_out.txt; then
+if [[ $RC -ne 0 ]] && grep -q "използва след освобождаването" /tmp/baga_w32_borrow_out.txt; then
 	echo "OK: заеман низ напуска блока — compile грешка"
 else
 	echo "FAIL: заеманият низ трябваше да е грешка"
@@ -1279,6 +1279,52 @@ if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w33_m6_out.txt; then
 else
 	echo "FAIL: заеман payload през match трябваше да умре със света"
 	cat /tmp/baga_w33_m6_out.txt
+	exit 1
+fi
+
+echo "=== W3.4 диагностика около world блоковете ==="
+# Ръчен world_free в блока (вкл. от вложен блок) — ясно послание вместо
+# подвеждащото „използване след free" (потребителят е написал един free).
+printf 'fn main() {\n    world g {\n        world_free(g)\n    }\n}\n' > /tmp/baga_w34_free.baga
+RC=0
+run --check /tmp/baga_w34_free.baga > /tmp/baga_w34_free_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "се освобождава автоматично" /tmp/baga_w34_free_out.txt; then
+	echo "OK: ръчен world_free в блока — ясна диагностика"
+else
+	echo "FAIL: ръчният free трябваше да обяснява авто-free-а"
+	cat /tmp/baga_w34_free_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    world g {\n        world h {\n            world_free(g)\n        }\n    }\n}\n' > /tmp/baga_w34_free2.baga
+RC=0
+run --check /tmp/baga_w34_free2.baga > /tmp/baga_w34_free2_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "се освобождава автоматично" /tmp/baga_w34_free2_out.txt; then
+	echo "OK: ръчен free от вложен блок — същата диагностика"
+else
+	echo "FAIL: free-ът от вложен блок трябваше да се хване"
+	cat /tmp/baga_w34_free2_out.txt
+	exit 1
+fi
+# Блокът е изявление, не стойност за let.
+printf 'fn main() {\n    let x = world g {\n        wvec_new(g)\n    }\n    print(x)\n}\n' > /tmp/baga_w34_let.baga
+RC=0
+run --check /tmp/baga_w34_let.baga > /tmp/baga_w34_let_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "не е стойност за let" /tmp/baga_w34_let_out.txt; then
+	echo "OK: блок като let-стойност — ясна диагностика"
+else
+	echo "FAIL: let с world блок трябваше да обяснява, че не е стойност"
+	cat /tmp/baga_w34_let_out.txt
+	exit 1
+fi
+# Заемана стойност напуска блока — обяснение какво да се направи (копие).
+printf 'fn f() -> str {\n    world g {\n        let v = wvec_new(g)\n        wvec_push_str(g, v, "hi")\n        return wvec_get_str(g, v, 0)\n    }\n}\n\nfn main() {\n    print(f())\n}\n' > /tmp/baga_w34_borrow.baga
+RC=0
+run --check /tmp/baga_w34_borrow.baga > /tmp/baga_w34_borrow_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "стойност от world блок се използва след освобождаването" /tmp/baga_w34_borrow_out.txt; then
+	echo "OK: заемана стойност напуска блока — обяснение със съвет за копие"
+else
+	echo "FAIL: изтеклата стойност трябваше да носи обяснение"
+	cat /tmp/baga_w34_borrow_out.txt
 	exit 1
 fi
 

@@ -69,9 +69,18 @@ Type *infer(CheckCtx *ctx, Node *n) {
             if (vt) {
                 /* MEM-2: use-after-drop (error recovery — продължаваме проверката) */
                 EnvEntry *e = ck_env_find(ctx, n->name);
-                if (e && e->dropped)
-                    check_error(ctx, n->pos,
-                        "използване на '%s' след free", n->name);
+                if (e && e->dropped) {
+                    /* W3.4: temp-ът от world блок носи вътрешно име — кажи
+                     * на човека какво всъщност е умряло и какво да направи */
+                    if (strncmp(n->name, "__w32", 5) == 0)
+                        check_error(ctx, n->pos,
+                            "стойност от world блок се използва след освобождаването "
+                            "на блока — копирай я преди края на блока "
+                            "(например concat(s, \"\") за низ)");
+                    else
+                        check_error(ctx, n->pos,
+                            "използване на '%s' след free", n->name);
+                }
                 t = vt; break;
             }
             /* check function registry */

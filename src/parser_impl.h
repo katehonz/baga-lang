@@ -20,6 +20,7 @@ Token *advance(Parser *p);   /* 203 */
 int check(Parser *p, TokenKind k);   /* 209 */
 int match(Parser *p, TokenKind k);   /* 213 */
 void parser_error(Parser *p, const char *fmt, ...);   /* 218 */
+void parser_error_at(Parser *p, SrcPos pos, const char *fmt, ...);   /* W3.4 */
 Token *expect(Parser *p, TokenKind k);   /* 229 */
 char *expect_ident(Parser *p);   /* 236 */
 Node *parse_type(Parser *p);   /* 249 */
