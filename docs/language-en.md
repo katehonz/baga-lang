@@ -1386,6 +1386,13 @@ invalidates nothing:
   compile errors through the whole chain (frozen is inherited only when every
   branch carries a frozen world). Side fix: if-expressions as values now
   compile (`let x = if c { 1 } else { 2 }`).
+- W3.3: region inference through match — `let w = match x { … }` is a world
+  when every arm carries a world and the match is exhaustive (a wildcard arm,
+  or a sum enum with all variants covered). Double free and mutating a frozen
+  world are compile errors; maybe-frozen arms are not accused. A borrowed
+  string/bytes flowing through match/if branches keeps its region and dies
+  with the world. `return match { … => g }` inside `world g { … }` moves
+  ownership out, like `return g`.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

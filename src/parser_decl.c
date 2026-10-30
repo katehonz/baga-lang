@@ -75,6 +75,31 @@ static int w32_uses(Node *e, const char *name) {
     }
 }
 
+/* дали изразът ВРЪЩА самия name по всеки път — `return g` (директно или през
+ * match/if, чиито клони са g) изнася собствеността, free не се инжектира */
+static int w32_yields_ident(Node *e, const char *name) {
+    if (!e) return 0;
+    if (e->kind == NODE_IDENT) return e->name && strcmp(e->name, name) == 0;
+    if (e->kind == NODE_MATCH) {
+        if (e->match_arms.len == 0) return 0;
+        for (int i = 0; i < e->match_arms.len; i++) {
+            Node *arm = e->match_arms.data[i];
+            if (!arm || arm->kind != NODE_MATCH_ARM) return 0;
+            Node *v = NULL;
+            if (arm->arm_body) {
+                if (arm->arm_body->kind == NODE_BLOCK && arm->arm_body->stmts.len > 0) {
+                    Node *last = arm->arm_body->stmts.data[arm->arm_body->stmts.len - 1];
+                    v = last->kind == NODE_RETURN ? last->ret_val
+                      : last->kind == NODE_EXPR_STMT ? last->expr : NULL;
+                } else v = arm->arm_body;
+            }
+            if (!w32_yields_ident(v, name)) return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 /* едно изявление → нула или повече, с инжектирани free-ове (възлите се
  * ПРЕМЕСТВАТ, не се клонират) */
 static void w32_inject_stmt(NodeVec *dst, Node *s, const char *name, SrcPos pos, int in_loop);
@@ -104,9 +129,9 @@ static void w32_inject_stmt(NodeVec *dst, Node *s, const char *name, SrcPos pos,
     if (!s) return;
     switch (s->kind) {
     case NODE_RETURN: {
-        if (s->ret_val && s->ret_val->kind == NODE_IDENT &&
-            s->ret_val->name && strcmp(s->ret_val->name, name) == 0) {
-            vec_push(*dst, s);   /* return g — собствеността излиза */
+        if (w32_yields_ident(s->ret_val, name)) {
+            vec_push(*dst, s);   /* return g (директно или през match/if) —
+                                  * собствеността излиза */
             return;
         }
         if (s->ret_val && w32_uses(s->ret_val, name)) {
@@ -190,10 +215,21 @@ static void w32_inject_stmt(NodeVec *dst, Node *s, const char *name, SrcPos pos,
         for (int i = 0; i < s->match_arms.len; i++) {
             Node *a = s->match_arms.data[i];
             if (!a || a->kind != NODE_MATCH_ARM || !a->arm_body) continue;
+            if (a->arm_body->kind != NODE_BLOCK) continue;
             NodeVec nv = {0};
-            w32_inject_vec(&nv, &a->arm_body->stmts, name, pos, in_loop);
-            free(a->arm_body->stmts.data);
-            a->arm_body->stmts = nv;
+            NodeVec *bs = &a->arm_body->stmts;
+            for (int j = 0; j < bs->len; j++) {
+                Node *x = bs->data[j];
+                /* последният return в рамо е СТОЙНОСТ на match (синтетичният
+                 * `return e` на bare-рамо), не изход от функцията */
+                if (x->kind == NODE_RETURN && j == bs->len - 1) {
+                    vec_push(nv, x);
+                } else {
+                    w32_inject_stmt(&nv, x, name, pos, in_loop);
+                }
+            }
+            free(bs->data);
+            *bs = nv;
         }
         vec_push(*dst, s);
         return;

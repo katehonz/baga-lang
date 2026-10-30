@@ -856,12 +856,33 @@ EnvEntry *ck_env_find(CheckCtx *ctx, const char *name) {
 /* MEM-3: от коя арена идва изразът (payload указател)? 0 = неизвестно.
  * Очевидни форми — ident с region_id, arena_alloc(a, n), p±n, if с
  * еднакъв id в двата клона. Несигурно → 0 (leak-safe). */
+static Node *expr_arm_value(Node *body);   /* W3.2/W3.3 */
 int region_of_expr(CheckCtx *ctx, Node *n) {
     if (!n) return 0;
     switch (n->kind) {
         case NODE_IDENT: {
             EnvEntry *e = ck_env_find(ctx, n->name);
             return e ? e->region_id : 0;
+        }
+        /* W3.3: заеман payload през if/match клони — регионът се запазва,
+         * когато ВСИЧКИ клони носят стойност от един и същ регион */
+        case NODE_IF: {
+            if (!n->then_br || !n->else_br) return 0;
+            int r1 = region_of_expr(ctx, expr_arm_value(n->then_br));
+            int r2 = region_of_expr(ctx, expr_arm_value(n->else_br));
+            return (r1 && r1 == r2) ? r1 : 0;
+        }
+        case NODE_MATCH: {
+            if (n->match_arms.len == 0) return 0;
+            int rr = -1;
+            for (int i = 0; i < n->match_arms.len; i++) {
+                Node *arm = n->match_arms.data[i];
+                if (!arm || arm->kind != NODE_MATCH_ARM) return 0;
+                int ar = region_of_expr(ctx, expr_arm_value(arm->arm_body));
+                if (rr < 0) rr = ar;
+                else if (rr != ar) return 0;
+            }
+            return rr > 0 ? rr : 0;
         }
         case NODE_CALL:
             /* W2.2: wvec_get_str(w, …) е ЗАЕМАН низ от региона на света —
@@ -915,14 +936,11 @@ int region_of_expr(CheckCtx *ctx, Node *n) {
         }
         case NODE_EXPR_STMT:
             return region_of_expr(ctx, n->expr);
-        case NODE_BLOCK:
-            if (n->stmts.len == 0) return 0;
-            return region_of_expr(ctx, n->stmts.data[n->stmts.len - 1]);
-        case NODE_IF: {
-            if (!n->else_br) return 0;
-            int th = region_of_expr(ctx, n->then_br);
-            int el = region_of_expr(ctx, n->else_br);
-            return (th && th == el) ? th : 0;
+        case NODE_BLOCK: {
+            /* стойността на блока е последният му израз (или синтетичният
+             * `return e` на match-рамо) */
+            Node *v = expr_arm_value(n);
+            return v ? region_of_expr(ctx, v) : 0;
         }
         default:
             return 0;
@@ -958,6 +976,18 @@ static int expr_arena_id(CheckCtx *ctx, Node *n) {
     return lookup_arena_id(ctx, n);
 }
 
+/* W3.2/W3.3: стойността на клон/рамо — последният израз на блока; при match
+ * синтетичният `return e` (bare-рамо) също Е стойност на рамото. */
+static Node *expr_arm_value(Node *body) {
+    if (!body) return NULL;
+    if (body->kind != NODE_BLOCK) return body;
+    if (body->stmts.len == 0) return NULL;
+    Node *last = body->stmts.data[body->stmts.len - 1];
+    if (last->kind == NODE_RETURN) return last->ret_val;
+    if (last->kind == NODE_EXPR_STMT) return last->expr;
+    return NULL;
+}
+
 /* W1.6: дали изразът ражда world handle — world_new/world_load или алиас */
 static int expr_is_world(CheckCtx *ctx, Node *n) {
     if (!n) return 0;
@@ -983,14 +1013,30 @@ static int expr_is_world(CheckCtx *ctx, Node *n) {
      * (стойността на блок-рамо е последният му израз). */
     if (n->kind == NODE_IF) {
         if (!n->then_br || !n->else_br) return 0;
-        Node *tv = n->then_br->kind == NODE_BLOCK
-            ? (n->then_br->stmts.len > 0 ? n->then_br->stmts.data[n->then_br->stmts.len - 1] : NULL)
-            : n->then_br;
-        Node *ev = n->else_br->kind == NODE_BLOCK
-            ? (n->else_br->stmts.len > 0 ? n->else_br->stmts.data[n->else_br->stmts.len - 1] : NULL)
-            : n->else_br;
-        if (!tv || !ev || tv->kind != NODE_EXPR_STMT || ev->kind != NODE_EXPR_STMT) return 0;
-        return expr_is_world(ctx, tv->expr) && expr_is_world(ctx, ev->expr);
+        Node *tv = expr_arm_value(n->then_br);
+        Node *ev = expr_arm_value(n->else_br);
+        if (!tv || !ev) return 0;
+        return expr_is_world(ctx, tv) && expr_is_world(ctx, ev);
+    }
+    /* W3.3: match-израз с world стойности във всички рамена (стойността на
+     * рамо е синтетичният `return e` или последният израз в блока). */
+    if (n->kind == NODE_MATCH) {
+        if (n->match_arms.len == 0) return 0;
+        int has_wild = 0;
+        for (int i = 0; i < n->match_arms.len; i++) {
+            Node *arm = n->match_arms.data[i];
+            if (!arm || arm->kind != NODE_MATCH_ARM) return 0;
+            if (!arm->arm_pattern) has_wild = 1;
+            Node *v = expr_arm_value(arm->arm_body);
+            if (!v || !expr_is_world(ctx, v)) return 0;
+        }
+        /* изчерпателност: wildcard или enum-scrutinee (checker-ът налага
+         * пълнота на вариантите — иначе има път без стойност) */
+        if (!has_wild) {
+            Type *st = n->match_expr ? n->match_expr->type : NULL;
+            if (!st || st->kind != TYPE_ENUM) return 0;
+        }
+        return 1;
     }
     return 0;
 }
@@ -1012,14 +1058,27 @@ static int expr_frozen_world(CheckCtx *ctx, Node *n) {
     }
     if (n->kind == NODE_IF) {
         if (!n->then_br || !n->else_br) return 0;
-        Node *tv = n->then_br->kind == NODE_BLOCK
-            ? (n->then_br->stmts.len > 0 ? n->then_br->stmts.data[n->then_br->stmts.len - 1] : NULL)
-            : n->then_br;
-        Node *ev = n->else_br->kind == NODE_BLOCK
-            ? (n->else_br->stmts.len > 0 ? n->else_br->stmts.data[n->else_br->stmts.len - 1] : NULL)
-            : n->else_br;
-        if (!tv || !ev || tv->kind != NODE_EXPR_STMT || ev->kind != NODE_EXPR_STMT) return 0;
-        return expr_frozen_world(ctx, tv->expr) && expr_frozen_world(ctx, ev->expr);
+        Node *tv = expr_arm_value(n->then_br);
+        Node *ev = expr_arm_value(n->else_br);
+        if (!tv || !ev) return 0;
+        return expr_frozen_world(ctx, tv) && expr_frozen_world(ctx, ev);
+    }
+    /* W3.3: match — замразен само при всички рамена замразени (freeze-join) */
+    if (n->kind == NODE_MATCH) {
+        if (n->match_arms.len == 0) return 0;
+        int has_wild = 0;
+        for (int i = 0; i < n->match_arms.len; i++) {
+            Node *arm = n->match_arms.data[i];
+            if (!arm || arm->kind != NODE_MATCH_ARM) return 0;
+            if (!arm->arm_pattern) has_wild = 1;
+            Node *v = expr_arm_value(arm->arm_body);
+            if (!v || !expr_frozen_world(ctx, v)) return 0;
+        }
+        if (!has_wild) {
+            Type *st = n->match_expr ? n->match_expr->type : NULL;
+            if (!st || st->kind != TYPE_ENUM) return 0;
+        }
+        return 1;
     }
     return 0;
 }

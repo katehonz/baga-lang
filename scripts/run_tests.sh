@@ -1214,6 +1214,74 @@ else
 	exit 1
 fi
 
+echo "=== W3.3 region inference през match ==="
+# Match с world стойности във всички рамена (и wildcard, и изчерпателен sum
+# enum) е свят — двоен free е compile грешка; maybe-frozen рамена мълчат.
+printf 'fn main() {\n    let n: i64 = 1\n    let w = match n {\n        0 => world_new(),\n        _ => world_new(),\n    }\n    world_free(w)\n    world_free(w)\n}\n' > /tmp/baga_w33_m1.baga
+RC=0
+run --check /tmp/baga_w33_m1.baga > /tmp/baga_w33_m1_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w33_m1_out.txt; then
+	echo "OK: двоен free през match (wildcard) — compile грешка"
+else
+	echo "FAIL: match с world рамена трябваше да е свят"
+	cat /tmp/baga_w33_m1_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let n: i64 = 1\n    let w1 = world_new()\n    world_freeze(w1)\n    let w2 = world_new()\n    world_freeze(w2)\n    let w = match n {\n        0 => w1,\n        _ => w2,\n    }\n    wvec_new(w)\n}\n' > /tmp/baga_w33_m2.baga
+RC=0
+run --check /tmp/baga_w33_m2.baga > /tmp/baga_w33_m2_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_w33_m2_out.txt; then
+	echo "OK: мутатор върху замразен през match — compile грешка (всички рамена)"
+else
+	echo "FAIL: замразен през match трябваше да се вижда"
+	cat /tmp/baga_w33_m2_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let n: i64 = 1\n    let w1 = world_new()\n    world_freeze(w1)\n    let w2 = world_new()\n    let w = match n {\n        0 => w1,\n        _ => w2,\n    }\n    wvec_new(w)\n    print("ok")\n}\n' > /tmp/baga_w33_m3.baga
+RC=0
+run --check /tmp/baga_w33_m3.baga > /tmp/baga_w33_m3_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "ok" /tmp/baga_w33_m3_out.txt; then
+	echo "OK: maybe-frozen през match — без измислена грешка"
+else
+	echo "FAIL: maybe-frozen match рамена не бива да се обвиняват"
+	cat /tmp/baga_w33_m3_out.txt
+	exit 1
+fi
+# Изчерпателен sum enum (без wildcard) — checker-ът налага пълнотата, значи
+# всеки път носи стойност → свят. Обикновен match по i64 без wildcard НЕ е
+# проследен (има път без стойност — консервативно мълчи).
+printf 'enum Фигура {\n    Кръг(i64),\n    Квадрат(i64),\n}\n\nfn main() {\n    let f = Фигура::Кръг(5)\n    let w = match f {\n        Фигура::Кръг(r) => world_new(),\n        Фигура::Квадрат(s) => world_new(),\n    }\n    world_free(w)\n    world_free(w)\n}\n' > /tmp/baga_w33_m4.baga
+RC=0
+run --check /tmp/baga_w33_m4.baga > /tmp/baga_w33_m4_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w33_m4_out.txt; then
+	echo "OK: изчерпателен sum-enum match — свят (двоен free се хваща)"
+else
+	echo "FAIL: изчерпателният enum match трябваше да е свят"
+	cat /tmp/baga_w33_m4_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let n: i64 = 1\n    let w = match n {\n        0 => world_new(),\n        1 => world_new(),\n    }\n    world_free(w)\n    world_free(w)\n}\n' > /tmp/baga_w33_m5.baga
+RC=0
+run --check /tmp/baga_w33_m5.baga > /tmp/baga_w33_m5_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]]; then
+	echo "OK: match по i64 без wildcard — не се следи (път без стойност)"
+else
+	echo "FAIL: непълен match без wildcard не бива да се обвинява"
+	cat /tmp/baga_w33_m5_out.txt
+	exit 1
+fi
+# Заеман payload през match клони запазва региона си (MEM-3).
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let n: i64 = 1\n    let s = match n {\n        0 => wvec_get_str(w, v, 0),\n        _ => wvec_get_str(w, v, 0),\n    }\n    world_free(w)\n    print(s)\n}\n' > /tmp/baga_w33_m6.baga
+RC=0
+run --check /tmp/baga_w33_m6.baga > /tmp/baga_w33_m6_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "след free" /tmp/baga_w33_m6_out.txt; then
+	echo "OK: заеман низ през match — compile грешка (регионът се запазва)"
+else
+	echo "FAIL: заеман payload през match трябваше да умре със света"
+	cat /tmp/baga_w33_m6_out.txt
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

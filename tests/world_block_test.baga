@@ -25,6 +25,20 @@ fn build_frozen(n: i64) -> i64 {
     }
 }
 
+// Същото, но резултатът минава през match — `return match { … => g }` също
+// изнася собствеността (w32_yields_ident).
+fn build_match(n: i64) -> i64 {
+    world g {
+        let v = wvec_new(g)
+        wvec_push(g, v, n)
+        world_freeze(g)
+        return match n {
+            0 => g,
+            _ => g,
+        }
+    }
+}
+
 fn main() -> i64 {
     // 1. Стойност напуска блока; светът се освобождава при изхода.
     let mut out: i64 = 0
@@ -78,6 +92,20 @@ fn main() -> i64 {
     }
     world_free(wi)
     check("if_world_runs", 1 == 1)
+
+    // 7. Region inference през match: всички рамена носят свят — резултатът
+    //    е свят (двойният free е compile грешка, тук проверяваме изпълнението).
+    let wm = match n {
+        0 => world_new(),
+        _ => world_new(),
+    }
+    world_free(wm)
+    check("match_world_runs", 1 == 1)
+
+    // 8. return match { … => g } — собствеността излиза през match (без free).
+    let wr = build_match(3)
+    check("return_match_world", world_state(wr) == 1 && wvec_get(wr, 1, 0) == 3)
+    world_free(wr)
 
     print("world_block_test: all passed")
     return 0
