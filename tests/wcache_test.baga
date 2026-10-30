@@ -27,6 +27,18 @@ fn filler(w: i64) -> i64 !Par {
     return wcache_len(w)
 }
 
+// W2.13: стойност-низове под същия mutex. Работниците пишат еднакви копия за
+// ключовете си (идемпотентността остава договорът); get_str връща КОПИЕ, значи
+// конкурентен прочит не може да увисне върху payload, презаписан от друга нишка.
+fn filler_str(w: i64) -> i64 !Par {
+    let mut i = 0
+    while i < 100 {
+        wcache_set_str(w, 10000 + i, "работник-низ")
+        i = i + 1
+    }
+    return wcache_len(w)
+}
+
 fn main() -> i64 !Par {
     let w = world_new()
     let v = wvec_new(w)
@@ -65,6 +77,29 @@ fn main() -> i64 !Par {
     wcache_clear(w)
     check("clear_empties", wcache_len(w) == 0 && wcache_has(w, 0) == 0)
 
+    // W2.13: str и bytes стойности. Записът копира в слота, четенето връща
+    // КОПИЕ — значи копието преживява презапис и del (заеман указател би
+    // увиснал; кешът се мутатира и от други нишки).
+    wcache_set_str(w, 7, "име")
+    check("str_get", wcache_get_str(w, 7) == "име")
+    wcache_set_str(w, 7, "по-дълго име за презапис")
+    check("str_overwrite", wcache_get_str(w, 7) == "по-дълго име за презапис")
+    let scopy = wcache_get_str(w, 7)
+    wcache_set_str(w, 7, "трето")
+    wcache_del(w, 7)
+    check("str_copy_survives", scopy == "по-дълго име за презапис")
+    check("str_del_gone", wcache_has(w, 7) == 0)
+    let bb = bytes_new(4)
+    bytes_set(bb, 0, 65)
+    bytes_set(bb, 1, 0)
+    bytes_set(bb, 2, 66)
+    bytes_set(bb, 3, 67)
+    wcache_set_bytes(w, 8, bb)
+    let bg = wcache_get_bytes(w, 8)
+    check("bytes_len", bytes_len(bg) == 4)
+    check("bytes_embedded_nul", bytes_at(bg, 1) == 0 && bytes_at(bg, 3) == 67)
+    check("has_any_kind", wcache_has(w, 8) == 1)
+
     // Конкурентно попълване: четири работника пълнят ЕДИН замразен свят с
     // едни и същи (идемпотентни) стойности. Резултатът е детерминиран —
     // 500 ключа, стойност i*3. Без mutex-а това е data race (TSan).
@@ -72,16 +107,22 @@ fn main() -> i64 !Par {
     let h2 = go(filler, w)
     let h3 = go(filler, w)
     let h4 = go(filler, w)
+    let s1 = go(filler_str, w)
+    let s2 = go(filler_str, w)
     let r1 = join(h1)
     let r2 = join(h2)
     let r3 = join(h3)
     let r4 = join(h4)
+    let q1 = join(s1)
+    let q2 = join(s2)
     check("workers_return_len", r1 >= 500 && r2 >= 500 && r3 >= 500 && r4 >= 500)
-    check("concurrent_len", wcache_len(w) == 500)
+    check("str_workers", q1 >= 100 && q2 >= 100)
+    check("concurrent_len", wcache_len(w) == 600)
     check("concurrent_first", wcache_get(w, 0) == 0)
     check("concurrent_mid", wcache_get(w, 250) == 750)
     check("concurrent_last", wcache_get(w, 499) == 1497)
     check("concurrent_miss", wcache_has(w, 500) == 0)
+    check("concurrent_str", wcache_get_str(w, 10050) == "работник-низ")
 
     // Много ключове: растежът на таблицата (0.75 load factor) през растежи.
     let mut i = 0
@@ -89,7 +130,7 @@ fn main() -> i64 !Par {
         wcache_set(w, i + 1000, i)
         i = i + 1
     }
-    check("growth_len", wcache_len(w) == 5500)
+    check("growth_len", wcache_len(w) == 5600)
     check("growth_last", wcache_get(w, 5999) == 4999)
     check("growth_first", wcache_get(w, 1000) == 0)
 

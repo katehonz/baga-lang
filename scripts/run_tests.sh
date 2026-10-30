@@ -1029,6 +1029,54 @@ else
 	exit 1
 fi
 
+echo "=== W2.13 wcache: str/bytes стойности (scratch, копие при четене) ==="
+# Кешът пази и стойност-низове/bytes (собствени копия в слота); четенето връща
+# КОПИЕ в bump арената — преживява презапис и del, за разлика от заеман указател
+# (кешът се мутатира под mutex от няколко нишки).
+printf 'fn main() {\n    let w = world_new()\n    wcache_set_str(w, 1, "първо име")\n    let s = wcache_get_str(w, 1)\n    wcache_set_str(w, 1, "второ, много по-дълго име")\n    wcache_del(w, 1)\n    print(s)\n}\n' > /tmp/baga_wcache_copy.baga
+RC=0
+run /tmp/baga_wcache_copy.baga > /tmp/baga_wcache_copy_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "първо име" /tmp/baga_wcache_copy_out.txt; then
+	echo "OK: wcache_get_str връща копие — преживява презапис и del"
+else
+	echo "FAIL: копието от wcache_get_str трябваше да преживее презапис"
+	cat /tmp/baga_wcache_copy_out.txt
+	exit 1
+fi
+# Видът на стойността се пази: четене с несъвпадащ аксесоар е чиста грешка
+# (както при wrec полетата), а не боклук.
+printf 'fn main() {\n    let w = world_new()\n    wcache_set(w, 1, 7)\n    print(wcache_get_str(w, 1))\n}\n' > /tmp/baga_wcache_kind1.baga
+RC=0
+run /tmp/baga_wcache_kind1.baga > /tmp/baga_wcache_kind1_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "стойността не е низ" /tmp/baga_wcache_kind1_out.txt; then
+	echo "OK: wcache_get_str върху i64 стойност — чиста грешка"
+else
+	echo "FAIL: str четене на i64 стойност трябваше да е грешка"
+	cat /tmp/baga_wcache_kind1_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    wcache_set_str(w, 1, "x")\n    print(wcache_get(w, 1))\n}\n' > /tmp/baga_wcache_kind2.baga
+RC=0
+run /tmp/baga_wcache_kind2.baga > /tmp/baga_wcache_kind2_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "стойността не е i64" /tmp/baga_wcache_kind2_out.txt; then
+	echo "OK: wcache_get върху низова стойност — чиста грешка"
+else
+	echo "FAIL: i64 четене на низова стойност трябваше да е грешка"
+	cat /tmp/baga_wcache_kind2_out.txt
+	exit 1
+fi
+# Стойност-низове нямат неутрална стойност: липсващ ключ е грешка, не "".
+printf 'fn main() {\n    let w = world_new()\n    print(wcache_get_str(w, 9))\n}\n' > /tmp/baga_wcache_miss.baga
+RC=0
+run /tmp/baga_wcache_miss.baga > /tmp/baga_wcache_miss_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "липсващ ключ" /tmp/baga_wcache_miss_out.txt; then
+	echo "OK: wcache_get_str с липсващ ключ — чиста грешка, не празен низ"
+else
+	echo "FAIL: липсващ ключ при get_str трябваше да е грешка"
+	cat /tmp/baga_wcache_miss_out.txt
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

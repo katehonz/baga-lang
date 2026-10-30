@@ -268,6 +268,44 @@ fn bad_cache_after_move(n: i64) -> i64 !Par {
     return r - r
 }
 
+spec ok_cache_str_values {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W2.13: кешът носи и стойност-низове/bytes (scratch). Запис и четене върху
+// замразен свят са легални — четенето връща копие, не borrowed payload.
+fn ok_cache_str_values(n: i64) -> i64 {
+    let w = world_new()
+    world_freeze(w)
+    wcache_set_str(w, 1, "етикет")
+    let s = wcache_get_str(w, 1)
+    let l = wcache_len(w)
+    world_free(w)
+    return n - n
+}
+
+spec bad_cache_str_after_free {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// След world_free handle-ът не е твой — и стойност-низовете са обречени.
+fn bad_cache_str_after_free(n: i64) -> i64 {
+    let w = world_new()
+    if n > 0 {
+        world_free(w)
+    }
+    wcache_set_str(w, 1, "късно")
+    return n - n
+}
+
 // ---------------------------------------------------------------------------
 // W2.4: замразен свят = споделена read-only capability. Mutable свят е
 // изключителна собственост (move, Pony iso); frozen свят може да се даде на N

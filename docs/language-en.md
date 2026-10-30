@@ -1356,6 +1356,15 @@ invalidates nothing:
   the rule was "shared forever" and freeing after the joins was falsely
   refuted. The `invariant world_frozen(c[*])` contract discharges at every
   spawn — two and three readers are proven, not just one.
+- W2.13: the world's cache (`wcache_*`) also holds string and bytes values:
+  `wcache_set_str(w, k, s)` / `wcache_get_str(w, k)` and
+  `wcache_set_bytes(w, k, b)` / `wcache_get_bytes(w, k)`. The value is copied
+  on write and reads return a **copy** — it survives overwrites, `del` and
+  `world_free` (unlike `wvec_get_str`, which is borrowed and dies with the
+  world). The value kind is enforced: a mismatched read is a clean error, and a
+  missing key for `get_str`/`get_bytes` is one too. Like the rest of
+  `wcache_*`, this is scratch: legal on a frozen world, refused after
+  free/move.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 
