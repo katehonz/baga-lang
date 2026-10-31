@@ -75,6 +75,13 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.17 — plan cache cap 4096→256 (P67)
+- Raw и shape plan кешовете вече са с таван `boila_pc_cap()` = 256
+  (вместо 4096 големи persist плана). Пази паметта при много различни
+  заявки/форми; `boila_p5_test` и C c=16 (~160.9k tps) остават добре.
+- `pgbench -C` растежът не се промени — значи той не е основно от plan
+  кеша; следващата стъпка е finer instrumentation на startup/checkout.
+
 ### W4.16 — `mem_persist_bytes` telemetry (P66)
 - Нов C/LLVM builtin `mem_persist_bytes()`: live persist malloc байтове
   (C: `malloc_usable_size`; LLVM: per-thread `live_p`). `tests/llvm_mem_test`
