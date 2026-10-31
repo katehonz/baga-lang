@@ -263,7 +263,7 @@ designs state their safety story as documentation.
 | Region: separate arena, position-independent, magic+schema header | `world_new` / `world_alloc` / `world_freeze` / `world_state` / `world_free` | mutate-after-freeze, double-free, use-after-free, use-after-move — with witnesses |
 | Typed containers **inside** the region | `wvec_*` (i64/str/bytes), `wmap_*` (key→value), `wrec_*` (heterogeneous records with per-field schema) | readers on a frozen world are legal; writers refuted (check-only mutators, legal in loops) |
 | The region knows its roots + schema → dump, load, **auto-compaction** | `world_dump` / `world_load` / `world_used` / `world_compact` / `world_dump_compact` | compaction is a read (`world_dump_compact` legal on frozen); a foreign blob is rejected by magic |
-| Interior mutability: lazy index on a frozen world | `wcache_*` (i64/**str**/**bytes** values, mutex-protected) | scratch: legal on frozen, refused after free/move |
+| Interior mutability: lazy index / atomic counters on a frozen world | `wcache_*` (i64/**str**/**bytes** values, mutex-protected; `wcache_add`) | scratch: legal on frozen, refused after free/move |
 | Sharing & capability links | `go`/`join`, channels, `world_link`/`world_unlink`/`world_linked` | N readers on one frozen world; channel **fan-out** with join accounting; acyclic link graph (target outlives the link) |
 
 Two-sided contracts on world parameters (`world_frozen(p)` — borrow to read,
@@ -467,7 +467,7 @@ baga/
 | 16 | Language arc M19–M24: missing-return checker, effect payloads (`!E(T)`, `raise`/`catch`), generics (fn + struct monomorphization), traits/impl, statically verified `guarantees` | ✅ |
 | 17 | LLVM parity for M20–M24 (payload runtime, generic fns, traits, generic structs) | ✅ |
 | 18 | RC memory model v1.0 (`--rc`, opt-in): RC1–RC5 — ownership, containers, struct/enum fields, owned fn results | ✅ |
-| 19 | **Worlds W0…W2.14**: machine-checked regions — ownership/freeze/move, region containers (`wvec`/`wmap`/`wrec`), dump/load/auto-compaction, `wcache` scratch values, capability links, channel fan-out with join accounting, two-sided world contracts, 30–51% cheaper container access | ✅ |
+| 19 | **Worlds W0…W2.15**: machine-checked regions — ownership/freeze/move, region containers (`wvec`/`wmap`/`wrec`), dump/load/auto-compaction, `wcache` scratch values, capability links, channel fan-out with join accounting, two-sided world contracts, 30–51% cheaper container access | ✅ |
 | 20 | W3: `world g { … }` scoped blocks, region inference (if/match), return guarantees, taint through fn/derived containers/keys, multi-link, multi-source and key-dimension return summaries | ✅ W3.1–W3.12 |
 | 21 | Worlds on LLVM: `libbaga_world_rt.so` (same generated runtime), `if` expressions, parity gate | ✅ W4.0 |
 

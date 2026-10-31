@@ -1262,14 +1262,16 @@ invalidates nothing:
   the checker and the verifier). An ASan run of `tests/wvec_test.baga` is a gate
   in run_tests.sh. The measured cost of validation is in docs/worlds-bg.md §4.
 - W2.3: interior mutability for a frozen world — `wcache_set(w, k, v)` /
-  `wcache_get(w, k)` / `wcache_has(w, k)` / `wcache_del(w, k)` /
-  `wcache_clear(w)` / `wcache_len(w)` (i64 keys and values; `get` returns 0 on
-  a miss, `has` returns 1/0). The cache hangs off the handle and lives OUTSIDE
-  the region: `world_dump` and `world_used` are unaffected by it, and
-  `world_load` starts with an empty cache. Legal on a frozen world (the escape
+  `wcache_get(w, k)` / `wcache_add(w, k, d)` / `wcache_has(w, k)` /
+  `wcache_del(w, k)` / `wcache_clear(w)` / `wcache_len(w)` (i64 keys and
+  values; `get` returns 0 on a miss, `has` returns 1/0; `add` is an atomic
+  read-modify-write returning the new value — for counters). The cache hangs
+  off the handle and lives OUTSIDE the region: `world_dump` and `world_used`
+  are unaffected by it, and `world_load` starts with an empty cache. Legal on a frozen world (the escape
   hatch for lazy indexes) and guarded by a mutex, so reader threads can fill it
   safely. The contract is idempotence (the value is a function of the frozen
-  data). Verifier: a violation only after `world_free` or a move.
+  data); `wcache_add` is the counter exception — its contract is atomicity.
+  Verifier: a violation only after `world_free` or a move.
 - W2.4: a frozen world is a shareable read-only capability — `go`/`chan_send`
   with a FROZEN world is a share (not a move), so N readers of one world are
   legal and local reads stay valid; with a MUTABLE world it is a move

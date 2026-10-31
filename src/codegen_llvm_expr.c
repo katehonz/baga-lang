@@ -58,6 +58,7 @@ static LLVMValueRef llv_world_rt_fn(const char *baga_name) {
         {"wrec_get_bytes",     'b', "iii"},
         {"wcache_set",         'v', "iii"},
         {"wcache_get",         'i', "ii"},
+        {"wcache_add",         'i', "iii"},
         {"wcache_has",         'i', "ii"},
         {"wcache_del",         'v', "ii"},
         {"wcache_clear",       'v', "i"},

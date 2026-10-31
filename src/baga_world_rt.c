@@ -154,6 +154,7 @@ LW_EXPORT void baga_lw_wcache_set(int64_t w, int64_t k, int64_t v) {
     baga_wcache_set(w, k, v);
 }
 LW_EXPORT int64_t baga_lw_wcache_get(int64_t w, int64_t k) { return baga_wcache_get(w, k); }
+LW_EXPORT int64_t baga_lw_wcache_add(int64_t w, int64_t k, int64_t d) { return baga_wcache_add(w, k, d); }
 LW_EXPORT int64_t baga_lw_wcache_has(int64_t w, int64_t k) { return baga_wcache_has(w, k); }
 LW_EXPORT void baga_lw_wcache_del(int64_t w, int64_t k) { baga_wcache_del(w, k); }
 LW_EXPORT void baga_lw_wcache_clear(int64_t w) { baga_wcache_clear(w); }

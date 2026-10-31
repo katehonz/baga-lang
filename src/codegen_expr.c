@@ -1145,6 +1145,7 @@ void emit_expr(Codegen *cg, Node *n) {
                     {"wvec_get_str",  "baga_wvec_get_str"},
                     {"wcache_set",   "baga_wcache_set"},
                     {"wcache_get",   "baga_wcache_get"},
+                    {"wcache_add",   "baga_wcache_add"},
                     {"wcache_has",   "baga_wcache_has"},
                     {"wcache_del",   "baga_wcache_del"},
                     {"wcache_clear", "baga_wcache_clear"},

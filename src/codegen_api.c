@@ -2316,6 +2316,21 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (bad) baga_world_bad(\"wcache_get\", \"стойността не е i64\", (long long)k, 0);\n");
     fprintf(out, "    return out;\n");
     fprintf(out, "}\n");
+    /* W2.15: атомарен read-modify-write за броячи върху замразен свят.
+     * Две отделни get+set от различни нишки губят инкременти; тук
+     * целият цикъл е под един wlock. */
+    fprintf(out, "static int64_t baga_wcache_add(int64_t wh, int64_t k, int64_t d) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wcache_add\");\n");
+    fprintf(out, "    pthread_mutex_lock(&w->wlock);\n");
+    fprintf(out, "    if (!w->wcache) w->wcache = baga_wc_new();\n");
+    fprintf(out, "    int64_t s = baga_wc_slot(w->wcache, k);\n");
+    fprintf(out, "    int64_t out = 0;\n");
+    fprintf(out, "    if (s < 0) { baga_wc_put(w->wcache, k, 1, d, NULL, 0); out = d; }\n");
+    fprintf(out, "    else if (w->wcache->kd[s] != 1) { pthread_mutex_unlock(&w->wlock); baga_world_bad(\"wcache_add\", \"стойността не е i64\", (long long)k, 0); }\n");
+    fprintf(out, "    else { out = w->wcache->v[s] + d; w->wcache->v[s] = out; }\n");
+    fprintf(out, "    pthread_mutex_unlock(&w->wlock);\n");
+    fprintf(out, "    return out;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_wcache_has(int64_t wh, int64_t k) {\n");
     fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wcache_has\");\n");
     fprintf(out, "    pthread_mutex_lock(&w->wlock);\n");

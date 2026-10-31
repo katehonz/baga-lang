@@ -30,6 +30,16 @@ fn filler(w: i64) -> i64 !Par {
 // W2.13: стойност-низове под същия mutex. Работниците пишат еднакви копия за
 // ключовете си (идемпотентността остава договорът); get_str връща КОПИЕ, значи
 // конкурентен прочит не може да увисне върху payload, презаписан от друга нишка.
+// W2.15: атомарен брояч — четири нишки добавят по 5000 към един ключ.
+fn adder(w: i64) -> i64 !Par {
+    let mut i = 0
+    while i < 5000 {
+        wcache_add(w, 9000, 1)
+        i = i + 1
+    }
+    return 0
+}
+
 fn filler_str(w: i64) -> i64 !Par {
     let mut i = 0
     while i < 100 {
@@ -133,6 +143,20 @@ fn main() -> i64 !Par {
     check("growth_len", wcache_len(w) == 5600)
     check("growth_last", wcache_get(w, 5999) == 4999)
     check("growth_first", wcache_get(w, 1000) == 0)
+
+    // W2.15: wcache_add е една атомарна операция (get+set на две стъпки
+    // губи инкременти под конкуренция).
+    check("add_missing", wcache_add(w, 9001, 7) == 7)
+    check("add_existing", wcache_add(w, 9001, 0 - 2) == 5)
+    let a1 = go(adder, w)
+    let a2 = go(adder, w)
+    let a3 = go(adder, w)
+    let a4 = go(adder, w)
+    join(a1)
+    join(a2)
+    join(a3)
+    join(a4)
+    check("concurrent_add", wcache_get(w, 9000) == 20000)
 
     world_free(w)
     print("wcache_test: all passed")
