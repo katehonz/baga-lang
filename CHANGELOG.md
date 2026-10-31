@@ -74,6 +74,9 @@
   idle Vec; wake-ът пише с raw `write` без `substr`.
 - Резултат: 20 s @ ~160k tps, RSS **1.9 GB → ~8 MB** (преди теча на
   `cell2`/wake-а). `tests/cell2_free_test.baga` е в LLVM оракула.
+- Мигрирани flat channel cell-ове в app-product: fmrbaga, httpdbaga,
+  oauthbaga, ormbaga, queuebaga, relbaga, rocksbaga и boilaDB repl.
+  Raft/txn nested message дървета остават (free-ват само външния cell).
 
 ### App — boilaDB mux wake (P47): 5 tps → 151k tps
 - `boila_mux_wake` пишеше wake байт с `tcp_write` върху `pipe2`. `tcp_write`
