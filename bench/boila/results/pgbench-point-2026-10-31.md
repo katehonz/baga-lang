@@ -80,10 +80,18 @@ wake-ът alokiraше `substr` извън turn rewind-а. Сега `cell2_free` 
 
 ## LLVM (experimental, P59)
 
-`serve_pg` на LLVM (`lli`), `BOILA_WORKERS=0` (go_bg), същият pgbench
-point SELECT: **19 587 tps @ c=4** (C: ~180k). `BOILA_WORKERS=4`
-(mux/worker pool) пада под товар — per-thread allocation log и местене на
-връзки между worker-и; LLVM serving остава experimental, не production.
+`serve_pg` на LLVM (`lli`), същият pgbench point SELECT:
+
+| режим | tps |
+|---|---:|
+| go_bg (`BOILA_WORKERS=0`), c=4 | **19 587** |
+| mux, c=1 | 9 143 |
+| mux, c=4 | 14 760 |
+| mux, c=8 | 15 572 |
+| mux, c=16 | **18 376** |
+
+RSS стабилен ~221 MB. C бекендът е ~151k tps @ c=16 — LLVM е
+функционален, но ~8× по-бавен; serving на LLVM остава experimental.
 
 ## Честни граници
 

@@ -75,6 +75,14 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.10 — LLVM boilaDB mux под товар (P60)
+- `boila_*_free` пускаше `pk_eq.pk_lo.pk_hi.b`, но в empty плановете те са
+  ЕДИН shared `bytes` handle → double free при mux close (LLVM го хвана,
+  C-то го маскираше). Сега pk bytes не се пипат.
+- LLVM `serve_pg` с `BOILA_WORKERS=4` вече издържа pgbench:
+  9.1k / 14.8k / 15.6k / 18.4k tps @ c=1/4/8/16, RSS стабилен ~221 MB.
+  C бекендът остава ~151k tps — LLVM е функционален, но по-бавен.
+
 ### W4.9 — глобален hash allocation log; LLVM boilaDB go_bg (P59)
 - `mem_*` log-ът в `libbaga_par.so` е глобален hash (pointer→size/persist)
   + per-thread pointer log за mark/rewind. Cross-thread free вече маркира
