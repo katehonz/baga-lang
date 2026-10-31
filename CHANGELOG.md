@@ -83,8 +83,12 @@
 - scratch map entry/buckets се вмъкват под `mem_persist`, за да не ги
   реклеймва worker arena rewind; преди това `map_set` върху общия map
   корумпираше при churn.
-- `pgbench -C` 100 връзки (C mux): ~60 → **37.6 KB/връзка** (3.76 MB).
-  LLVM boila gate и C boila тестовете остават зелени.
+- Допълнително: външният `pre` mark се rewind-ва и за НОВА връзка
+  (default take allocations), а idle txn Vec-овете се drop-ват при close.
+- `pgbench -C` 100 връзки (C mux): ~60 → **30.5 KB/връзка** (3.05 MB);
+  след 500 връзки инкрементът пада до ~9 KB/връзка — scratch pool-ът и
+  fd кешовете се затоплят, не е линейно на връзка.
+- LLVM boila gate и C boila тестовете остават зелени.
 
 ### W4.10 — LLVM boilaDB mux под товар (P60)
 - `boila_*_free` пускаше `pk_eq.pk_lo.pk_hi.b`, но в empty плановете те са

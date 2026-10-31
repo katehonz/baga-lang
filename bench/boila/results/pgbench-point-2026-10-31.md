@@ -75,8 +75,8 @@ wake-ът alokiraше `substr` извън turn rewind-а. Сега `cell2_free` 
 
 `pgbench -n -C -c1 -t100` (100 нови връзки): след P55 (ефективен
 `str_repeat`) и P61 (scratch pool + persist map entries) ръстът при mux е
-~3.8 MB (преди: ~18 MB). Остава per-connection persist/arena; keep-alive
-пътят е стабилен.
+~3.05 MB за първите 100 и ~9 KB/връзка инкрементално след 500
+(scratch pool/fd кешове се затоплят). Keep-alive пътят е стабилен.
 
 ## LLVM (experimental, P59)
 
