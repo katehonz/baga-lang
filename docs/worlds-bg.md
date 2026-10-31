@@ -1,6 +1,6 @@
 # Светове (Worlds) — концепция, дизайн, статус
 
-Статус: **W0 … W2.14 + W3.1–W3.10 + W4.0 имплементирани** (2026-10-31; v1.3.0 е W0…W2.5), зад
+Статус: **W0 … W2.14 + W3.1–W3.10 + W4.0/W4.1 имплементирани** (2026-10-31; v1.3.0 е W0…W2.5), зад
 `world_*`/`wvec_*`/`wmap_*`/`wrec_*`/`wcache_*` builtin-и в **C и LLVM бекенда**. Оркъли (разделени заради
 600-редовия gate): `examples/verify/worlds.baga` — ядро на региона
 (16 ensures + 10 протокола); `worlds_cap.baga` — споделяне и договори
@@ -1689,6 +1689,12 @@ FnRec пази до `W36_LINKS_MAX` (8) връзки „param-контейнер
 вместо обща parse грешка. 5 проби (2 bad + precision + самостоятелен блок +
 агрегат в wcache);
 1077 файла без промени.
+
+**W4.1** ✅ (2026-10-31) — LLVM световете под `--rc` не текат: owned
+bytes/str от `world_dump`/`world_dump_compact`/`wcache_get_bytes`/
+`wcache_get_str` идват с истински RC header и `drop`/scope release ги
+освобождава. `tests/llvm_worlds.sh` пуска 6-те програми plain и `--rc`;
+`examples/worlds.baga` е smoke в общия LLVM оракул.
 
 **W4.0** ✅ (2026-10-31) — световете работят и в LLVM бекенда с паритет:
 `make llvm` строи `lib/libbaga_world_rt.so` от СЪЩИЯ C runtime, LLVM IR-ът
