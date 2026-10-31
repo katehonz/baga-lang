@@ -75,6 +75,14 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.11 — известен RC gap: `rc_test` под LLVM
+- `mem_*` под `--rc` остава C-only. Опитът да се пуснат като no-op показа,
+  че `rc_test` под LLVM се счупва и **без** `mem_*` (дори със секцията
+  премахната) — pre-existing RC bug в комбинацията map/RC, не в
+  allocation log-а. Затова RC оракулът продължава да SKIP-ва `rc_test`.
+- Следващ debug: минимален RC reproducer около map/bytes секциите на
+  `rc_test`; едва тогава `mem_*` под `--rc`.
+
 ### P61 — scratch pool + persist map entries; C churn 60→38 KB/връзка
 - `pgw_reader` default в mux вече не алокира 8KB scratch (startup-ът
   създава своя); scratch се пази per fd в mux map и се преизползва при
