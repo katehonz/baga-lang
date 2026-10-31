@@ -1560,6 +1560,41 @@ else
 	echo "FAIL: generic с обикновен низ трябваше да минава"
 	exit 1
 fi
+echo "=== W3.8 generic fn + неанотиран Vec/Map аргумент — елементният вид ==="
+# Преди W3.8 generic извикването не фиксираше елементния вид на неанотирания
+# Vec/Map аргумент (non-generic пътят го правеше) — vec_get фиксираше i64 и
+# program-ата печаташе указател вместо низа.
+printf 'fn stash<T>(out: Vec<T>, s: T) {\n    vec_push(out, s)\n}\nfn main() {\n    let out = vec_new()\n    stash(out, "обикновен низ")\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w38_vec.baga
+if run /tmp/baga_w38_vec.baga 2>&1 | grep -qx "обикновен низ"; then
+	echo "OK: generic fn + неанотиран Vec<str> — печата низа, не указател"
+else
+	echo "FAIL: generic Vec elem не се фиксираше — трябваше да печата низа"
+	run /tmp/baga_w38_vec.baga 2>&1 | head -3
+	exit 1
+fi
+printf 'fn put<K, V>(m: Map<K, V>, k: K, v: V) {\n    map_set(m, k, v)\n}\nfn main() {\n    let m = map_new()\n    put(m, 1, "низ")\n    print(map_get(m, 1))\n}\n' > /tmp/baga_w38_map.baga
+if run /tmp/baga_w38_map.baga 2>&1 | grep -qx "низ"; then
+	echo "OK: generic fn + неанотирана Map — ключът и стойността се фиксират"
+else
+	echo "FAIL: generic Map elem/key не се фиксираха"
+	run /tmp/baga_w38_map.baga 2>&1 | head -3
+	exit 1
+fi
+printf 'fn stash<T>(out: Vec<T>, s: T) {\n    vec_push(out, s)\n}\nfn main() {\n    let out = vec_new()\n    stash(out, 42)\n    print(i64_to_str(vec_get(out, 0)))\n}\n' > /tmp/baga_w38_i64.baga
+if run /tmp/baga_w38_i64.baga 2>&1 | grep -qx "42"; then
+	echo "OK: generic fn + i64 елемент — фиксирането не пречи на числата"
+else
+	echo "FAIL: generic i64 елемент трябваше да работи"
+	exit 1
+fi
+# Регресия: non-generic без анотация работеше и преди — не бива да се счупи.
+printf 'fn stash(out: Vec<str>, s: str) {\n    vec_push(out, s)\n}\nfn main() {\n    let out = vec_new()\n    stash(out, "обикновен низ")\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w38_ng.baga
+if run /tmp/baga_w38_ng.baga 2>&1 | grep -qx "обикновен низ"; then
+	echo "OK: non-generic неанотиран Vec — регресията е чиста"
+else
+	echo "FAIL: non-generic неанотиран Vec се счупи"
+	exit 1
+fi
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

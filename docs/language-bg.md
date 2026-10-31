@@ -1416,6 +1416,11 @@ print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
   let/assign резюмето се намира по базово име (`stash__iN`).
 - Пълният дизайн-документ — модел, сравнение с Verona/Pony/Cyclone, bench,
   честни граници и пътна карта: `docs/worlds-bg.md`.
+- **Неанотиран Vec/Map аргумент в generic извикване** (поправено 2026-10-31):
+  `fn stash<T>(out: Vec<T>, s: T)` + `let out = vec_new()` + `stash(out, "низ")`
+  печаташе указател вместо низа, защото generic пътят не фиксираше елементния
+  вид на аргумента (non-generic го правеше). Сега параметърът фиксира вида и при
+  generic; анотацията `let out: Vec<str> = vec_new()` винаги е работела.
 
 ---
 

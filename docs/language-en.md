@@ -1418,6 +1418,11 @@ invalidates nothing:
   base name (`stash__iN`).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
+- **Un-annotated Vec/Map argument in a generic call** (fixed 2026-10-31):
+  `fn stash<T>(out: Vec<T>, s: T)` with `let out = vec_new()` + `stash(out, "s")`
+  printed a pointer instead of the string — the generic path did not fix the
+  argument's element type (the non-generic path did). Now the parameter fixes it
+  for generic calls too; `let out: Vec<str> = vec_new()` always worked.
 
 ---
 

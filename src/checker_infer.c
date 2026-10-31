@@ -366,6 +366,20 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                             check_error(ctx, n->pos,
                                 "'%s': аргумент #%d е от тип %s, но параметърът е %s",
                                 name, i + 1, type_str(at), type_str(pt));
+                        } else if (at && pt) {
+                            /* W3.8: неанотиран Vec/Map аргумент — параметърът
+                             * (вече substituted) фиксира елементния вид, точно
+                             * както при non-generic извикване. Без това
+                             * `let out = vec_new()` + generic push печаташе
+                             * указател вместо низа: по-късният vec_get фиксира
+                             * i64, а codegen-ът чете str памет като i64. */
+                            if (at->kind == TYPE_VEC && pt->kind == TYPE_VEC &&
+                                !at->elem && pt->elem)
+                                at->elem = pt->elem;
+                            if (at->kind == TYPE_MAP && pt->kind == TYPE_MAP) {
+                                if (!at->key && pt->key) at->key = pt->key;
+                                if (!at->elem && pt->elem) at->elem = pt->elem;
+                            }
                         }
                     }
                     ctx->g_names.len = 0; ctx->g_types.len = 0;
