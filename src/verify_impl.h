@@ -335,11 +335,15 @@ typedef struct {
     int *trail, n_trail, cap_trail;
     int *trail_lim, n_lim, cap_lim;
     int *flipped;          /* ниво → опитана ли е обратната фаза */
+    int *reason;           /* var → индекс на клаузата, която го е имплицирала (0 = решение/неизвестно) — M32 CDCL */
     int q_head;            /* worklist указател в trail */
     int phase_mode;        /* 0 = положителна, 1 = отрицателна, 2 = алтернативна */
     BvClause *cl; int n_cl, cap_cl;
     int **occ; int *occ_n; int occ_cap;   /* occurrence списъци по лит. */
     long conflicts, budget;
+    int cdcl;              /* M32: 1 = clause learning включён */
+    int *seen;             /* var → маркиран при conflict analysis */
+    int *learn_buf; int learn_cap;  /* работен буфер за learned clause */
 } BvSat;
 void bv_sat_init(BvSat *s, int n_vars_hint, long conflict_budget);
 void bv_sat_free(BvSat *s);

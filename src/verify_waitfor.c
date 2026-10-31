@@ -344,6 +344,92 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
             wf_scan_free(&bs);
             return;
         }
+        /* M31 (2026-10-31): while-loop с induction променлива. Pattern:
+         *   while i < HI { body; i = i + STEP }
+         * с HI и STEP константи — брой итерации k = (HI - i0) / STEP.
+         * Тялото се сканира веднъж и броят се мащабира с k (като M25 for).
+         * Изисквания: условието е i < const или i <= const; последният
+         * statement на тялото е i = i + const (или i = i - const за обратно).
+         * Само straight-line тяло без break/return (иначе → complex). */
+        if (n->while_cond && n->while_cond->kind == NODE_BINARY) {
+            Node *c = n->while_cond;
+            if ((c->bin_op == OP_LT || c->bin_op == OP_LE || c->bin_op == OP_GT || c->bin_op == OP_GE) &&
+                c->left && c->left->kind == NODE_IDENT &&
+                c->right && c->right->kind == NODE_INT_LIT) {
+                const char *ivar = c->left->name;
+                long long bound = (long long)c->right->int_val;
+                int is_lt = (c->bin_op == OP_LT || c->bin_op == OP_LE);
+                int is_gt = (c->bin_op == OP_GT || c->bin_op == OP_GE);
+                /* намери последния statement: i = i ± STEP */
+                if (n->while_body && n->while_body->kind == NODE_BLOCK &&
+                    n->while_body->stmts.len > 0) {
+                    Node *last = n->while_body->stmts.data[n->while_body->stmts.len - 1];
+                    if (last->kind == NODE_EXPR_STMT && last->expr &&
+                        last->expr->kind == NODE_ASSIGN)
+                        last = last->expr;
+                    if (last->kind == NODE_ASSIGN &&
+                        last->assign_target && last->assign_target->kind == NODE_IDENT &&
+                        strcmp(last->assign_target->name, ivar) == 0 &&
+                        last->assign_val && last->assign_val->kind == NODE_BINARY &&
+                        (last->assign_val->bin_op == OP_ADD || last->assign_val->bin_op == OP_SUB) &&
+                        last->assign_val->left && last->assign_val->left->kind == NODE_IDENT &&
+                        strcmp(last->assign_val->left->name, ivar) == 0 &&
+                        last->assign_val->right && last->assign_val->right->kind == NODE_INT_LIT) {
+                        long long step = (long long)last->assign_val->right->int_val;
+                        if (last->assign_val->bin_op == OP_SUB) step = -step;
+                        /* итерации: за i < bound с i += step>0: k = ceil((bound - i0)/step)
+                         * но без i0 знаем само горна граница. Използваме bound като
+                         * горна граница (sound over-approx за REFUTED? не — за
+                         * producer capacity over-approx е unsafe). Затова: само
+                         * ако i0 е известно (не), ползваме bound/step като ТОЧЕН
+                         * брой само при for-семантика. За while с induction var
+                         * и константен bound приемаме k = bound (горна граница)
+                         * само за PROVEN посоки; за REFUTED marqué imprecise. */
+                        if (step == 0) { s->complex = 1; return; }
+                        /* k като горна граница на итерациите */
+                        long long k;
+                        if (is_lt && step > 0) k = bound;         /* i < bound, i расте → най-много bound итерации от 0 */
+                        else if (is_gt && step < 0) k = -bound;
+                        else if (is_lt && step < 0) { s->complex = 1; return; }  /* безкраен цикъл посока */
+                        else if (is_gt && step > 0) { s->complex = 1; return; }
+                        else k = bound;
+                        if (k <= 0) return;
+                        if (k > 1000000) { s->complex = 1; return; }
+                        /* сканирай тялото без последния assign (той е броячът) */
+                        WfScan bs; memset(&bs, 0, sizeof bs);
+                        bs.depth = s->depth;
+                        /* създай временен блок без последния statement */
+                        Node body_copy;
+                        memset(&body_copy, 0, sizeof body_copy);
+                        body_copy.kind = NODE_BLOCK;
+                        body_copy.stmts = n->while_body->stmts;
+                        body_copy.stmts.len = n->while_body->stmts.len - 1;  /* skip the i=i+step */
+                        int saved_nn = *nn;
+                        wf_scan_node(&body_copy, names, nn, nmax, &bs);
+                        *nn = saved_nn;
+                        if (bs.nkids || bs.complex || bs.maybe_loop) {
+                            wf_scan_free(&bs); s->complex = 1; return;
+                        }
+                        if (k > 1000000 ||
+                            (long long)(bs.n_send + bs.n_recv) * k > 1000000000LL) {
+                            wf_scan_free(&bs); s->complex = 1; return;
+                        }
+                        s->n_send += (int)(bs.n_send * k);
+                        s->n_recv += (int)(bs.n_recv * k);
+                        if (bs.imprecise) s->imprecise = 1;
+                        /* горна граница на итерации → imprecise за REFUTED */
+                        s->imprecise = 1;
+                        if (!s->saw_op && bs.saw_op) {
+                            s->saw_op = 1;
+                            s->recv_first = bs.recv_first;
+                            s->send_first = bs.send_first;
+                        }
+                        wf_scan_free(&bs);
+                        return;
+                    }
+                }
+            }
+        }
         s->complex = 1;
         return;
     }

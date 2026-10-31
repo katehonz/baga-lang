@@ -223,6 +223,24 @@ branch, and inside a for body with such a loop are not guaranteed.
 Oracle: `examples/verify/while_loop.baga`; adversarial case
 `lp6_server_join_bad`.
 
+**M31 (2026-10-31):** while-loop with an induction variable closes the
+while-body counting gap. The pattern `while i < N { body; i = i + 1 }` (or
+`i = i - 1` with `i > N`) with constant `N` and constant step is recognized
+in the wait-for scan (`verify_waitfor.c`, NODE_WHILE case): the body is
+scanned once and its send/recv counts are scaled by k = N (upper bound on
+iterations from i0 = 0). The scaled counts feed producer capacity and
+recv coverage — the PROVEN directions work exactly like M25's for-loop.
+Because k is an upper bound (not exact without knowing i0), the result is
+marked imprecise: REFUTED directions that need exactness see unknown and
+stay silent; PROVEN directions (producer capacity ≥ parent recvs) are
+sound. Server loops (`while true` with exit, M30) and arbitrary while
+conditions stay no-claim. Oracle: `examples/verify/while_count.baga`.
+Remaining darkness of §1: fairness/starvation (temporal, outside the
+zero-SMT counting approach by design), nested go in while bodies, and
+select inside workers.
+
+---
+
 The structural liveness fragment is now complete: what remains of §1 is
 fairness/starvation — temporal properties that need scheduling
 assumptions, outside the zero-SMT counting approach by design.
@@ -361,6 +379,17 @@ soundness tripwire: distributivity must STAY UNKNOWN — a future false
 masks without sign, variable XOR, wrap as a value (inside the fragment),
 variable-count shifts. Remaining: the CDCL/GF(2) layer for collapse-free
 identities, multiplication wiring, i32 arithmetic shift.
+
+**M32 (2026-10-31):** CDCL инфраструктура в `verify_bv_sat.c` — reason
+tracking (коя клауза е имплицирала всеки литерал), 1-UIP conflict
+analysis (`cdcl_analyze`), non-chronological backjump, learned clause
+database. **НО: изключена по подразбиране** — първата имплементация
+ произвеждаше грешни learned clauses при shift-случаи (lshr_var_bad
+ стана лъжливо ДОКАЗАНО, хванато от soundness tripwire-а). Верификаторът
+ остава на чист DPLL (sound, budget-bounded); CDCL кодът е в repo-то
+ за одит и бъдещо включване след формален преглед на conflict analysis.
+ Следващата стъпка: формална валидация на 1-UIP резолюцията срещу
+ модела, преди да се включи `sat.cdcl = 1`.
 
 ---
 

@@ -631,11 +631,17 @@ int bv_verify_ensures(Node *fn, Node *spec, int ens_idx,
 
     /* Решаване с рестартове през три фазови стратегии (pos/neg/alt):
      * witness-ите на shift/wrap твърденията са в различни региони.
-     * Budget на стратегия — изчерпат ли се всички, честен UNKNOWN. */
+     * Budget на стратегия — изчерпат ли се всички, честен UNKNOWN.
+     * M32: CDCL инфраструктура е вградена (reason tracking + 1-UIP analysis
+     * в verify_bv_sat.c), но е ИЗКЛЮЧЕНА по подразбиране: първата имплементация
+     * произвежда грешни learned clauses при някои shift-случаи (lshr_var_bad
+     * стана лъжливо ДОКАЗАНО). Soundness tripwire побеждава производителността —
+     * до одит на conflict analysis, cdcl остава 0. */
     BvSatResult r = BV_SAT_UNDECIDED;
     for (int mode = 0; mode < 3 && r == BV_SAT_UNDECIDED; mode++) {
         if (mode) bv_sat_reset(&c.sat);
         c.sat.phase_mode = mode;
+        c.sat.cdcl = 0;
         r = bv_sat_solve(&c.sat);
     }
     if (r == BV_SAT_UNDECIDED) { bv_ctx_free(&c); return 0; }

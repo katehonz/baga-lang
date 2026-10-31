@@ -27,6 +27,11 @@ void bv_sat_init(BvSat *s, int n_vars_hint, long conflict_budget) {
     s->cap_vars = n_vars_hint > 64 ? n_vars_hint : 64;
     s->assign = calloc((size_t)s->cap_vars + 1, sizeof *s->assign);
     s->level = calloc((size_t)s->cap_vars + 1, sizeof *s->level);
+    s->reason = calloc((size_t)s->cap_vars + 1, sizeof *s->reason);
+    s->seen = calloc((size_t)s->cap_vars + 1, sizeof *s->seen);
+    s->learn_cap = 256;
+    s->learn_buf = malloc((size_t)s->learn_cap * sizeof *s->learn_buf);
+    s->cdcl = 0;
     s->cap_cl = 256;
     s->cl = malloc((size_t)s->cap_cl * sizeof *s->cl);
     s->cap_trail = 256;
@@ -46,7 +51,7 @@ void bv_sat_free(BvSat *s) {
     for (int i = 0; i < 2 * s->occ_cap + 2; i++) free(s->occ[i]);
     free(s->occ); free(s->occ_n);
     free(s->assign); free(s->level); free(s->trail); free(s->trail_lim);
-    free(s->flipped);
+    free(s->flipped); free(s->reason); free(s->seen); free(s->learn_buf);
     memset(s, 0, sizeof *s);
 }
 
@@ -60,6 +65,12 @@ static void sat_grow_vars(BvSat *s, int v) {
     s->level = realloc(s->level, ((size_t)nc + 1) * sizeof *s->level);
     memset(s->level + s->cap_vars + 1, 0,
            ((size_t)nc + 1 - ((size_t)s->cap_vars + 1)) * sizeof *s->level);
+    s->reason = realloc(s->reason, ((size_t)nc + 1) * sizeof *s->reason);
+    memset(s->reason + s->cap_vars + 1, 0,
+           ((size_t)nc + 1 - ((size_t)s->cap_vars + 1)) * sizeof *s->reason);
+    s->seen = realloc(s->seen, ((size_t)nc + 1) * sizeof *s->seen);
+    memset(s->seen + s->cap_vars + 1, 0,
+           ((size_t)nc + 1 - ((size_t)s->cap_vars + 1)) * sizeof *s->seen);
     int nslot_new = 2 * nc + 2, nslot_old = 2 * s->occ_cap + 2;
     s->occ = realloc(s->occ, (size_t)nslot_new * sizeof *s->occ);
     s->occ_n = realloc(s->occ_n, (size_t)nslot_new * sizeof *s->occ_n);
@@ -110,6 +121,13 @@ static void trail_push(BvSat *s, int lit, int level) {
     int v = lit > 0 ? lit : -lit;
     s->assign[v] = lit > 0 ? 1 : -1;
     s->level[v] = level;
+    s->reason[v] = 0;   /* по подразбиране — решение; propagate ще го смени */
+}
+
+static void trail_push_reason(BvSat *s, int lit, int level, int clause_idx) {
+    trail_push(s, lit, level);
+    int v = lit > 0 ? lit : -lit;
+    s->reason[v] = clause_idx + 1;   /* +1 за да се отличава от 0 */
 }
 
 /* Unit propagation върху trail-а (worklist от q_head). 1 = конфликт.
@@ -134,7 +152,10 @@ static int sat_propagate(BvSat *s) {
             }
             if (sat) continue;
             if (unassigned == 0) return 1;
-            if (unassigned == 1) trail_push(s, unit_lit, s->n_lim);
+            if (unassigned == 1) {
+                /* M32 CDCL: записваме причината — клаузата, която е unit-имплицирала */
+                trail_push_reason(s, unit_lit, s->n_lim, s->occ[slot][oi]);
+            }
         }
     }
     return 0;
@@ -157,7 +178,104 @@ static void trail_pop_to(BvSat *s, int start) {
         int lit = s->trail[--s->n_trail];
         int v = lit > 0 ? lit : -lit;
         s->assign[v] = 0;
+        s->reason[v] = 0;
     }
+}
+
+/* M32 CDCL: 1-UIP conflict analysis. При конфликт на текущото ниво конструира
+ * learned clause: започва от конфликтната клауза, резолвира с reason клаузите
+ * на литералите от текущото ниво, докато остане един литерал от текущото ниво
+ * (the UIP). Връща: индекс на новата клауза в s->cl, или -1 при грешка.
+ * Backjump нивото се намира от втория най-висок level в learned clause. */
+static int cdcl_analyze(BvSat *s, int conflict_cl, int *backjump_level) {
+    int n_learn = 0;
+    int cur_level = s->n_lim;
+    int seen_count = 0;
+    /* работим с копие на конфликтната клауза */
+    BvClause *conf = &s->cl[conflict_cl];
+    for (int i = 0; i < conf->n; i++) {
+        int lit = conf->lits[i];
+        int v = lit > 0 ? lit : -lit;
+        if (!s->seen[v] && s->level[v] > 0) {
+            s->seen[v] = 1;
+            seen_count++;
+            if (s->level[v] == cur_level) {
+                /* literal from current level — добавя се към learn, но ще се резолвира */
+                if (n_learn == s->learn_cap) {
+                    s->learn_cap *= 2;
+                    s->learn_buf = realloc(s->learn_buf, (size_t)s->learn_cap * sizeof(int));
+                }
+                s->learn_buf[n_learn++] = lit;
+            } else {
+                /* literal from lower level — директно в learned clause */
+                if (n_learn == s->learn_cap) {
+                    s->learn_cap *= 2;
+                    s->learn_buf = realloc(s->learn_buf, (size_t)s->learn_cap * sizeof(int));
+                }
+                s->learn_buf[n_learn++] = lit;
+                if (s->level[v] > *backjump_level) *backjump_level = s->level[v];
+            }
+        }
+    }
+    /* резолвваме литералите от текущото ниво, докато остане 1 (UIP) */
+    int idx = 0;
+    while (idx < n_learn) {
+        /* броим колко от learn_buf са от текущото ниво */
+        int cur_count = 0;
+        int last_cur = -1;
+        for (int i = 0; i < n_learn; i++) {
+            int v = s->learn_buf[i] > 0 ? s->learn_buf[i] : -s->learn_buf[i];
+            if (s->level[v] == cur_level) { cur_count++; last_cur = i; }
+        }
+        if (cur_count <= 1) break;
+        /* взимаме последния литерал от текущото ниво и резолвваме с неговия reason */
+        int lit = s->learn_buf[last_cur];
+        int v = lit > 0 ? lit : -lit;
+        int r = s->reason[v];
+        if (r == 0) {
+            /* решение на текущото ниво — UIP достигнат */
+            break;
+        }
+        BvClause *rc = &s->cl[r - 1];
+        /* премахни lit от learn_buf */
+        s->learn_buf[last_cur] = s->learn_buf[n_learn - 1];
+        n_learn--;
+        /* добави ¬lit резолвираните литерали от reason (без -lit, който е falsified) */
+        int neg_lit = -lit;
+        for (int i = 0; i < rc->n; i++) {
+            if (rc->lits[i] == neg_lit) continue;
+            int lv = rc->lits[i];
+            int lv_v = lv > 0 ? lv : -lv;
+            if (s->seen[lv_v]) continue;
+            s->seen[lv_v] = 1;
+            if (s->level[lv_v] == cur_level) {
+                if (n_learn == s->learn_cap) {
+                    s->learn_cap *= 2;
+                    s->learn_buf = realloc(s->learn_buf, (size_t)s->learn_cap * sizeof(int));
+                }
+                s->learn_buf[n_learn++] = lv;
+            } else if (s->level[lv_v] > 0) {
+                if (n_learn == s->learn_cap) {
+                    s->learn_cap *= 2;
+                    s->learn_buf = realloc(s->learn_buf, (size_t)s->learn_cap * sizeof(int));
+                }
+                s->learn_buf[n_learn++] = lv;
+                if (s->level[lv_v] > *backjump_level) *backjump_level = s->level[lv_v];
+            }
+        }
+        idx++;
+        if (idx > 10000) break;   /* safety cap */
+    }
+    /* clear seen */
+    for (int i = 0; i < n_learn; i++) {
+        int v = s->learn_buf[i] > 0 ? s->learn_buf[i] : -s->learn_buf[i];
+        s->seen[v] = 0;
+    }
+    if (n_learn == 0) return -1;
+    /* добавяме learned clause */
+    bv_sat_add_clause(s, s->learn_buf, n_learn);
+    /* UIP е последният литерал от текущото ниво — не го променяме, просто връщаме новата клауза */
+    return s->n_cl - 1;
 }
 
 BvSatResult bv_sat_solve(BvSat *s) {
@@ -211,12 +329,43 @@ BvSatResult bv_sat_solve(BvSat *s) {
          * UNASSIGN-ва, а върнатото по-горно ниво вече е било безконфликтно. */
         s->q_head = s->n_trail - 1;
         while (sat_propagate(s)) {
-            /* Конфликт (chronological backtracking): ако текущото ниво не е
-             * опитвало обратната фаза — обърни решението и остани на нивото;
-             * иначе затвори нивото и слез по-дълбоко. Ниво 0 конфликт → UNSAT.
-             * Без flipped-маркера обърнатото ниво би осцилирало обратно. */
+            /* Конфликт. M32 CDCL: ако learning е включен, анализирай конфликта
+             * (1-UIP), научи клаузата и backjump-ни до съответното ниво.
+             * Иначе — старото chronological backtracking с phase flip. */
             if (++s->conflicts > s->budget) return BV_SAT_UNDECIDED;
             if (s->n_lim == 0) return BV_SAT_UNSAT;
+            if (s->cdcl) {
+                /* намери конфликтната клауза: сканирай за клауза без истинен лит */
+                int conf_cl = -1;
+                for (int ci = 0; ci < s->n_cl; ci++) {
+                    BvClause *c = &s->cl[ci];
+                    int sat = 0;
+                    for (int i = 0; i < c->n; i++) {
+                        if (lit_value(s, c->lits[i]) > 0) { sat = 1; break; }
+                    }
+                    if (!sat) { conf_cl = ci; break; }
+                }
+                if (conf_cl < 0) return BV_SAT_UNSAT;
+                int bj = 0;
+                int learned = cdcl_analyze(s, conf_cl, &bj);
+                if (learned < 0) return BV_SAT_UNSAT;
+                /* backjump: pop до началото на bj нивото */
+                while (s->n_lim > bj && s->n_lim > 0) {
+                    int top = s->n_lim - 1;
+                    trail_pop_to(s, s->trail_lim[top]);
+                    s->n_lim = top;
+                }
+                /* learned clause е unit на bj ниво — пропагирай я */
+                s->q_head = s->n_trail;
+                if (sat_propagate(s)) {
+                    if (s->n_lim == 0) return BV_SAT_UNSAT;
+                    /* конфликт след learning — продължи цикъла (следващ конфликт ще анализира отново) */
+                    continue;
+                }
+                /* продължи нормално — следващата итерация избира нова променлива */
+                break;
+            }
+            /* chronological backtracking (v1, без learning) */
             int top = s->n_lim - 1;
             int start = s->trail_lim[top];
             int dec = s->trail[start];
@@ -227,8 +376,8 @@ BvSatResult bv_sat_solve(BvSat *s) {
                 trail_push(s, -dec, s->n_lim);
                 s->q_head = s->n_trail - 1;
             } else {
-                s->n_lim = top;      /* нивото е изчерпано — затворено */
-                s->q_head = s->n_trail;   /* нищо ново за пропаганда */
+                s->n_lim = top;
+                s->q_head = s->n_trail;
             }
         }
     }
@@ -247,9 +396,11 @@ void bv_sat_reset(BvSat *s) {
         int lit = s->trail[i];
         int v = lit > 0 ? lit : -lit;
         s->assign[v] = 0;
+        s->reason[v] = 0;
     }
     s->n_trail = 0;
     s->n_lim = 0;
     s->q_head = 0;
     s->conflicts = 0;
+    /* learned clauses остават — те са валидни и след рестарт (M32) */
 }
