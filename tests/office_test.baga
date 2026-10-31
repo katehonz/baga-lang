@@ -135,6 +135,15 @@ fn main() -> i64 !IO {
     let er2 = office_open_bytes(eb.data)
     check("edit_reopen", er2.ok == 1 && contains(office_plain_text(er2.doc), "Zdravei"))
 
+    // --- O8: cross-run замяна в DOCX (<w:t> разбит на два елемента) ---
+    let xml = "<w:p><w:r><w:t>Hel</w:t></w:r><w:r><w:t>lo World</w:t></w:r></w:p>"
+    let cross = office_docx_replace_cross_run(xml, "Hello World", "Bye")
+    check("o8_cross_found", str_find(cross, ">Bye<") >= 0)
+    check("o8_cross_emptied", str_find(cross, "<w:t></w:t>") >= 0)
+    check("o8_no_match", office_docx_replace_cross_run(xml, "xyz", "q") == "")
+    let single = office_docx_replace_cross_run("<w:t>Hi</w:t>", "Hi", "Yo")
+    check("o8_single", str_find(single, ">Yo<") >= 0)
+
     // --- OLE2 CFB fixture ---
     let junk = bytes_new(8)
     bytes_set(junk, 0, 208)

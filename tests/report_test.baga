@@ -114,6 +114,25 @@ fn main() -> i64 !IO {
     let tx = report_from_template(report_default_tpl(), ctx, t, "xlsx")
     check("tpl_xlsx", tx.ok == 1 && bytes_len(tx.data) > 100)
 
+    // R1: multi-sheet XLSX
+    let t2 = csv_parse("Month,Count\nJan,5\nFeb,3\n")
+    let mut sheets: Vec<str> = vec_new()
+    let mut tables: Vec<CsvTable> = vec_new()
+    vec_push(sheets, "Sales")
+    vec_push(tables, t)
+    vec_push(sheets, "Stats")
+    vec_push(tables, t2)
+    let mi = report_multi_ok("Multi", "2026", sheets, tables)
+    check("multi_ir", mi.ok == 1)
+    let mx = report_multi_to_xlsx(mi)
+    check("multi_xlsx", mx.ok == 1 && bytes_len(mx.data) > 100)
+    let mz = zip_open_bytes(mx.data)
+    check("multi_zip", mz.ok == 1 && zip_count(mz) == 6)
+    let mwb = zip_read(mz, "xl/workbook.xml")
+    check("multi_wb", mwb.ok == 1 && str_find(str_of_bytes(mwb.data), "Sales") >= 0 && str_find(str_of_bytes(mwb.data), "Stats") >= 0)
+    let s2 = zip_read(mz, "xl/worksheets/sheet2.xml")
+    check("multi_sheet2", s2.ok == 1 && str_find(str_of_bytes(s2.data), "Month") >= 0)
+
     print("report_test: all passed")
     return 0
 }

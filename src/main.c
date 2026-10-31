@@ -337,9 +337,11 @@ int main(int argc, char **argv) {
         if (json_out) {
             json_begin(input_path, 0);
             int first = 1;
-            for (int i = 0; i < parser.n_errors; i++)
-                json_diag(input_path, parser.error_pos[i], "error",
+            for (int i = 0; i < parser.n_errors; i++) {
+                const char *f = parser.error_pos[i].file ? parser.error_pos[i].file : input_path;
+                json_diag(f, parser.error_pos[i], "error",
                           parser.errors[i] + parser.error_off[i], &first);
+            }
             json_end();
         } else {
             for (int i = 0; i < parser.n_errors; i++)
@@ -406,16 +408,22 @@ int main(int argc, char **argv) {
         if (json_out) {
             json_begin(input_path, 0);
             int first = 1;
-            for (int i = 0; i < checker.n_errors; i++)
-                json_diag(input_path, checker.error_pos[i], "error",
+            for (int i = 0; i < checker.n_errors; i++) {
+                const char *f = checker.error_pos[i].file ? checker.error_pos[i].file : input_path;
+                json_diag(f, checker.error_pos[i], "error",
                           checker.errors[i] + checker.error_off[i], &first);
-            for (int i = 0; i < checker.n_warnings; i++)
-                json_diag(input_path, checker.warning_pos[i], "warning",
+            }
+            for (int i = 0; i < checker.n_warnings; i++) {
+                const char *f = checker.warning_pos[i].file ? checker.warning_pos[i].file : input_path;
+                json_diag(f, checker.warning_pos[i], "warning",
                           checker.warnings[i] + checker.warning_off[i], &first);
+            }
             json_end();
         } else {
-            for (int i = 0; i < checker.n_errors; i++)
-                fprintf(stderr, "%s: %s\n", input_path, checker.errors[i]);
+            for (int i = 0; i < checker.n_errors; i++) {
+                const char *f = checker.error_pos[i].file ? checker.error_pos[i].file : input_path;
+                fprintf(stderr, "%s: %s\n", f, checker.errors[i]);
+            }
         }
         return 1;
     }
@@ -424,14 +432,18 @@ int main(int argc, char **argv) {
          * програмата не се изпълнява (stdout е само за машината). */
         json_begin(input_path, 1);
         int first = 1;
-        for (int i = 0; i < checker.n_warnings; i++)
-            json_diag(input_path, checker.warning_pos[i], "warning",
+        for (int i = 0; i < checker.n_warnings; i++) {
+            const char *f = checker.warning_pos[i].file ? checker.warning_pos[i].file : input_path;
+            json_diag(f, checker.warning_pos[i], "warning",
                       checker.warnings[i] + checker.warning_off[i], &first);
+        }
         json_end();
         return 0;
     }
-    for (int i = 0; i < checker.n_warnings; i++)
-        fprintf(stderr, "%s: %s\n", input_path, checker.warnings[i]);
+    for (int i = 0; i < checker.n_warnings; i++) {
+        const char *f = checker.warning_pos[i].file ? checker.warning_pos[i].file : input_path;
+        fprintf(stderr, "%s: %s\n", f, checker.warnings[i]);
+    }
 
     if (check_only) {
         printf("ok: %s\n", input_path);

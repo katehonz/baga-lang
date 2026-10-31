@@ -183,6 +183,7 @@ void subst_save(CheckCtx *ctx, char ***sn, Type ***st, int *n);   /* 338 */
 void subst_restore(CheckCtx *ctx, char **sn, Type **st, int n);   /* 347 */
 void register_fn(CheckCtx *ctx, Node *item);   /* 374 */
 void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);   /* 423 */
+void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
 Type *resolve_type_node(CheckCtx *ctx, Node *ty);   /* 762 */
 void push_scope(CheckCtx *ctx);   /* 768 */
 void pop_scope_skip(CheckCtx *ctx, const char *skip_name);   /* 775 */

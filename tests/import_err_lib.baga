@@ -1,0 +1,4 @@
+// import_err_lib.baga — library с type грешка за G13 attribution тест.
+fn bad_add(x: i64) -> i64 {
+    return x + "not a number"
+}

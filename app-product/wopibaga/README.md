@@ -16,7 +16,8 @@ let act = wopi_apply("LOCK", "", 0, 100, "abc")
 wopi_check_json("a.docx", "1", 12, "2", "hash", "Ada", 1)
 ```
 
-Not in this package: X-WOPI-Proof, PutRelative, and the bytes of the file.
+PutRelative / RenameFile / Delete (via `wopi_apply_ext`) are supported since
+2026-10-31. Not in this package: X-WOPI-Proof and the bytes of the file.
 
 ## License
 

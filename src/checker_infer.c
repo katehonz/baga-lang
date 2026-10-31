@@ -27,6 +27,36 @@ static Type *numeric_promote(Type *a, Type *b) {
     return type_new(TYPE_I32);
 }
 
+/* G12: bitwise ops (prec 3-5) bind looser than comparisons (prec 6-7), so
+ * `x & 128 == 128` parses as `x & (128 == 128)`. Warn when a bitwise op has
+ * a comparison as a direct (unparenthesized) child. */
+static int is_comparison_op(BinOp op) {
+    return op == OP_EQ || op == OP_NEQ || op == OP_LT ||
+           op == OP_GT || op == OP_LE || op == OP_GE;
+}
+
+static const char *binop_sym(BinOp op) {
+    switch (op) {
+        case OP_BIT_AND: return "&"; case OP_BIT_OR: return "|";
+        case OP_BIT_XOR: return "^";
+        case OP_LSHIFT: return "<<"; case OP_RSHIFT: return ">>";
+        case OP_URSHIFT: return ">>>";
+        case OP_EQ: return "=="; case OP_NEQ: return "!=";
+        case OP_LT: return "<"; case OP_GT: return ">";
+        case OP_LE: return "<="; case OP_GE: return ">=";
+        default: return "?";
+    }
+}
+
+static void warn_bitwise_compare_mix(CheckCtx *ctx, Node *n) {
+    if (n->left && n->left->kind == NODE_BINARY && is_comparison_op(n->left->bin_op))
+        check_warn(ctx, n->pos, "bitwise '%s' със сравнение вляво без скоби — C precedence trap (може би имаш предвид (%s ...))",
+                   binop_sym(n->bin_op), binop_sym(n->left->bin_op));
+    if (n->right && n->right->kind == NODE_BINARY && is_comparison_op(n->right->bin_op))
+        check_warn(ctx, n->pos, "bitwise '%s' със сравнение вдясно без скоби — C precedence trap (може би имаш предвид (... %s))",
+                   binop_sym(n->bin_op), binop_sym(n->right->bin_op));
+}
+
 Type *infer_binary(CheckCtx *ctx, Node *n) {
     Type *lt = infer(ctx, n->left);
     Type *rt = infer(ctx, n->right);
@@ -48,6 +78,7 @@ Type *infer_binary(CheckCtx *ctx, Node *n) {
 
         case OP_BIT_AND: case OP_BIT_OR: case OP_BIT_XOR:
         case OP_LSHIFT: case OP_RSHIFT: case OP_URSHIFT:
+            warn_bitwise_compare_mix(ctx, n);
             return type_new(TYPE_I64);
     }
     return type_new(TYPE_ERROR);

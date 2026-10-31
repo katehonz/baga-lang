@@ -64,6 +64,54 @@ fn test_lock() -> i64 !IO {
     return 0
 }
 
+fn test_shared_scope() -> i64 !IO {
+    let sx = dav_lockdiscovery_scoped("opaquelocktoken:t1", 3600, "me", 0, "/dav/f", "shared")
+    assert_true("shared_xml", str_find(sx, "<D:shared/>") >= 0)
+    assert_true("no_excl", str_find(sx, "<D:exclusive/>") < 0)
+    let ex = dav_lockdiscovery_scoped("opaquelocktoken:t1", 3600, "me", 0, "/dav/f", "exclusive")
+    assert_true("excl_xml", str_find(ex, "<D:exclusive/>") >= 0)
+    let def = dav_lockdiscovery("opaquelocktoken:t1", 3600, "me", 0, "/dav/f")
+    assert_true("default_excl", str_find(def, "<D:exclusive/>") >= 0)
+    let lx = dav_lock_xml_scoped("/dav/f", "opaquelocktoken:t1", 60, "o", 1, "shared")
+    assert_true("lock_shared", str_find(lx, "<D:shared/>") >= 0)
+    return 0
+}
+
+fn test_if_eval() -> i64 !IO {
+    let mut toks: Vec<str> = vec_new()
+    vec_push(toks, "opaquelocktoken:aa")
+    vec_push(toks, "opaquelocktoken:bb")
+    assert_eq_i64("empty", dav_if_eval("", toks), 1)
+    assert_eq_i64("single_hit", dav_if_eval("(<opaquelocktoken:aa>)", toks), 1)
+    assert_eq_i64("single_miss", dav_if_eval("(<opaquelocktoken:zz>)", toks), 0)
+    assert_eq_i64("or_hit", dav_if_eval("(<opaquelocktoken:zz> OR <opaquelocktoken:aa>)", toks), 1)
+    assert_eq_i64("or_miss", dav_if_eval("(<opaquelocktoken:zz> OR <opaquelocktoken:yy>)", toks), 0)
+    assert_eq_i64("not_hit", dav_if_eval("(Not <opaquelocktoken:aa>)", toks), 0)
+    assert_eq_i64("not_miss", dav_if_eval("(Not <opaquelocktoken:zz>)", toks), 1)
+    assert_eq_i64("and_ok", dav_if_eval("(<opaquelocktoken:aa>) (<opaquelocktoken:bb>)", toks), 1)
+    assert_eq_i64("and_fail", dav_if_eval("(<opaquelocktoken:aa>) (<opaquelocktoken:zz>)", toks), 0)
+    assert_eq_i64("bad_syntax", dav_if_eval("(<opaquelocktoken:aa", toks), 0 - 1)
+    return 0
+}
+
+fn test_locknull() -> i64 !IO {
+    let mut paths: Vec<str> = vec_new()
+    paths = dav_locknull_add(paths, "/dav/new.txt")
+    paths = dav_locknull_add(paths, "/dav/new.txt")
+    paths = dav_locknull_add(paths, "/dav/other.txt")
+    assert_eq_i64("ln_has", dav_is_lock_null("/dav/new.txt", paths), 1)
+    assert_eq_i64("ln_dedup", vec_len(paths), 2)
+    assert_eq_i64("ln_missing", dav_is_lock_null("/dav/x.txt", paths), 0)
+    let r = dav_locknull_response("/dav/new.txt", "opaquelocktoken:t", 3600, "me", 0)
+    assert_true("ln_rt_empty", str_find(r, "<D:resourcetype/>") >= 0)
+    assert_true("ln_lockdisc", str_find(r, "opaquelocktoken:t") >= 0)
+    assert_true("ln_size0", str_find(r, "getcontentlength>0") >= 0)
+    paths = dav_locknull_remove(paths, "/dav/new.txt")
+    assert_eq_i64("ln_removed", dav_is_lock_null("/dav/new.txt", paths), 0)
+    assert_eq_i64("ln_len", vec_len(paths), 1)
+    return 0
+}
+
 fn main() -> i64 !IO {
     test_depth()?
     test_dest()?
@@ -71,6 +119,9 @@ fn main() -> i64 !IO {
     test_date()?
     test_xml()?
     test_lock()?
+    test_shared_scope()?
+    test_if_eval()?
+    test_locknull()?
     print("dav_test: all passed")
     return 0
 }

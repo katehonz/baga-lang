@@ -9,11 +9,17 @@ struct WopiAct {
     lock: str,
     store: i64,
     clear: i64,
-    new_lock: str
+    new_lock: str,
+    name: str,
+    url: str
 }
 
 fn wopi_act(status: i64, lock: str, store: i64, clear: i64, new_lock: str) -> WopiAct {
-    return WopiAct { status: status, lock: lock, store: store, clear: clear, new_lock: new_lock }
+    return WopiAct { status: status, lock: lock, store: store, clear: clear, new_lock: new_lock, name: "", url: "" }
+}
+
+fn wopi_act_full(status: i64, lock: str, store: i64, clear: i64, new_lock: str, name: str, url: str) -> WopiAct {
+    return WopiAct { status: status, lock: lock, store: store, clear: clear, new_lock: new_lock, name: name, url: url }
 }
 
 fn wopi_lock_ttl_s() -> i64 { return 1800 }
@@ -89,9 +95,128 @@ fn wopi_on_put(cur: str, requested: str) -> WopiAct {
     return wopi_act(409, cur, 0, 0, "")
 }
 
+// W2: име на файл от SuggestedTarget — последният сегмент след "/", с %XX decode.
+fn wopi_url_decode(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    let n = len(s)
+    while i < n {
+        let c = char_at(s, i)
+        if c == 37 && i + 2 < n {
+            let h1 = char_at(s, i + 1)
+            let h2 = char_at(s, i + 2)
+            let mut v: i64 = 0
+            if h1 >= 48 && h1 <= 57 { v = (h1 - 48) * 16 }
+            else if h1 >= 65 && h1 <= 70 { v = (h1 - 55) * 16 }
+            else if h1 >= 97 && h1 <= 102 { v = (h1 - 87) * 16 }
+            else { out = concat(out, chr(c)); i = i + 1; continue }
+            if h2 >= 48 && h2 <= 57 { v = v + (h2 - 48) }
+            else if h2 >= 65 && h2 <= 70 { v = v + (h2 - 55) }
+            else if h2 >= 97 && h2 <= 102 { v = v + (h2 - 87) }
+            else { out = concat(out, chr(c)); i = i + 1; continue }
+            out = concat(out, byte_chr(v))
+            i = i + 3
+        } else {
+            out = concat(out, chr(c))
+            i = i + 1
+        }
+    }
+    return out
+}
+
+fn wopi_suggested_name(target: str) -> str {
+    let t = str_trim(target)
+    if t == "" {
+        return ""
+    }
+    let d = wopi_url_decode(t)
+    let n = len(d)
+    let mut last: i64 = -1
+    let mut i: i64 = 0
+    while i < n {
+        if char_at(d, i) == 47 {
+            last = i
+        }
+        i = i + 1
+    }
+    if last >= 0 {
+        return substr(d, last + 1, n)
+    }
+    return d
+}
+
+// W2: валидно име на файл — без / \ : * ? " < > | и контролни знаци, не само точки.
+fn wopi_valid_name(name: str) -> i64 {
+    let n = len(name)
+    if n == 0 {
+        return 0
+    }
+    if n > 255 {
+        return 0
+    }
+    let mut dots: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_at(name, i)
+        if c == 47 || c == 92 || c == 58 || c == 42 || c == 63 || c == 34 || c == 60 || c == 62 || c == 124 {
+            return 0
+        }
+        if c < 32 {
+            return 0
+        }
+        if c == 46 {
+            dots = dots + 1
+        }
+        i = i + 1
+    }
+    if dots == n {
+        return 0
+    }
+    return 1
+}
+
+// W2: PUT_RELATIVE — нов файл до текущия. suggested идва от X-WOPI-SuggestedTarget.
+// Lock-ът трябва да съвпада (като PUT). Връща име за отговора (приложението
+// решава дали да го приеме и къде да запише — ние даваме валидно име).
+fn wopi_on_put_relative(cur: str, requested: str, suggested: str) -> WopiAct {
+    if cur != "" && cur != requested {
+        return wopi_act(409, cur, 0, 0, "")
+    }
+    let name = wopi_suggested_name(suggested)
+    if wopi_valid_name(name) == 0 {
+        return wopi_act_full(400, cur, 0, 0, "", "", "")
+    }
+    return wopi_act_full(200, cur, 0, 0, "", name, "")
+}
+
+// W2: RENAME_FILE — ново име от X-WOPI-RequestedName.
+fn wopi_on_rename(cur: str, requested: str, new_name: str) -> WopiAct {
+    if cur != "" && cur != requested {
+        return wopi_act(409, cur, 0, 0, "")
+    }
+    let name = wopi_url_decode(str_trim(new_name))
+    if wopi_valid_name(name) == 0 {
+        return wopi_act_full(400, cur, 0, 0, "", "", "")
+    }
+    return wopi_act_full(200, cur, 0, 0, "", name, "")
+}
+
+// W2: DELETE — изтриване. 409 ако е заключен от друг.
+fn wopi_on_delete(cur: str, requested: str) -> WopiAct {
+    if cur != "" && cur != requested {
+        return wopi_act(409, cur, 0, 0, "")
+    }
+    return wopi_act(200, "", 0, 1, "")
+}
+
 // op is X-WOPI-Override. current/exp describe the stored lock.
 // requested is X-WOPI-Lock. Expired locks count as absent.
+// suggested/new_name са за PUT_RELATIVE / RENAME_FILE (празни за другите).
 fn wopi_apply(op: str, current: str, exp: i64, now: i64, requested: str) -> WopiAct {
+    return wopi_apply_ext(op, current, exp, now, requested, "", "")
+}
+
+fn wopi_apply_ext(op: str, current: str, exp: i64, now: i64, requested: str, suggested: str, new_name: str) -> WopiAct {
     let mut cur = current
     if wopi_alive(exp, now) == 0 {
         cur = ""
@@ -111,6 +236,15 @@ fn wopi_apply(op: str, current: str, exp: i64, now: i64, requested: str) -> Wopi
     }
     if o == "PUT" {
         return wopi_on_put(cur, requested)
+    }
+    if o == "PUT_RELATIVE" {
+        return wopi_on_put_relative(cur, requested, suggested)
+    }
+    if o == "RENAME_FILE" {
+        return wopi_on_rename(cur, requested, new_name)
+    }
+    if o == "DELETE" {
+        return wopi_on_delete(cur, requested)
     }
     return wopi_act(501, "", 0, 0, "")
 }

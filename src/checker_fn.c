@@ -1133,17 +1133,19 @@ void check_program(Checker *c, Node *program) {
             register_fn(&ctx, item);
 
             if (item->is_extern) {
-                /* extern fn: params restricted to i64, f64, str (void is only
-                 * meaningful as a return type — a void param breaks gcc) */
+                /* extern fn: params restricted to i64, f64, str, bytes (void is only
+                 * meaningful as a return type — a void param breaks gcc).
+                 * G10 (closed): bytes се предава като baga_bytes struct по стойност. */
                 for (int j = 0; j < item->params.len; j++) {
                     Node *pt = item->params.data[j]->param_type;
                     while (pt && pt->kind == NODE_TYPE_EFFECT) pt = pt->inner_type;
                     if (!pt || pt->kind != NODE_TYPE ||
                         (strcmp(pt->type_name, "i64") != 0 &&
                          strcmp(pt->type_name, "f64") != 0 &&
-                         strcmp(pt->type_name, "str") != 0))
+                         strcmp(pt->type_name, "str") != 0 &&
+                         strcmp(pt->type_name, "bytes") != 0))
                         check_error(&ctx, item->pos,
-                            "extern fn '%s': неподдържан тип на параметър (само i64, f64, str)",
+                            "extern fn '%s': неподдържан тип на параметър (само i64, f64, str, bytes)",
                             item->fn_name);
                 }
                 Node *rt = item->ret_type;
@@ -1152,9 +1154,10 @@ void check_program(Checker *c, Node *program) {
                     (strcmp(rt->type_name, "i64") != 0 &&
                      strcmp(rt->type_name, "f64") != 0 &&
                      strcmp(rt->type_name, "str") != 0 &&
+                     strcmp(rt->type_name, "bytes") != 0 &&
                      strcmp(rt->type_name, "void") != 0)))
                     check_error(&ctx, item->pos,
-                        "extern fn '%s': неподдържан връщан тип (само i64, f64, str, void)",
+                        "extern fn '%s': неподдържан връщан тип (само i64, f64, str, bytes, void)",
                         item->fn_name);
             }
 

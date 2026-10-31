@@ -1,0 +1,7 @@
+// g13_import_attr_test.baga — G13: грешка в импортиран файл сочи правилния файл.
+// Този тест се очаква да ФЕЙЛ-не с грешка в import_err_lib.baga, не в себе си.
+import "import_err_lib.baga"
+
+fn main() {
+    print(bad_add(1))
+}

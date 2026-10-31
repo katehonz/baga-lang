@@ -38,6 +38,17 @@ fn main() {
     let lines = csv_to_row_lines(tsv)
     check("row_lines", vec_len(lines) == 2 && vec_get(lines, 0) == "A\tB")
 
+    // C3: TSV escaping — клетки с \t \n \r \\ минават round-trip
+    let m = csv_parse("\"a\tb\",\"x\ny\"\n\"p\rq\",\"back\\\\slash\"\n")
+    check("tsv_meta_src", m.ok == 1 && csv_get(m, 0, 0) == "a\tb")
+    let tsv_out = csv_to_tsv(m)
+    let tsv_back = csv_from_tsv(tsv_out)
+    check("tsv_rt_tab", csv_get(tsv_back, 0, 0) == "a\tb")
+    check("tsv_rt_nl", csv_get(tsv_back, 0, 1) == "x\ny")
+    check("tsv_rt_cr", csv_get(tsv_back, 1, 0) == "p\rq")
+    check("tsv_rt_bs", csv_get(tsv_back, 1, 1) == "back\\\\slash")
+    check("tsv_esc_visible", str_find(tsv_out, "a\\tb") >= 0 && str_find(tsv_out, "x\\ny") >= 0)
+
     let pad = csv_parse("a,b\n1\n")
     check("pad_cols", pad.ok == 1 && pad.cols == 2 && csv_get(pad, 1, 1) == "")
 

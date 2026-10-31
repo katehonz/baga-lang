@@ -55,7 +55,67 @@ fn wopi_test_unlock() -> i64 !IO {
     let got0 = wopi_apply("GET_LOCK", "abc", 10, 100, "")
     assert_eq_str("get_empty", got0.lock, "")
     assert_eq_i64("ttl", wopi_lock_ttl_s(), 1800)
-    assert_eq_i64("unknown", wopi_apply("PUT_RELATIVE", "", 0, 1, "").status, 501)
+    assert_eq_i64("unknown", wopi_apply("BOGUS", "", 0, 1, "").status, 501)
+    return 0
+}
+
+fn wopi_test_put_relative() -> i64 !IO {
+    let ok = wopi_apply_ext("PUT_RELATIVE", "", 0, 100, "", "/dav/new%20file.docx", "")
+    assert_eq_i64("pr_free", ok.status, 200)
+    assert_eq_str("pr_name", ok.name, "new file.docx")
+    let locked = wopi_apply_ext("PUT_RELATIVE", "abc", 200, 100, "abc", "x.txt", "")
+    assert_eq_i64("pr_locked", locked.status, 200)
+    assert_eq_str("pr_locked_name", locked.name, "x.txt")
+    let clash = wopi_apply_ext("PUT_RELATIVE", "abc", 200, 100, "zzz", "x.txt", "")
+    assert_eq_i64("pr_clash", clash.status, 409)
+    let bad = wopi_apply_ext("PUT_RELATIVE", "", 0, 100, "", "a/b:c.txt", "")
+    assert_eq_i64("pr_bad_name", bad.status, 400)
+    let empty = wopi_apply_ext("PUT_RELATIVE", "", 0, 100, "", "", "")
+    assert_eq_i64("pr_empty", empty.status, 400)
+    let bare = wopi_apply_ext("PUT_RELATIVE", "", 0, 100, "", "plain.txt", "")
+    assert_eq_str("pr_bare", bare.name, "plain.txt")
+    return 0
+}
+
+fn wopi_test_rename() -> i64 !IO {
+    let ok = wopi_apply_ext("RENAME_FILE", "", 0, 100, "", "", "renamed.docx")
+    assert_eq_i64("rn_free", ok.status, 200)
+    assert_eq_str("rn_name", ok.name, "renamed.docx")
+    let locked = wopi_apply_ext("RENAME_FILE", "abc", 200, 100, "abc", "", "new%20name.txt")
+    assert_eq_str("rn_decoded", locked.name, "new name.txt")
+    let clash = wopi_apply_ext("RENAME_FILE", "abc", 200, 100, "zzz", "", "x.txt")
+    assert_eq_i64("rn_clash", clash.status, 409)
+    let bad = wopi_apply_ext("RENAME_FILE", "", 0, 100, "", "", "a/b.txt")
+    assert_eq_i64("rn_bad", bad.status, 400)
+    let dots = wopi_apply_ext("RENAME_FILE", "", 0, 100, "", "", "...")
+    assert_eq_i64("rn_dots", dots.status, 400)
+    return 0
+}
+
+fn wopi_test_delete() -> i64 !IO {
+    let ok = wopi_apply("DELETE", "", 0, 100, "")
+    assert_eq_i64("del_free", ok.status, 200)
+    assert_eq_i64("del_clear", ok.clear, 1)
+    let locked = wopi_apply("DELETE", "abc", 200, 100, "abc")
+    assert_eq_i64("del_locked", locked.status, 200)
+    let clash = wopi_apply("DELETE", "abc", 200, 100, "zzz")
+    assert_eq_i64("del_clash", clash.status, 409)
+    assert_eq_str("del_held", clash.lock, "abc")
+    return 0
+}
+
+fn wopi_test_names() -> i64 !IO {
+    assert_eq_i64("valid_simple", wopi_valid_name("file.txt"), 1)
+    assert_eq_i64("valid_bg", wopi_valid_name("документ.docx"), 1)
+    assert_eq_i64("bad_slash", wopi_valid_name("a/b"), 0)
+    assert_eq_i64("bad_colon", wopi_valid_name("a:b"), 0)
+    assert_eq_i64("bad_empty", wopi_valid_name(""), 0)
+    assert_eq_i64("bad_dots", wopi_valid_name("..."), 0)
+    assert_eq_i64("bad_star", wopi_valid_name("*"), 0)
+    assert_eq_str("sug_path", wopi_suggested_name("/dav/sub/x.docx"), "x.docx")
+    assert_eq_str("sug_encoded", wopi_suggested_name("%D0%94%D0%BE%D0%BA.txt"), "Док.txt")
+    assert_eq_str("sug_bare", wopi_suggested_name("plain.txt"), "plain.txt")
+    assert_eq_str("sug_empty", wopi_suggested_name(""), "")
     return 0
 }
 
@@ -92,6 +152,10 @@ fn main() -> i64 !IO {
     wopi_test_unlock()?
     wopi_test_put()?
     wopi_test_json()?
+    wopi_test_put_relative()?
+    wopi_test_rename()?
+    wopi_test_delete()?
+    wopi_test_names()?
     print("wopi_test: all passed")
     return 0
 }

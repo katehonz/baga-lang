@@ -266,7 +266,7 @@ void mem3_ensure_fn(CheckCtx *ctx, Node *fn);
 FnRec *fn_rec_of(CheckCtx *ctx, Node *fn);
 FnRec *find_fn_rec(CheckCtx *ctx, const char *name);
 void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
-static void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
+void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
 void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
                              char **tps, int np, Type **bind,
                              SrcPos pos, const char *fnname);
@@ -334,7 +334,7 @@ void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
 }
 
 /* MEM-3: предупреждение — не спира компилацията (за разлика от check_error). */
-static void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
+void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
     if (ctx->chk->n_warnings >= BAGA_MAX_ERRORS) return;
     int k = ctx->chk->n_warnings;
     char *e = ctx->chk->warnings[k];

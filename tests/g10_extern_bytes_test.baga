@@ -1,0 +1,25 @@
+// g10_extern_bytes_test.baga — G10: extern fn с bytes параметър и bytes връщан тип.
+// Линква се с tests/g10_shim.c през BAGA_EXTRA_OBJS.
+import "std/bytes/bytes.baga"
+
+extern fn g10_sum(b: bytes) -> i64
+extern fn g10_reverse(b: bytes) -> bytes
+extern fn g10_len(b: bytes) -> i64
+
+fn main() {
+    let mut v: Vec<i64> = vec_new()
+    vec_push(v, 10)
+    vec_push(v, 20)
+    vec_push(v, 30)
+    let b = bytes_from_vec(v)
+    // bytes параметър: сумата на байтовете пътува през FFI като baga_bytes
+    print(g10_sum(b))
+    // bytes връщан тип: обръщане през FFI
+    let r = g10_reverse(b)
+    print(bytes_len(r))
+    print(bytes_at(r, 0))
+    print(bytes_at(r, 1))
+    print(bytes_at(r, 2))
+    // bytes параметър само за дължина
+    print(g10_len(b))
+}

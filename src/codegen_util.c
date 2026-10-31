@@ -85,6 +85,7 @@ void emit_extern_type(FILE *f, Node *ty, int is_ret) {
         if (strcmp(ty->type_name, "i64") == 0)       fprintf(f, "int64_t");
         else if (strcmp(ty->type_name, "f64") == 0)  fprintf(f, "double");
         else if (strcmp(ty->type_name, "str") == 0)  fprintf(f, is_ret ? "char *" : "const char *");
+        else if (strcmp(ty->type_name, "bytes") == 0) fprintf(f, "baga_bytes");
         else if (strcmp(ty->type_name, "void") == 0) fprintf(f, "void");
         else                                         fprintf(f, "int64_t");
     } else {

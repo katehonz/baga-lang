@@ -136,6 +136,10 @@ run tests/generic_spec_bad.baga 2>&1 | grep -q "параметър 'x' е i64 в
 run tests/generic_spec_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \
 	&& echo "OK: spec върху generic хваща runtime нарушение (M27)" \
 	|| { echo "FAIL: spec върху generic не хвана runtime нарушение"; exit 1; }
+echo "=== G13: грешка в импортиран файл сочи правилния файл ==="
+run tests/g13_import_attr_bad.baga 2>&1 | grep -q "import_err_lib.baga: 3:" \
+	&& echo "OK: G13 — type грешка в import сочи lib файла, не entry-то" \
+	|| { echo "FAIL: G13 — грешката не сочи import файла"; run tests/g13_import_attr_bad.baga 2>&1 | head -3; exit 1; }
 echo "=== -I include path ==="
 cp tests/i_flag/main.baga /tmp/baga_i_flag_main.baga
 run -I tests/i_flag /tmp/baga_i_flag_main.baga > /tmp/baga_i_flag_out.txt \
@@ -215,6 +219,11 @@ printf 'extern fn bad(v: Vec<i64>) -> i64\nfn main() { print(1) }\n' > /tmp/baga
 run /tmp/baga_bad_extern.baga 2>&1 | grep -q "неподдържан тип на параметър" \
 	&& echo "OK: extern fn типовото ограничение е хванато" \
 	|| { echo "FAIL: extern fn типовото ограничение"; exit 1; }
+echo "=== G10: extern fn с bytes параметър/връщане (FFI binary safety) ==="
+BAGA_EXTRA_OBJS="$ROOT/tests/g10_shim.c" run tests/g10_extern_bytes_test.baga > /tmp/baga_g10_out.txt 2>&1 \
+	&& printf '60\n3\n30\n20\n10\n3\n' | diff - /tmp/baga_g10_out.txt > /dev/null \
+	&& echo "OK: G10 — extern fn bytes параметър и bytes връщане минават през FFI" \
+	|| { echo "FAIL: G10 extern bytes"; cat /tmp/baga_g10_out.txt; exit 1; }
 run --emit-c examples/extern_write.baga | grep -v "static void baga_write" | grep -q "baga_write" \
 	&& { echo "FAIL: extern write в statement позиция отива към builtin"; exit 1; } \
 	|| echo "OK: extern write в statement позиция вика libc"
