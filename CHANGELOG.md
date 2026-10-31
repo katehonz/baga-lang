@@ -63,6 +63,14 @@
 - `boila_p5_test`, `boila_pool_test`, `boila_pgwire_test`, `boila_chaos_test`,
   `boila_http_mux_test` — зелени; pool тестът е чист и под TSan.
 
+### W4.5 — LLVM паритет за целия pure app-product стек
+- `tests/llvm_app_pure.sh` пуска 20 pure package теста през C и LLVM и
+  сравнява изход + exit код: buf, chrono, csv, flag, glob, img, jwt, office,
+  otp, path, pb, pdf, smtp, tpl, uuid, xml, zip, met, wmet, jsonrpc.
+- Влиза в `make test-llvm`; ако app-product submodule-ите липсват (както в
+  CI llvm job), script-ът skip-ва с ясно съобщение. Така регресии като
+  нетърпеливите `&&`/`||` се хващат веднага.
+
 ### W4.4 — LLVM `&&`/`||` вече са късосъединени
 - LLVM бекендът оценяваше и двата операнда и комбинираше с `and`/`or`.
   Това чупеше всяка guard конструкция: `i < 0 || vec_get(v, i)` стигаше
