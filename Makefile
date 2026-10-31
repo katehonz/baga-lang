@@ -79,6 +79,7 @@ test-llvm: $(BIN) $(LLVM_BIN) $(PAR_SO) $(WORLD_RT_SO)
 	@LLI="$(LLI)" ./tests/llvm_oracle.sh
 	@LLI="$(LLI)" ./tests/llvm_worlds.sh
 	@LLI="$(LLI)" ./tests/llvm_app_pure.sh
+	@LLI="$(LLI)" ./tests/llvm_boila.sh
 
 test-llvm-rc: $(BIN) $(LLVM_BIN) $(PAR_SO)
 	@LLI="$(LLI)" ./tests/llvm_rc.sh

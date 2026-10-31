@@ -1,0 +1,19 @@
+// nested_field_test — P58b: `a.b.c = x` в LLVM (GEP по вложен път).
+struct Inner { x: i64, y: i64 }
+struct Outer { a: Inner, b: i64 }
+
+fn check(name: str, ok: bool) {
+    if ok { print(concat("ok ", name)) }
+    else { eprintln(concat("FAIL ", name)); exit(1) }
+}
+
+fn main() {
+    let mut o = Outer { a: Inner { x: 1, y: 2 }, b: 3 }
+    o.a.x = 5
+    o.a.y = 7
+    o.b = 6
+    check("nested_x", o.a.x == 5)
+    check("nested_y", o.a.y == 7)
+    check("outer_b", o.b == 6)
+    print("nested_field_test: all passed")
+}

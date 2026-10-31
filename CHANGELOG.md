@@ -73,8 +73,16 @@
 - Под `--rc` `mem_*` остава C-only: RC scope release и rewind не се
   комбинират безопасно (`tests/rc_test`). `rc_on` вече е compile-time
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
-- `tests/llvm_mem_test.baga` е в общия LLVM оракул. Следващият gap за
-  boilaDB на LLVM е field assignment на non-local обект.
+- `tests/llvm_mem_test.baga` е в общия LLVM оракул.
+
+### W4.7 — вложен field assignment + boilaDB на LLVM (P58b)
+- LLVM вече поддържа `a.b.c = x` (рекурсивен GEP от alloca-та на
+  кореновия ident); преди беше „не-локален обект“.
+- След W4.6/W4.7 boilaDB **емитира и работи** на LLVM: ts, pool, p5,
+  http_mux и pgwire тестовете дават същия изход като C.
+- `tests/llvm_boila.sh` (в `make test-llvm`) пази паритета; skip-ва без
+  boilaDB submodule.
+- `tests/nested_field_test.baga` е в общия LLVM оракул.
 
 ### W2.20 — nested cell2 съобщения (P56)
 - Raft: `msg_free` за всички типове; `broadcast` клонира per peer, защото

@@ -787,16 +787,47 @@ static void lrc_emit_drop(Node *n) {
  * struct/enum полета — v0.8/v0.10, per-instance helper-и от M24), store.
  * Без move elision (RC2 prepass няма LLVM еквивалент) — retain + нормален
  * release на източника е наблюдаемо еквивалентен на C move-а. */
+/* P58b: lvalue път за `a.b.c = x` — рекурсивно GEP от alloca-та на
+ * кореновия ident. Връща указател към обекта и неговия struct тип. */
+static LLVMValueRef llv_lvalue_obj_ptr(Node *obj, Type **out_t) {
+    if (!obj) return NULL;
+    if (obj->kind == NODE_IDENT) {
+        LLVMValueRef base = llv_st_lookup(obj->name);
+        if (!base) return NULL;
+        *out_t = obj->type;
+        return base;
+    }
+    if (obj->kind == NODE_FIELD) {
+        Type *pt = NULL;
+        LLVMValueRef pbase = llv_lvalue_obj_ptr(obj->field_obj, &pt);
+        if (!pbase || !pt || pt->kind != TYPE_STRUCT || !pt->name) return NULL;
+        Node *pdecl = llv_find_struct_decl(pt->name);
+        int pidx = pdecl ? llv_struct_field_index(pdecl, obj->field_name) : -1;
+        if (pidx < 0) return NULL;
+        LLVMTypeRef psty;
+        if (pt->n_targs > 0) {
+            char *cn = llv_llvm_struct_cname(pt);
+            psty = llv_user_struct_ty(cn);
+            free(cn);
+        } else {
+            psty = llv_user_struct_ty(pt->name);
+        }
+        LLVMValueRef pgep = LLVMBuildStructGEP2(lg.builder, psty, pbase,
+                                                (unsigned)pidx, "nest");
+        *out_t = obj->type ? obj->type : pdecl->fields.data[pidx]->fld_type->type;
+        return pgep;
+    }
+    return NULL;
+}
+
 static LLVMValueRef emit_field_assign_llvm(Node *n) {
     Node *tgt = n->assign_target;
     Node *obj = tgt->field_obj;
-    if (!obj || obj->kind != NODE_IDENT)
-        llv_llvm_unsupported("присвояване на поле на не-локален обект");
-    LLVMValueRef base = llv_st_lookup(obj->name);
+    Type *otype = NULL;
+    LLVMValueRef base = llv_lvalue_obj_ptr(obj, &otype);
     if (!base)
-        llv_llvm_unsupported("присвояване на поле на недефинирано име");
-    const char *sname = (obj->type && obj->type->kind == TYPE_STRUCT)
-        ? obj->type->name : NULL;
+        llv_llvm_unsupported("присвояване на поле на не-локален обект");
+    const char *sname = (otype && otype->kind == TYPE_STRUCT) ? otype->name : NULL;
     if (!sname) llv_llvm_unsupported("присвояване на поле на не-структура");
     Node *decl = llv_find_struct_decl(sname);
     int idx = decl ? llv_struct_field_index(decl, tgt->field_name) : -1;
@@ -813,8 +844,8 @@ static LLVMValueRef emit_field_assign_llvm(Node *n) {
     LLVMTypeRef sty;
     Node *saved_gs = lg.gen_struct;
     int saved_gi = lg.gen_struct_inst;
-    if (obj->type->n_targs > 0) {
-        char *cn = llv_llvm_struct_cname(obj->type);
+    if (otype->n_targs > 0) {
+        char *cn = llv_llvm_struct_cname(otype);
         sty = llv_user_struct_ty(cn);
         free(cn);
         lg.gen_struct = decl;
@@ -822,7 +853,7 @@ static LLVMValueRef emit_field_assign_llvm(Node *n) {
             int same = 1;
             for (int a = 0; a < decl->n_struct_params; a++)
                 if (!type_eq(decl->struct_inst_targs[k * decl->n_struct_params + a],
-                             obj->type->targs[a])) { same = 0; break; }
+                             otype->targs[a])) { same = 0; break; }
             if (same) { lg.gen_struct_inst = k; break; }
         }
     } else {
@@ -835,8 +866,8 @@ static LLVMValueRef emit_field_assign_llvm(Node *n) {
     /* RC: resolved тип на полето (per инстанция за generic) + heap tag */
     Type *ft = NULL;
     if (lg.rc) {
-        if (obj->type->n_targs > 0)
-            ft = llv_lrc_fld_inst_type(obj->type, fld->fld_type);
+        if (otype->n_targs > 0)
+            ft = llv_lrc_fld_inst_type(otype, fld->fld_type);
         if (!ft) ft = fld->fld_type->type;
     }
     int ftag = ft ? llv_lrc_heap_tag(ft) : llv_lrc_heap_tag_node(fld->fld_type);
