@@ -80,6 +80,10 @@
 - P50: HTTP mux park копира `db`/`guc` в persist само при промяна; преди
   всяка заявка правеше нов `Map` + `substr`-ове (328 MB RSS за 10 s).
   Сега 10 s @164k req/s държи ~2.7 MB.
+- P51: connection-lifetime `mem_mark`/`mem_rewind` в boilaDB go_bg
+  wrappers и fmrbaga; startup/turn arena-та се връща при close.
+  Остава известен ръст при `pgbench -C` (кратки връзки, persist/allocator)
+  — ~11 MB/100 връзки; следващ fix.``
 
 ### App — boilaDB mux wake (P47): 5 tps → 151k tps
 - `boila_mux_wake` пишеше wake байт с `tcp_write` върху `pipe2`. `tcp_write`
