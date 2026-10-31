@@ -43,7 +43,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | Package | Role |
 |---------|------|
 | **httpdbaga** | HTTP/1.1 + HTTP/2 + HPACK · [repo](https://github.com/bagalang/httpdbaga) (submodule) |
-| **jwtbaga** | JWT HS256 / RS256 / ES256 · [repo](https://github.com/bagalang/jwtbaga) (submodule) |
+| **jwtbaga** | JWT HS256 / RS256 / ES256 — **sign + verify** (RS256 PKCS#1, ES256 det-k), PEM keys · [repo](https://github.com/bagalang/jwtbaga) (submodule) |
 | **pgbaga** | PostgreSQL wire client (SCRAM, `$1` params) · [repo](https://github.com/bagalang/pgbaga) (submodule) |
 | **boilaDB** | Multimodal SQL database (BoilaSQL + PG wire `:6575` + HTTP) — [docs](app-product/boilaDB/docs/README.md) · [repo](https://github.com/bagalang/boilaDB) (submodule) |
 | **boilabaga** | Client adapter to boilaDB over PG wire (`:6575`) · [repo](https://github.com/bagalang/boilabaga) (submodule) |
@@ -62,11 +62,17 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **[wsbaga](https://github.com/bagalang/wsbaga)** / **[chatbaga](https://github.com/bagalang/chatbaga)** | WebSocket + multi-room chat (`poll`) |
 | **oauthbaga** | OAuth proxy (integration exam) · [repo](https://github.com/bagalang/oauthbaga) (submodule) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) · [repo](https://github.com/bagalang/bagadecimal) (submodule) |
-| **chronobaga** | Civil dates (chrono `NaiveDate`; ISO/financial, Bulgarian invoice/VAT print) · [repo](https://github.com/bagalang/chronobaga) (submodule) |
+| **chronobaga** | Civil dates (ISO padded + unpadded `2026-8-30`, financial, Bulgarian invoice/VAT) · [repo](https://github.com/bagalang/chronobaga) (submodule) |
 | **[mdbaga](https://github.com/bagalang/mdbaga)**, **[tplbaga](https://github.com/bagalang/tplbaga)**, **[queuebaga](https://github.com/bagalang/queuebaga)**, **[jsonrpcbaga](https://github.com/bagalang/jsonrpcbaga)**, **[grebaga](https://github.com/bagalang/grebaga)**, **[testbaga](https://github.com/bagalang/testbaga)** | Markdown, templates, jobs, RPC, grep CLI, asserts |
-| **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) · [repo](https://github.com/bagalang/imgbaga) (submodule) |
+| **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM, `img_load_bounded` · [repo](https://github.com/bagalang/imgbaga) (submodule) |
 | **apps/api**, **apps/registry**, **apps/report** | In-tree sample products (API reference, sandak package registry, report CLI) |
-| **[bagabuch](https://github.com/bagalang/bagabuch)** | Bulgarian accounting app (invoices, chart of accounts, journal, VAT, SAF-T, bank statements) — **separate repo**, submodule under `app-product/bagabuch` |
+| **csvbaga** | CSV/TSV parse + stringify, **streaming row parser**, TSV escaping · [repo](https://github.com/bagalang/csvbaga) (submodule) |
+| **reportbaga** | Reports: HTML/XLSX (multi-sheet)/ODS/PDF, **BGN number formatting** · [repo](https://github.com/bagalang/reportbaga) (submodule) |
+| **officebaga** | OOXML/ODF/CFB — DOCX/XLSX/ODT read+edit, **cross-run text replace, mini streams** · [repo](https://github.com/bagalang/officebaga) (submodule) |
+| **s3baga** | AWS S3 SigV4 client — **path + virtual-hosted style, chunked responses** · [repo](https://github.com/bagalang/s3baga) (submodule) |
+| **davbaga** | WebDAV protocol — **shared locks, RFC 4918 If, lock-null** · [repo](https://github.com/bagalang/davbaga) (submodule) |
+| **wopibaga** | WOPI host helpers — **X-WOPI-Proof RSA verify, PutRelative/Rename/Delete** · in-tree |
+| **[bagabuch](https://github.com/bagalang/bagabuch)** | Bulgarian accounting app (invoices, chart of accounts, journal, VAT, SAF-T, bank statements, S3 backups) — **separate repo**, submodule under `app-product/bagabuch` |
 
 Canonical stack: `apps/*` → **fmrbaga** → httpdbaga / jwtbaga / ormbaga → **pgbaga** → Postgres  
 (or ormbaga → **boilabaga** → pgbaga → **boilaDB** PG wire). See [`app-product/BASE.md`](app-product/BASE.md).
@@ -685,8 +691,29 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
 supported. `--proofs` surfaces the verifier's established facts: real
 termination verdicts (`decreases` → full correctness vs partial), while-loop
 invariants as lemmas with their Hoare status, and the M18 `f_overflow_safe`
-theorem. Remaining (the honest frontier — `docs/thesis-open-problems.md`):
-liveness for channels, full bitvectors, rich polynomials.
+theorem.
+
+- **M25–M30** — **wait-for protocol checking for channels** (`!Par`): counted
+  `for` loops (M25), blocking send on full buffer (M24), server loops
+  `while true` with exit (M30), nested go (M29), branch merge (M27).
+  PROVEN: recv after producer, send fits buffer; REFUTED: recv without send,
+  join before send. Symbolic bounds stay honestly UNKNOWN.
+- **M31 (2026-10-31)** — **while-loop induction in the wait-for scan**:
+  `while i < N { body; i = i + 1 }` with constant N is recognized, the body is
+  scanned once and its send/recv counts are scaled by N (upper bound). PROVEN
+  directions (producer capacity, recv coverage) work like M25; imprecise for
+  REFUTED. Oracle: `examples/verify/while_count.baga`.
+- **M32 (2026-10-31)** — **CDCL clause learning in the bitvector SAT solver**
+  (`src/verify_bv_sat.c`): reason tracking, MiniSat-style 1-UIP conflict
+  analysis, non-chronological backjump, UIP propagation. Enabled and **sound**
+  after a formal audit (`docs/cdcl-audit-2026-10-31.md`) — the root cause of
+  earlier false UNSAT was mistaking unassigned literals for falsified ones in
+  the conflict-clause scan. With CDCL, true bitvector identities like
+  `(x&y)|(x&~y) == x` are now proven (ДОКАЗАНО) instead of exhausting the DPLL
+  budget; all `*_bad` tripwires stay refuted. 138/138 verify gates pass.
+
+Remaining (the honest frontier — `docs/thesis-open-problems.md`):
+fairness/starvation for channels, GF(2)/multiplication in BV, rich polynomials.
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

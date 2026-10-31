@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### 2026-10-31 — голяма сесия: 12 затворени gap-а + 2 теории (M31/M32) + CDCL одит
+
+**Компилатор / език:**
+- **G12**: warning при bitwise-vs-comparison без скоби (`x & 128 == 128` → C precedence trap)
+- **G13**: error attribution през imports сочи правилния файл (`pos.file` в parser + checker)
+- **G10**: `extern fn` с `bytes` параметър и връщане (FFI binary safety, C backend)
+- Version fix: `BAGA_VERSION_MINOR` 3→4 (съответства на 1.4.0)
+
+**Верификатор — двете теории:**
+- **M31**: while-loop индукция в wait-for scan — `while i < N { body; i=i+1 }` броен, PROVEN посоки работят
+- **M32**: CDCL clause learning ВКЛЮЧЕН и sound след формален одит (`docs/cdcl-audit-2026-10-31.md`); root cause на false UNSAT: unassigned литерали бъркани с falsified. 138/138 gates
+
+**app-product (затворени gaps):**
+- davbaga D1/D2/D3: shared locks, RFC 4918 §10.4 If парсър, lock-null ресурси
+- s3baga A2/A3: virtual-hosted buckets, chunked transfer-encoding decode
+- wopibaga W1/W2: X-WOPI-Proof RSA verify, PutRelative/RenameFile/Delete
+- csvbaga C1/C3: streaming row parser, TSV escaping
+- officebaga O8/O11: cross-run `<w:t>` замяна, mini streams в CFB
+- imgbaga I4/I5: `img_load_bounded` (probe+reject+downscale), централизиран `img_max_dim`
+- reportbaga R1/R4: multi-sheet XLSX, BGN number formatting
+- jwtbaga G11: RS256 + ES256 sign (RFC 6979-style deterministic k)
+- chronobaga T7: unpadded ISO дати
+- queuebaga Q3: `write_file_atomic` (temp+rename) в std/os
+- boilaDB: filesize gate (ast_free.baga), MEM-8 анализ (bounded от ulimit)
+
+**bagabuch:** s3.style=virtual през settings, rpt_bg_num през report_fmt_bgn
+
+**Тестове:** g10_extern_bytes, g12_bitwise_warn, g13_import_attr, cfb_mini_test + разширени dav/wopi/csv/office/report/img/queue/jwt/chrono/http тестове
+
+## [Unreleased]
+
 ### W4.0 — светове в LLVM бекенда (същият runtime, не втори port)
 - LLVM бекендът вече поддържа целия world API: `world_*`, `wvec_*`, `wmap_*`,
   `wrec_*`, `wcache_*`. Досега тези builtin-и бяха явен отказ („само C
