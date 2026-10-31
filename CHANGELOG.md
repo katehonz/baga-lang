@@ -75,6 +75,16 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.9 — глобален hash allocation log; LLVM boilaDB go_bg (P59)
+- `mem_*` log-ът в `libbaga_par.so` е глобален hash (pointer→size/persist)
+  + per-thread pointer log за mark/rewind. Cross-thread free вече маркира
+  записа мъртъв, вместо да оставя stale entry за rewind.
+- LLVM boilaDB `serve_pg` с `BOILA_WORKERS=0` (go_bg) работи под pgbench:
+  ~19.6k tps @ c=4 (C: ~180k). Мултиплексорът с worker pool
+  (`BOILA_WORKERS=4`) още пада под товар — per-thread arena/log и
+  преместване на връзки между worker-и; остава experimental.
+- LLVM gate-овете (boila/storage) продължават да минават.
+
 ### W4.8 — rocksbaga/queuebaga на LLVM
 - След mem_* и nested field assignment, storage/queue стекът също минава
   през `lli`: lsm_test, lsm_engine_test, workers_test, lsm_recover_test,

@@ -375,91 +375,191 @@ baga_Vec *baga_pool_map(baga_par_fn fn, baga_Vec *in, int64_t nw) {
     return out;
 }
 
-/* ---- P58: LLVM allocation log за mem_mark/rewind/persist ----
- * Thread-local; llv_rt_malloc/realloc/free са пренасочени към тези функции.
- * Persist allocations оцеляват rewind; mark е индекс в log-а. */
+/* ---- P58/P59: LLVM allocation log за mem_mark/rewind/persist ----
+ * Глобален hash (pointer → size/persist), за да е коректно при cross-thread
+ * free; per-thread pointer log за mark/rewind. */
 typedef struct { void *p; size_t n; int persist, alive; } baga_LmEnt;
-typedef struct { baga_LmEnt *e; size_t len, cap; int64_t live, live_np, peak; int depth; } baga_LmLog;
-static __thread baga_LmLog baga_lm;
+typedef struct { void **v; size_t len, cap; } baga_LmLog;
+static __thread baga_LmLog baga_lm_log;
+static __thread int baga_lm_depth;
+static pthread_mutex_t baga_lm_mu = PTHREAD_MUTEX_INITIALIZER;
+static baga_LmEnt *baga_lm_tab;
+static size_t baga_lm_cap, baga_lm_used, baga_lm_fill;
+static int64_t baga_lm_live, baga_lm_peak;
+#define BAGA_LM_TOMB ((void *)(uintptr_t)1)
 
-static void baga_lm_reserve(void) {
-    if (baga_lm.len < baga_lm.cap) return;
-    size_t nc = baga_lm.cap ? baga_lm.cap * 2 : 256;
-    baga_LmEnt *ne = (baga_LmEnt *)realloc(baga_lm.e, nc * sizeof(*ne));
-    if (!ne) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
-    baga_lm.e = ne; baga_lm.cap = nc;
+static uint64_t baga_lm_hash(void *p) {
+    uint64_t x = (uint64_t)(uintptr_t)p;
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
+static size_t baga_lm_slot(void *p, int for_insert) {
+    size_t mask = baga_lm_cap - 1;
+    size_t i = (size_t)(baga_lm_hash(p) & mask);
+    size_t tomb = (size_t)-1;
+    for (;;) {
+        void *q = baga_lm_tab[i].p;
+        if (!q) return (for_insert && tomb != (size_t)-1) ? tomb : i;
+        if (q == BAGA_LM_TOMB) {
+            if (tomb == (size_t)-1) tomb = i;
+        } else if (q == p) {
+            return i;
+        }
+        i = (i + 1) & mask;
+    }
+}
+
+static void baga_lm_put_raw(void *p, size_t n, int persist) {
+    size_t i = baga_lm_slot(p, 1);
+    if (!baga_lm_tab[i].p) baga_lm_fill++;
+    baga_lm_tab[i].p = p;
+    baga_lm_tab[i].n = n;
+    baga_lm_tab[i].persist = persist;
+    baga_lm_tab[i].alive = 1;
+    baga_lm_used++;
+}
+
+static void baga_lm_rehash(size_t ncap) {
+    baga_LmEnt *old = baga_lm_tab;
+    size_t oc = baga_lm_cap;
+    baga_lm_tab = (baga_LmEnt *)calloc(ncap, sizeof(*baga_lm_tab));
+    if (!baga_lm_tab) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
+    baga_lm_cap = ncap; baga_lm_used = 0; baga_lm_fill = 0;
+    for (size_t i = 0; i < oc; i++) {
+        if (old[i].p && old[i].p != BAGA_LM_TOMB)
+            baga_lm_put_raw(old[i].p, old[i].n, old[i].persist);
+    }
+    free(old);
+}
+
+static void baga_lm_put(void *p, size_t n, int persist) {
+    if (!baga_lm_cap) {
+        baga_lm_cap = 1024;
+        baga_lm_tab = (baga_LmEnt *)calloc(baga_lm_cap, sizeof(*baga_lm_tab));
+        if (!baga_lm_tab) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
+    }
+    if ((baga_lm_fill + 1) * 10 > baga_lm_cap * 7)
+        baga_lm_rehash(baga_lm_cap * 2);
+    baga_lm_put_raw(p, n, persist);
+}
+
+static size_t baga_lm_find(void *p) {
+    if (!baga_lm_cap) return (size_t)-1;
+    size_t i = baga_lm_slot(p, 0);
+    return baga_lm_tab[i].p == p ? i : (size_t)-1;
+}
+
+static void baga_lm_log_push(void *p) {
+    if (baga_lm_log.len == baga_lm_log.cap) {
+        size_t nc = baga_lm_log.cap ? baga_lm_log.cap * 2 : 256;
+        void **nv = (void **)realloc(baga_lm_log.v, nc * sizeof(*nv));
+        if (!nv) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
+        baga_lm_log.v = nv; baga_lm_log.cap = nc;
+    }
+    baga_lm_log.v[baga_lm_log.len++] = p;
+}
+
+static void baga_lm_log_replace(void *old, void *np) {
+    for (size_t i = baga_lm_log.len; i-- > 0; ) {
+        if (baga_lm_log.v[i] == old) { baga_lm_log.v[i] = np; return; }
+    }
 }
 
 void *baga_lm_malloc(int64_t n) {
     size_t sz = n > 0 ? (size_t)n : 1;
     void *p = malloc(sz);
     if (!p) { fprintf(stderr, "baga: mem: oom\n"); exit(1); }
-    baga_lm_reserve();
-    baga_lm.e[baga_lm.len].p = p;
-    baga_lm.e[baga_lm.len].n = sz;
-    baga_lm.e[baga_lm.len].persist = baga_lm.depth > 0;
-    baga_lm.e[baga_lm.len].alive = 1;
-    baga_lm.len++;
-    baga_lm.live += (int64_t)sz;
-    if (!baga_lm.e[baga_lm.len - 1].persist) {
-        baga_lm.live_np += (int64_t)sz;
-        if (baga_lm.live_np > baga_lm.peak) baga_lm.peak = baga_lm.live_np;
+    int persist = baga_lm_depth > 0;
+    pthread_mutex_lock(&baga_lm_mu);
+    baga_lm_put(p, sz, persist);
+    if (!persist) {
+        baga_lm_live += (int64_t)sz;
+        if (baga_lm_live > baga_lm_peak) baga_lm_peak = baga_lm_live;
     }
+    pthread_mutex_unlock(&baga_lm_mu);
+    baga_lm_log_push(p);
     return p;
 }
 
 void *baga_lm_realloc(void *p, int64_t n) {
     size_t sz = n > 0 ? (size_t)n : 1;
-    for (size_t i = baga_lm.len; i-- > 0; ) {
-        if (baga_lm.e[i].p != p) continue;
-        if (!baga_lm.e[i].alive) return p;
+    pthread_mutex_lock(&baga_lm_mu);
+    size_t i = baga_lm_find(p);
+    if (i != (size_t)-1) {
+        size_t oldn = baga_lm_tab[i].n;
+        int persist = baga_lm_tab[i].persist;
         void *np = realloc(p, sz);
         if (!np) { fprintf(stderr, "baga: mem: oom\n"); exit(1); }
-        baga_lm.live += (int64_t)sz - (int64_t)baga_lm.e[i].n;
-        if (!baga_lm.e[i].persist)
-            baga_lm.live_np += (int64_t)sz - (int64_t)baga_lm.e[i].n;
-        baga_lm.e[i].p = np; baga_lm.e[i].n = sz;
-        if (baga_lm.live_np > baga_lm.peak) baga_lm.peak = baga_lm.live_np;
+        if (!persist) {
+            baga_lm_live += (int64_t)sz - (int64_t)oldn;
+            if (baga_lm_live > baga_lm_peak) baga_lm_peak = baga_lm_live;
+        }
+        baga_lm_tab[i].p = BAGA_LM_TOMB;
+        baga_lm_used--;
+        baga_lm_put(np, sz, persist);
+        pthread_mutex_unlock(&baga_lm_mu);
+        baga_lm_log_replace(p, np);
         return np;
     }
+    pthread_mutex_unlock(&baga_lm_mu);
     return realloc(p, sz);
 }
 
 void baga_lm_free(void *p) {
     if (!p) return;
-    for (size_t i = baga_lm.len; i-- > 0; ) {
-        if (baga_lm.e[i].p != p) continue;
-        if (!baga_lm.e[i].alive) return;   /* двоен free — no-op */
-        baga_lm.e[i].alive = 0;
-        baga_lm.live -= (int64_t)baga_lm.e[i].n;
-        if (!baga_lm.e[i].persist) baga_lm.live_np -= (int64_t)baga_lm.e[i].n;
+    pthread_mutex_lock(&baga_lm_mu);
+    size_t i = baga_lm_find(p);
+    if (i != (size_t)-1) {
+        if (!baga_lm_tab[i].persist)
+            baga_lm_live -= (int64_t)baga_lm_tab[i].n;
+        baga_lm_tab[i].p = BAGA_LM_TOMB;
+        baga_lm_used--;
         free(p);
-        return;
+    } else {
+        free(p);
     }
-    free(p);   /* извън log-а (par/world runtime) */
+    pthread_mutex_unlock(&baga_lm_mu);
 }
 
-int64_t baga_lm_mark(void) { return (int64_t)baga_lm.len; }
+int64_t baga_lm_mark(void) { return (int64_t)baga_lm_log.len; }
 
 void baga_lm_rewind(int64_t mark) {
-    if (mark < 0 || (size_t)mark > baga_lm.len) return;
+    if (mark < 0 || (size_t)mark > baga_lm_log.len) return;
+    pthread_mutex_lock(&baga_lm_mu);
     size_t k = (size_t)mark;
-    for (size_t i = (size_t)mark; i < baga_lm.len; i++) {
-        if (baga_lm.e[i].alive) {
-            if (baga_lm.e[i].persist) {
-                baga_lm.e[k++] = baga_lm.e[i];
-            } else {
-                free(baga_lm.e[i].p);
-                baga_lm.live -= (int64_t)baga_lm.e[i].n;
-                baga_lm.live_np -= (int64_t)baga_lm.e[i].n;
-            }
+    for (size_t i = (size_t)mark; i < baga_lm_log.len; i++) {
+        void *p = baga_lm_log.v[i];
+        size_t j = baga_lm_find(p);
+        if (j == (size_t)-1) continue;       /* вече freed от друг thread */
+        if (baga_lm_tab[j].persist) {
+            baga_lm_log.v[k++] = p;          /* persist оцелява */
+        } else {
+            baga_lm_live -= (int64_t)baga_lm_tab[j].n;
+            baga_lm_tab[j].p = BAGA_LM_TOMB;
+            baga_lm_used--;
+            free(p);
         }
     }
-    baga_lm.len = k;
+    baga_lm_log.len = k;
+    pthread_mutex_unlock(&baga_lm_mu);
 }
 
-void baga_lm_persist_begin(void) { baga_lm.depth++; }
-void baga_lm_persist_end(void) { if (baga_lm.depth > 0) baga_lm.depth--; }
-int64_t baga_lm_arena_bytes(void) { return baga_lm.live_np; }
+void baga_lm_persist_begin(void) { baga_lm_depth++; }
+void baga_lm_persist_end(void) { if (baga_lm_depth > 0) baga_lm_depth--; }
+
+int64_t baga_lm_arena_bytes(void) {
+    pthread_mutex_lock(&baga_lm_mu);
+    int64_t v = baga_lm_live;
+    pthread_mutex_unlock(&baga_lm_mu);
+    return v;
+}
 int64_t baga_lm_spare_bytes(void) { return 0; }
-int64_t baga_lm_peak_bytes(void) { return baga_lm.peak; }
+int64_t baga_lm_peak_bytes(void) {
+    pthread_mutex_lock(&baga_lm_mu);
+    int64_t v = baga_lm_peak;
+    pthread_mutex_unlock(&baga_lm_mu);
+    return v;
+}

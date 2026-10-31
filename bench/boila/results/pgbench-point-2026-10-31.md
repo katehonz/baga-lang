@@ -78,6 +78,13 @@ wake-ът alokiraше `substr` извън turn rewind-а. Сега `cell2_free` 
 (преди: ~11/18 MB). Остава per-connection persist/arena; keep-alive
 пътят е стабилен.
 
+## LLVM (experimental, P59)
+
+`serve_pg` на LLVM (`lli`), `BOILA_WORKERS=0` (go_bg), същият pgbench
+point SELECT: **19 587 tps @ c=4** (C: ~180k). `BOILA_WORKERS=4`
+(mux/worker pool) пада под товар — per-thread allocation log и местене на
+връзки между worker-и; LLVM serving остава experimental, не production.
+
 ## Честни граници
 
 - Read-only point SELECT с 5k реда; не пише, не JOIN-ва, не сканира.

@@ -37,6 +37,9 @@ Pure app-product стекът (20 теста) и световете минава
 вложеният field assignment (`a.b.c = x`) също. След W4.6/W4.7 **boilaDB
 емитира и работи на LLVM**; `tests/llvm_boila.sh` пази C↔LLVM паритета.
 Rocksbaga и queuebaga също минават (W4.8) през `tests/llvm_storage.sh`.
+LLVM boilaDB `serve_pg` с `BOILA_WORKERS=0` работи под pgbench (~19.6k tps
+@ c=4); mux/worker-pool режимът още пада под товар (per-thread mem log +
+преместване на връзки между worker-и) и е experimental.
 
 ## Оставащи кандидати (по приоритет)
 
