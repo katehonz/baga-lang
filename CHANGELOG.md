@@ -86,8 +86,9 @@
   — ~11 MB/100 връзки (go_bg) / ~16 MB/100 (mux); следващ fix.
 - P52: mux startup-ът за non-TLS се rewind-ва след `psess`, default
   reader-ът не алокира 8KB scratch; churn ръстът падна ~184→164 KB/връзка.
-  Остават per-connection persist/arena алокации (e_* планове, scratch) —
-  иска pinned worker или отделна per-connection persist арена.
+  Остават per-connection persist/arena алокации (главно scratch и
+  allocator); P53 освобождава e_* плановете при close, но не решава
+  проблема — иска pinned worker или отделна per-connection persist арена.
 
 ### App — boilaDB mux wake (P47): 5 tps → 151k tps
 - `boila_mux_wake` пишеше wake байт с `tcp_write` върху `pipe2`. `tcp_write`
