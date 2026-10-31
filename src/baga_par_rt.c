@@ -375,17 +375,24 @@ baga_Vec *baga_pool_map(baga_par_fn fn, baga_Vec *in, int64_t nw) {
     return out;
 }
 
-/* ---- P58/P59: LLVM allocation log за mem_mark/rewind/persist ----
- * Глобален hash (pointer → size/persist), за да е коректно при cross-thread
- * free; per-thread pointer log за mark/rewind. */
+/* ---- P63: per-thread allocation log + global registry за cross-thread free ----
+ * Всяка нишка има свой hash (без глобален mutex по горещия път); cross-thread
+ * free търси из регистрираните логове под reg_mu. mark/rewind са per-thread. */
 typedef struct { void *p; size_t n; int persist, alive; } baga_LmEnt;
-typedef struct { void **v; size_t len, cap; } baga_LmLog;
-static __thread baga_LmLog baga_lm_log;
+typedef struct baga_LmLog {
+    baga_LmEnt *tab;
+    size_t cap, used, fill;
+    void **v;
+    size_t len, vcap;
+    int64_t live, peak;
+    pthread_mutex_t mu;
+    struct baga_LmLog *next;
+} baga_LmLog;
+
+static pthread_mutex_t baga_lm_reg_mu = PTHREAD_MUTEX_INITIALIZER;
+static baga_LmLog *baga_lm_logs;
+static __thread baga_LmLog *baga_lm_tl;
 static __thread int baga_lm_depth;
-static pthread_mutex_t baga_lm_mu = PTHREAD_MUTEX_INITIALIZER;
-static baga_LmEnt *baga_lm_tab;
-static size_t baga_lm_cap, baga_lm_used, baga_lm_fill;
-static int64_t baga_lm_live, baga_lm_peak;
 #define BAGA_LM_TOMB ((void *)(uintptr_t)1)
 
 static uint64_t baga_lm_hash(void *p) {
@@ -396,12 +403,12 @@ static uint64_t baga_lm_hash(void *p) {
     return x;
 }
 
-static size_t baga_lm_slot(void *p, int for_insert) {
-    size_t mask = baga_lm_cap - 1;
+static size_t baga_lm_slot(baga_LmLog *L, void *p, int for_insert) {
+    size_t mask = L->cap - 1;
     size_t i = (size_t)(baga_lm_hash(p) & mask);
     size_t tomb = (size_t)-1;
     for (;;) {
-        void *q = baga_lm_tab[i].p;
+        void *q = L->tab[i].p;
         if (!q) return (for_insert && tomb != (size_t)-1) ? tomb : i;
         if (q == BAGA_LM_TOMB) {
             if (tomb == (size_t)-1) tomb = i;
@@ -412,154 +419,209 @@ static size_t baga_lm_slot(void *p, int for_insert) {
     }
 }
 
-static void baga_lm_put_raw(void *p, size_t n, int persist) {
-    size_t i = baga_lm_slot(p, 1);
-    if (!baga_lm_tab[i].p) baga_lm_fill++;
-    baga_lm_tab[i].p = p;
-    baga_lm_tab[i].n = n;
-    baga_lm_tab[i].persist = persist;
-    baga_lm_tab[i].alive = 1;
-    baga_lm_used++;
+static void baga_lm_put_raw(baga_LmLog *L, void *p, size_t n, int persist) {
+    size_t i = baga_lm_slot(L, p, 1);
+    if (!L->tab[i].p) L->fill++;
+    L->tab[i].p = p;
+    L->tab[i].n = n;
+    L->tab[i].persist = persist;
+    L->tab[i].alive = 1;
+    L->used++;
 }
 
-static void baga_lm_rehash(size_t ncap) {
-    baga_LmEnt *old = baga_lm_tab;
-    size_t oc = baga_lm_cap;
-    baga_lm_tab = (baga_LmEnt *)calloc(ncap, sizeof(*baga_lm_tab));
-    if (!baga_lm_tab) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
-    baga_lm_cap = ncap; baga_lm_used = 0; baga_lm_fill = 0;
-    for (size_t i = 0; i < oc; i++) {
+static void baga_lm_rehash(baga_LmLog *L, size_t ncap) {
+    baga_LmEnt *old = L->tab;
+    size_t oc = L->cap;
+    L->tab = (baga_LmEnt *)calloc(ncap, sizeof(*L->tab));
+    if (!L->tab) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
+    L->cap = ncap; L->used = 0; L->fill = 0;
+    for (size_t i = 0; i < oc; i++)
         if (old[i].p && old[i].p != BAGA_LM_TOMB)
-            baga_lm_put_raw(old[i].p, old[i].n, old[i].persist);
-    }
+            baga_lm_put_raw(L, old[i].p, old[i].n, old[i].persist);
     free(old);
 }
 
-static void baga_lm_put(void *p, size_t n, int persist) {
-    if (!baga_lm_cap) {
-        baga_lm_cap = 1024;
-        baga_lm_tab = (baga_LmEnt *)calloc(baga_lm_cap, sizeof(*baga_lm_tab));
-        if (!baga_lm_tab) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
+static void baga_lm_put(baga_LmLog *L, void *p, size_t n, int persist) {
+    if (!L->cap) {
+        L->cap = 1024;
+        L->tab = (baga_LmEnt *)calloc(L->cap, sizeof(*L->tab));
+        if (!L->tab) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
     }
-    if ((baga_lm_fill + 1) * 10 > baga_lm_cap * 7)
-        baga_lm_rehash(baga_lm_cap * 2);
-    baga_lm_put_raw(p, n, persist);
+    if ((L->fill + 1) * 10 > L->cap * 7)
+        baga_lm_rehash(L, L->cap * 2);
+    baga_lm_put_raw(L, p, n, persist);
 }
 
-static size_t baga_lm_find(void *p) {
-    if (!baga_lm_cap) return (size_t)-1;
-    size_t i = baga_lm_slot(p, 0);
-    return baga_lm_tab[i].p == p ? i : (size_t)-1;
+static size_t baga_lm_find(baga_LmLog *L, void *p) {
+    if (!L->cap) return (size_t)-1;
+    size_t i = baga_lm_slot(L, p, 0);
+    return L->tab[i].p == p ? i : (size_t)-1;
 }
 
-static void baga_lm_log_push(void *p) {
-    if (baga_lm_log.len == baga_lm_log.cap) {
-        size_t nc = baga_lm_log.cap ? baga_lm_log.cap * 2 : 256;
-        void **nv = (void **)realloc(baga_lm_log.v, nc * sizeof(*nv));
+static void baga_lm_log_push(baga_LmLog *L, void *p) {
+    if (L->len == L->vcap) {
+        size_t nc = L->vcap ? L->vcap * 2 : 256;
+        void **nv = (void **)realloc(L->v, nc * sizeof(*nv));
         if (!nv) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
-        baga_lm_log.v = nv; baga_lm_log.cap = nc;
+        L->v = nv; L->vcap = nc;
     }
-    baga_lm_log.v[baga_lm_log.len++] = p;
+    L->v[L->len++] = p;
 }
 
-static void baga_lm_log_replace(void *old, void *np) {
-    for (size_t i = baga_lm_log.len; i-- > 0; ) {
-        if (baga_lm_log.v[i] == old) { baga_lm_log.v[i] = np; return; }
+static void baga_lm_log_replace(baga_LmLog *L, void *old, void *np) {
+    for (size_t i = L->len; i-- > 0; ) {
+        if (L->v[i] == old) { L->v[i] = np; return; }
     }
+}
+
+static baga_LmLog *baga_lm_get(void) {
+    if (baga_lm_tl) return baga_lm_tl;
+    baga_LmLog *L = (baga_LmLog *)calloc(1, sizeof(*L));
+    if (!L) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
+    pthread_mutex_init(&L->mu, NULL);
+    pthread_mutex_lock(&baga_lm_reg_mu);
+    L->next = baga_lm_logs;
+    baga_lm_logs = L;
+    pthread_mutex_unlock(&baga_lm_reg_mu);
+    baga_lm_tl = L;
+    return L;
 }
 
 void *baga_lm_malloc(int64_t n) {
     size_t sz = n > 0 ? (size_t)n : 1;
     void *p = malloc(sz);
     if (!p) { fprintf(stderr, "baga: mem: oom\n"); exit(1); }
+    baga_LmLog *L = baga_lm_get();
     int persist = baga_lm_depth > 0;
-    pthread_mutex_lock(&baga_lm_mu);
-    baga_lm_put(p, sz, persist);
+    pthread_mutex_lock(&L->mu);
+    baga_lm_put(L, p, sz, persist);
     if (!persist) {
-        baga_lm_live += (int64_t)sz;
-        if (baga_lm_live > baga_lm_peak) baga_lm_peak = baga_lm_live;
+        L->live += (int64_t)sz;
+        if (L->live > L->peak) L->peak = L->live;
     }
-    pthread_mutex_unlock(&baga_lm_mu);
-    baga_lm_log_push(p);
+    baga_lm_log_push(L, p);
+    pthread_mutex_unlock(&L->mu);
     return p;
 }
 
 void *baga_lm_realloc(void *p, int64_t n) {
     size_t sz = n > 0 ? (size_t)n : 1;
-    pthread_mutex_lock(&baga_lm_mu);
-    size_t i = baga_lm_find(p);
+    baga_LmLog *L = baga_lm_get();
+    pthread_mutex_lock(&L->mu);
+    size_t i = baga_lm_find(L, p);
     if (i != (size_t)-1) {
-        size_t oldn = baga_lm_tab[i].n;
-        int persist = baga_lm_tab[i].persist;
+        size_t oldn = L->tab[i].n;
+        int persist = L->tab[i].persist;
         void *np = realloc(p, sz);
         if (!np) { fprintf(stderr, "baga: mem: oom\n"); exit(1); }
         if (!persist) {
-            baga_lm_live += (int64_t)sz - (int64_t)oldn;
-            if (baga_lm_live > baga_lm_peak) baga_lm_peak = baga_lm_live;
+            L->live += (int64_t)sz - (int64_t)oldn;
+            if (L->live > L->peak) L->peak = L->live;
         }
-        baga_lm_tab[i].p = BAGA_LM_TOMB;
-        baga_lm_used--;
-        baga_lm_put(np, sz, persist);
-        pthread_mutex_unlock(&baga_lm_mu);
-        baga_lm_log_replace(p, np);
+        L->tab[i].p = BAGA_LM_TOMB; L->used--;
+        baga_lm_put(L, np, sz, persist);
+        baga_lm_log_replace(L, p, np);
+        pthread_mutex_unlock(&L->mu);
         return np;
     }
-    pthread_mutex_unlock(&baga_lm_mu);
+    pthread_mutex_unlock(&L->mu);
+
+    /* cross-thread realloc (рядко): търси в регистрираните логове */
+    pthread_mutex_lock(&baga_lm_reg_mu);
+    for (baga_LmLog *O = baga_lm_logs; O; O = O->next) {
+        if (O == L) continue;
+        pthread_mutex_lock(&O->mu);
+        size_t j = baga_lm_find(O, p);
+        if (j != (size_t)-1) {
+            size_t oldn = O->tab[j].n;
+            int persist = O->tab[j].persist;
+            void *np = realloc(p, sz);
+            if (!np) { fprintf(stderr, "baga: mem: oom\n"); exit(1); }
+            if (!persist) {
+                O->live += (int64_t)sz - (int64_t)oldn;
+                if (O->live > O->peak) O->peak = O->live;
+            }
+            O->tab[j].p = BAGA_LM_TOMB; O->used--;
+            baga_lm_put(O, np, sz, persist);
+            baga_lm_log_replace(O, p, np);
+            pthread_mutex_unlock(&O->mu);
+            pthread_mutex_unlock(&baga_lm_reg_mu);
+            return np;
+        }
+        pthread_mutex_unlock(&O->mu);
+    }
+    pthread_mutex_unlock(&baga_lm_reg_mu);
     return realloc(p, sz);
 }
 
 void baga_lm_free(void *p) {
     if (!p) return;
-    pthread_mutex_lock(&baga_lm_mu);
-    size_t i = baga_lm_find(p);
+    baga_LmLog *L = baga_lm_get();
+    pthread_mutex_lock(&L->mu);
+    size_t i = baga_lm_find(L, p);
     if (i != (size_t)-1) {
-        if (!baga_lm_tab[i].persist)
-            baga_lm_live -= (int64_t)baga_lm_tab[i].n;
-        baga_lm_tab[i].p = BAGA_LM_TOMB;
-        baga_lm_used--;
+        if (!L->tab[i].persist) L->live -= (int64_t)L->tab[i].n;
+        L->tab[i].p = BAGA_LM_TOMB; L->used--;
         free(p);
-    } else {
-        free(p);
+        pthread_mutex_unlock(&L->mu);
+        return;
     }
-    pthread_mutex_unlock(&baga_lm_mu);
+    pthread_mutex_unlock(&L->mu);
+
+    pthread_mutex_lock(&baga_lm_reg_mu);
+    for (baga_LmLog *O = baga_lm_logs; O; O = O->next) {
+        if (O == L) continue;
+        pthread_mutex_lock(&O->mu);
+        size_t j = baga_lm_find(O, p);
+        if (j != (size_t)-1) {
+            if (!O->tab[j].persist) O->live -= (int64_t)O->tab[j].n;
+            O->tab[j].p = BAGA_LM_TOMB; O->used--;
+            free(p);
+            pthread_mutex_unlock(&O->mu);
+            pthread_mutex_unlock(&baga_lm_reg_mu);
+            return;
+        }
+        pthread_mutex_unlock(&O->mu);
+    }
+    pthread_mutex_unlock(&baga_lm_reg_mu);
+    free(p);
 }
 
-int64_t baga_lm_mark(void) { return (int64_t)baga_lm_log.len; }
+int64_t baga_lm_mark(void) {
+    baga_LmLog *L = baga_lm_tl;
+    return L ? (int64_t)L->len : 0;
+}
 
 void baga_lm_rewind(int64_t mark) {
-    if (mark < 0 || (size_t)mark > baga_lm_log.len) return;
-    pthread_mutex_lock(&baga_lm_mu);
+    baga_LmLog *L = baga_lm_tl;
+    if (!L || mark < 0 || (size_t)mark > L->len) return;
+    pthread_mutex_lock(&L->mu);
     size_t k = (size_t)mark;
-    for (size_t i = (size_t)mark; i < baga_lm_log.len; i++) {
-        void *p = baga_lm_log.v[i];
-        size_t j = baga_lm_find(p);
-        if (j == (size_t)-1) continue;       /* вече freed от друг thread */
-        if (baga_lm_tab[j].persist) {
-            baga_lm_log.v[k++] = p;          /* persist оцелява */
+    for (size_t i = (size_t)mark; i < L->len; i++) {
+        void *p = L->v[i];
+        size_t j = baga_lm_find(L, p);
+        if (j == (size_t)-1) continue;
+        if (L->tab[j].persist) {
+            L->v[k++] = p;
         } else {
-            baga_lm_live -= (int64_t)baga_lm_tab[j].n;
-            baga_lm_tab[j].p = BAGA_LM_TOMB;
-            baga_lm_used--;
+            L->live -= (int64_t)L->tab[j].n;
+            L->tab[j].p = BAGA_LM_TOMB; L->used--;
             free(p);
         }
     }
-    baga_lm_log.len = k;
-    pthread_mutex_unlock(&baga_lm_mu);
+    L->len = k;
+    pthread_mutex_unlock(&L->mu);
 }
 
 void baga_lm_persist_begin(void) { baga_lm_depth++; }
 void baga_lm_persist_end(void) { if (baga_lm_depth > 0) baga_lm_depth--; }
 
 int64_t baga_lm_arena_bytes(void) {
-    pthread_mutex_lock(&baga_lm_mu);
-    int64_t v = baga_lm_live;
-    pthread_mutex_unlock(&baga_lm_mu);
-    return v;
+    baga_LmLog *L = baga_lm_tl;
+    return L ? L->live : 0;
 }
 int64_t baga_lm_spare_bytes(void) { return 0; }
 int64_t baga_lm_peak_bytes(void) {
-    pthread_mutex_lock(&baga_lm_mu);
-    int64_t v = baga_lm_peak;
-    pthread_mutex_unlock(&baga_lm_mu);
-    return v;
+    baga_LmLog *L = baga_lm_tl;
+    return L ? L->peak : 0;
 }

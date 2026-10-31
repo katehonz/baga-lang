@@ -75,6 +75,15 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.13 — per-thread mem log; LLVM boilaDB 18→72k tps (P63)
+- Глобалният mutex около allocation log-а беше bottleneck за LLVM mux.
+  Сега всяка нишка има собствен hash + pointer log; cross-thread free
+  търси регистрираните логове под отделен registry mutex (рядко).
+- LLVM `serve_pg` mux: **11.3k / 39.5k / 66.4k / 72.5k tps** @
+  c=1/4/8/16 (преди: 9.1k/14.8k/15.6k/18.4k); RSS ~222 MB стабилен.
+  C бекендът остава ~151k tps — LLVM вече е ~48% от C за този workload.
+- `make test-llvm`/`test-llvm-rc` остават зелени.
+
 ### W4.12 — RC handle escape + `rc_test` на LLVM (P62)
 - LLVM `map_h`/`str_h`/`bytes_h` не retain-ваха под `--rc`; `map_h_escape`
   връщаше висящ handle и `rc_test` падаше в `baga_map_slot`. Сега трите

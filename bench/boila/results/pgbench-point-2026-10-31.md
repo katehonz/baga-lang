@@ -84,14 +84,15 @@ wake-ът alokiraше `substr` извън turn rewind-а. Сега `cell2_free` 
 
 | режим | tps |
 |---|---:|
-| go_bg (`BOILA_WORKERS=0`), c=4 | **19 587** |
-| mux, c=1 | 9 143 |
-| mux, c=4 | 14 760 |
-| mux, c=8 | 15 572 |
-| mux, c=16 | **18 376** |
+| go_bg (`BOILA_WORKERS=0`), c=4 | 19 587 |
+| mux, c=1 | 11 289 |
+| mux, c=4 | 39 546 |
+| mux, c=8 | 66 414 |
+| mux, c=16 | **72 501** |
 
-RSS стабилен ~221 MB. C бекендът е ~151k tps @ c=16 — LLVM е
-функционален, но ~8× по-бавен; serving на LLVM остава experimental.
+След P63 (per-thread mem log) RSS е стабилен ~222 MB. C бекендът е
+~151k tps @ c=16 — LLVM вече е ~48% от C; serving на LLVM остава
+experimental, но вече е практичен за тестове/прототипи.
 
 ## Честни граници
 
