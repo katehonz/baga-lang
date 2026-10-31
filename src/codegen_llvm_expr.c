@@ -937,22 +937,32 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
         }
 
         case NODE_BINARY: {
-            /* && / || върху bool (i1); C backend-ът ползва && / || —
-             * за чисти операнди резултатът е същият */
+            /* && / || върху bool (i1) — КЪСОСЪЕДИНЕНИЕ като C.
+             * Преди LLVM оценяваше и двата операнда; това чупеше всяка
+             * guard конструкция (`i < 0 || vec_get(v, i)` стигаше до
+             * vec_get с невалиден индекс и сегфолтваше). */
             if (n->bin_op == OP_AND || n->bin_op == OP_OR) {
+                LLVMValueRef slot = llv_entry_alloca(lg.i1_ty, "logic");
                 LLVMValueRef l = llv_to_bool(llv_emit_expr_llvm(n->left));
-                /* RC4 v1.1: temp-ове в десния операнд — локален wrap
-                 * (LLVM оценява и двата операнда; wrap-ът пак е leak-free). */
+                LLVMBuildStore(lg.builder, l, slot);
+                LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
+                LLVMBasicBlockRef rhs_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "logic_rhs");
+                LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "logic_merge");
+                if (n->bin_op == OP_AND)
+                    LLVMBuildCondBr(lg.builder, l, rhs_bb, merge_bb);
+                else
+                    LLVMBuildCondBr(lg.builder, l, merge_bb, rhs_bb);
+                LLVMPositionBuilderAtEnd(lg.builder, rhs_bb);
                 LLRcTmpSave tsv;
                 if (lg.rc) llv_lrc_tmp_begin(n->right, 0, &tsv);
                 LLVMValueRef r = llv_to_bool(llv_emit_expr_llvm(n->right));
                 if (lg.rc) llv_lrc_tmp_end(&tsv);
-                char *name = llv_tmp_name();
-                LLVMValueRef v = n->bin_op == OP_AND
-                    ? LLVMBuildAnd(lg.builder, l, r, name)
-                    : LLVMBuildOr(lg.builder, l, r, name);
-                free(name);
-                return v;
+                if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
+                    LLVMBuildStore(lg.builder, r, slot);
+                    LLVMBuildBr(lg.builder, merge_bb);
+                }
+                LLVMPositionBuilderAtEnd(lg.builder, merge_bb);
+                return LLVMBuildLoad2(lg.builder, lg.i1_ty, slot, "logicr");
             }
             /* str == str / str != str — чрез baga_str_eq (като codegen_c: strcmp) */
             if ((n->bin_op == OP_EQ || n->bin_op == OP_NEQ) &&

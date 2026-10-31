@@ -63,6 +63,18 @@
 - `boila_p5_test`, `boila_pool_test`, `boila_pgwire_test`, `boila_chaos_test`,
   `boila_http_mux_test` — зелени; pool тестът е чист и под TSan.
 
+### W4.4 — LLVM `&&`/`||` вече са късосъединени
+- LLVM бекендът оценяваше и двата операнда и комбинираше с `and`/`or`.
+  Това чупеше всяка guard конструкция: `i < 0 || vec_get(v, i)` стигаше
+  до `vec_get` с невалиден индекс и сегфолтваше (jsonrpc_test, img_test).
+- Сега се строи CFG: ляв операнд → rhs/merge блок; десният се оценява само
+  когато е нужен, стойността минава през entry alloca. Работи и под `--rc`
+  (temp wrap-ът е в rhs блока).
+- `tests/logic_test.baga` (в общия LLVM оракул) пази семантиката с
+  out-of-bounds RHS и проверява, че RHS се оценява, когато трябва.
+- След fix-а 12 codec/parity теста минават през `lli`:
+  img, zip, pb, pdf, jwt, glob, jsonrpc, xml, tpl, smtp, met, wmet.
+
 ### W4.3 — LLVM отваря codec стека: `byte_chr` + bytes/vec мостове
 - LLVM бекендът вече поддържа `byte_chr`, `bytes_from_vec` и `vec_from_bytes`.
   `byte_chr` е критичен: `std/str/str.baga` го ползва за UTF-8, `std/net/tcp.baga`

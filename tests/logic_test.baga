@@ -1,0 +1,33 @@
+// logic_test — && / || трябва да са късосъединени като в C.
+// RHS-ът тук умишлено е out-of-bounds/странично ефектен: ако LLVM го
+// оцени нетърпеливо, тестът печата BAD или abort-ва.
+
+fn rhs_bad(v: Vec<i64>) -> i64 {
+    print("BAD rhs evaluated")
+    return vec_get(v, 999)
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let v = vec_new()
+    vec_push(v, 42)
+
+    check("or_short", (1 == 1) || rhs_bad(v) == 0)
+    let andv = (1 == 0) && rhs_bad(v) == 0
+    check("and_short", andv == false)
+    // класическият guard, който преди сегфолтваше в LLVM
+    check("guard", vec_len(v) == 0 || vec_get(v, 0) == 42)
+    // RHS трябва да се оцени, когато е нужен
+    check("or_rhs", (1 == 0) || vec_get(v, 0) == 42)
+    check("and_rhs", (1 == 1) && vec_get(v, 0) == 42)
+
+    print("logic_test: all passed")
+}
