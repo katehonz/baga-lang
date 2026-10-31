@@ -1,0 +1,38 @@
+// boila_mux_wake_test — P47: wake-ът трябва да пише в pipe2, не sendto.
+// Преди tcp_write върху pipe даваше ENOTSOCK, catch-ът го гълташе и
+// всяка паркирана връзка чакаше пълния 200 ms poll timeout.
+import "boilaDB/api/serve_mux.baga"
+import "std/net/poll.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+
+fn main() -> i64 !IO !Net {
+    let p = boila_mux_pipe2()?
+    let rfd = cell2_0(p)
+    let wfd = cell2_1(p)
+    if rfd < 0 || wfd < 0 {
+        eprintln("pipe2 failed")
+        return 1
+    }
+    boila_mux_wake(wfd)?
+    let pr = poll_wait(vec_of1(rfd), 200)?
+    if poll_has(pr.ready, rfd) != 1 {
+        eprintln("FAIL: wake не направи pipe-а ready")
+        return 1
+    }
+    let got = tcp_read(rfd, 8)?
+    if got != "w" {
+        eprintln("FAIL: wake байтът не е 'w'")
+        return 1
+    }
+    close(rfd)?
+    close(wfd)?
+    print("boila_mux_wake_test: all passed")
+    return 0
+}
+
+fn vec_of1(x: i64) -> Vec<i64> {
+    let v: Vec<i64> = vec_new()
+    vec_push(v, x)
+    return v
+}

@@ -63,6 +63,19 @@
 - `boila_p5_test`, `boila_pool_test`, `boila_pgwire_test`, `boila_chaos_test`,
   `boila_http_mux_test` — зелени; pool тестът е чист и под TSan.
 
+### App — boilaDB mux wake (P47): 5 tps → 151k tps
+- `boila_mux_wake` пишеше wake байт с `tcp_write` върху `pipe2`. `tcp_write`
+  ползва `sendto` → `ENOTSOCK`; `catch` го гълташе, worker wake-ът не
+  стигаше до poll-а и всяка паркирана връзка чакаше пълните 200 ms.
+- След `fd_write` (P47) latency пада от ~200 ms на ~0.06–0.2 ms.
+  `pgbench` point SELECT (5k реда, simple protocol, 4 workers):
+  **15.6k / 53.4k / 97.6k / 151.5k tps** @ c=1/4/8/16; локалният
+  PostgreSQL 15.19 дава 15.1k / 45.6k / 70.7k / 91.7k — boilaDB е +65%
+  при c=16 за този workload.
+- `tests/boila_mux_wake_test.baga` пази, че wake-ът прави pipe-а ready.
+  Резултати и уговорки: `bench/boila/results/pgbench-point-2026-10-31.md`
+  (read-only point SELECT, не общ DB benchmark).
+
 ### W4.5 — LLVM паритет за целия pure app-product стек
 - `tests/llvm_app_pure.sh` пуска 20 pure package теста през C и LLVM и
   сравнява изход + exit код: buf, chrono, csv, flag, glob, img, jwt, office,
