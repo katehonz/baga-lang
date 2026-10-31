@@ -342,6 +342,7 @@ typedef struct {
     int **occ; int *occ_n; int occ_cap;   /* occurrence списъци по лит. */
     long conflicts, budget;
     int cdcl;              /* M32: 1 = clause learning включён */
+    int conflict_cl;       /* M32: индекс на falsified клаузата от последния propagate конфликт */
     int *seen;             /* var → маркиран при conflict analysis */
     int *learn_buf; int learn_cap;  /* работен буфер за learned clause */
 } BvSat;

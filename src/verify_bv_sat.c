@@ -131,6 +131,8 @@ static void trail_push_reason(BvSat *s, int lit, int level, int clause_idx) {
 }
 
 /* Unit propagation върху trail-а (worklist от q_head). 1 = конфликт.
+ * При конфликт в s->conflict_cl се записва индексът на falsified клаузата
+ * (всички литерали < 0), за да може CDCL да я анализира директно.
  * След backtrack q_head се нулира и trail-ът се ресканва — вече-истинските
  * клаузи излизат евтино (lit_value > 0), цената е приемлива за размерите
  * на blasted вериги. */
@@ -139,7 +141,8 @@ static int sat_propagate(BvSat *s) {
         int lit = s->trail[s->q_head++];
         int slot = occ_slot(-lit);   /* клаузи, съдържащи вече-лъжливия -lit */
         for (int oi = 0; oi < s->occ_n[slot]; oi++) {
-            BvClause *c = &s->cl[s->occ[slot][oi]];
+            int ci = s->occ[slot][oi];
+            BvClause *c = &s->cl[ci];
             int unassigned = 0, unit_lit = 0, sat = 0;
             for (int i = 0; i < c->n; i++) {
                 int lv = lit_value(s, c->lits[i]);
@@ -151,10 +154,13 @@ static int sat_propagate(BvSat *s) {
                 }
             }
             if (sat) continue;
-            if (unassigned == 0) return 1;
+            if (unassigned == 0) {
+                s->conflict_cl = ci;   /* M32: запази конфликтната клауза за анализ */
+                return 1;
+            }
             if (unassigned == 1) {
                 /* M32 CDCL: записваме причината — клаузата, която е unit-имплицирала */
-                trail_push_reason(s, unit_lit, s->n_lim, s->occ[slot][oi]);
+                trail_push_reason(s, unit_lit, s->n_lim, ci);
             }
         }
     }
@@ -313,17 +319,13 @@ BvSatResult bv_sat_solve(BvSat *s) {
             if (++s->conflicts > s->budget) return BV_SAT_UNDECIDED;
             if (s->n_lim == 0) return BV_SAT_UNSAT;
             if (s->cdcl) {
-                /* намери конфликтната клауза: сканирай за клауза без истинен лит */
-                int conf_cl = -1;
-                for (int ci = 0; ci < s->n_cl; ci++) {
-                    BvClause *c = &s->cl[ci];
-                    int sat = 0;
-                    for (int i = 0; i < c->n; i++) {
-                        if (lit_value(s, c->lits[i]) > 0) { sat = 1; break; }
-                    }
-                    if (!sat) { conf_cl = ci; break; }
-                }
-                if (conf_cl < 0) return BV_SAT_UNSAT;
+                /* M32 AUDIT FIX: sat_propagate вече е записал конфликтната клауза
+                 * в s->conflict_cl (всички литерали < 0). Предишната версия
+                 * сканираше за "клауза без истинен лит" — но lit_value==0 е
+                 * UNASSIGNED, не false — така се хващаше unit/unassigned клауза
+                 * като "конфликт" и се строяха грешни learned clauses → false UNSAT. */
+                int conf_cl = s->conflict_cl;
+                if (conf_cl < 0 || conf_cl >= s->n_cl) return BV_SAT_UNSAT;
                 int bj = 0;
                 int learned = cdcl_analyze(s, conf_cl, &bj);
                 if (learned < 0) return BV_SAT_UNSAT;

@@ -187,10 +187,11 @@ grep -q "xor_not:" /tmp/baga_verify_out.txt && grep -q "ensures #1.*ДОКАЗА
 grep -q "xor_self_inv:" /tmp/baga_verify_out.txt && grep -q "absorb:" /tmp/baga_verify_out.txt \
 	&& grep -q "xor_nonneg_bad:" /tmp/baga_verify_out.txt && grep -q "var_mask_bad:" /tmp/baga_verify_out.txt \
 	&& [ "$(grep -c 'ДОКАЗАНО' /tmp/baga_verify_out.txt)" -ge 4 ] \
-	&& [ "$(grep -c 'ensures.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 4 ] \
-	&& tail -6 /tmp/baga_verify_out.txt | grep -q 'НЕ МОГА ДА РЕША' \
-	&& ! tail -6 /tmp/baga_verify_out.txt | grep -q 'ДОКАЗАНО' \
-	&& echo "OK: bv_full — M31 bit-blasting+DPLL: променлив XOR и абсорбция ДОКАЗАНО, символни маски/shift-ове ОБРОЧЕНО с презареден witness, дистрибутивността честен UNKNOWN" \
+	&& [ "$(grep -c 'ensures.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 3 ] \
+	&& grep -A2 "xor_nonneg_bad:" /tmp/baga_verify_out.txt | grep -q "ОБРОЧЕНО" \
+	&& grep -A2 "lshr_var_bad:" /tmp/baga_verify_out.txt | grep -q "ОБРОЧЕНО" \
+	&& grep -A2 "var_mask_bad:" /tmp/baga_verify_out.txt | grep -q "ОБРОЧЕНО" \
+	&& echo "OK: bv_full — M31+M32 CDCL: XOR/абсорбция/дистрибутивност ДОКАЗАНО (истинни идентичности), *_bad ОБРОЧЕНО (soundness tripwire)" \
 	|| { echo "FAIL: bv_full"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/par_join.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "par_double:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \

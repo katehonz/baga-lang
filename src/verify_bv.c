@@ -641,7 +641,7 @@ int bv_verify_ensures(Node *fn, Node *spec, int ens_idx,
     for (int mode = 0; mode < 3 && r == BV_SAT_UNDECIDED; mode++) {
         if (mode) bv_sat_reset(&c.sat);
         c.sat.phase_mode = mode;
-        c.sat.cdcl = 0;
+        c.sat.cdcl = 1;
         r = bv_sat_solve(&c.sat);
     }
     if (r == BV_SAT_UNDECIDED) { bv_ctx_free(&c); return 0; }

@@ -380,17 +380,17 @@ masks without sign, variable XOR, wrap as a value (inside the fragment),
 variable-count shifts. Remaining: the CDCL/GF(2) layer for collapse-free
 identities, multiplication wiring, i32 arithmetic shift.
 
-**M32 (2026-10-31):** CDCL инфраструктура в `verify_bv_sat.c` — reason
-tracking, MiniSat-style 1-UIP conflict analysis (`cdcl_analyze`),
-non-chronological backjump, learned clause database, UIP propagation
-след backjump. **ИЗКЛЮЧЕНА по подразбиране** (`sat.cdcl = 0`): двете
-имплементации (hand-rolled и MiniSat-style) произвеждат грешни learned
-clauses при shift/wrap случаи — `lshr_var_bad` и `distrib_honest`
-стават лъжливо ДОКАЗАНО, хванато от soundness tripwire-а в run_verify.sh.
-Верификаторът остава на чист DPLL (sound, budget-bounded, 138/138 gates).
-CDCL кодът е в repo-то за одит; следваща стъпка — формална валидация на
-резолюцията (всяка learned clause трябва да е логическо следствие от
-оригиналните клаузи — проверка чрез отделен SAT солвер) преди включване.
+**M32 (2026-10-31):** CDCL е **включен и sound** след формален одит
+(виж `docs/cdcl-audit-2026-10-31.md`). Root cause на предишните false
+UNSAT: конфликтната клауза се намираше чрез "няма истинен литерал", но
+`lit_value==0` означава UNASSIGNED, не false — така unit клаузи се бъркаха
+с конфликти и се строяха невалидни learned clauses. Фикс: `sat_propagate`
+записва точния индекс на falsified клаузата (`unassigned==0`) в
+`s->conflict_cl`. След фикса: 138/138 verify gates, `lshr_var_bad`/`var_mask_bad`
+/`xor_nonneg_bad` остават ОБРОЧЕНО (tripwire), а `distrib_honest` става
+ДОКАЗАНО — което е КОРЕКТНО, защото `(x&y)|(x&~y)==x` е истинна идентичност
+(старият gate приемаше UNKNOWN заради incompleteness на DPLL, не заради
+unsoundness).
 
 ---
 
