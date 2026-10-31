@@ -244,6 +244,14 @@ static int cdcl_analyze(BvSat *s, int conflict_cl, int *backjump_level) {
     s->learn_buf[0] = -p;
     n_learn++;
     if (n_learn == 1) *backjump_level = 0;
+    /* soundness guard: learned clause must not be a tautology (no v and -v).
+     * A tautological learned clause would let propagation skip it, which is
+     * harmless for SAT but can mask the real conflict and cause false UNSAT. */
+    for (int i = 0; i < n_learn; i++) {
+        for (int j = i + 1; j < n_learn; j++) {
+            if (s->learn_buf[i] == -s->learn_buf[j]) return -1;
+        }
+    }
     bv_sat_add_clause(s, s->learn_buf, n_learn);
     return s->n_cl - 1;
 }

@@ -357,5 +357,15 @@ fn main() {
     check("webp_vp8_quad_blu", q07.r == 4 && q07.g == 0 && q07.b == 252)
     check("webp_vp8_quad_ylw", q77.r == 241 && q77.g == 255 && q77.b == 11)
 
+    // I4: bounded load — probe хедър, отхвърля над лимита, downscale под лимита
+    let big = img_new(100, 50, 255, 0, 0, 255)
+    let big_b = img_encode(big, img_fmt_png())
+    let bi = img_info(big_b)
+    check("i4_probe", bi.ok == 1 && bi.w == 100 && bi.h == 50)
+    let bp = img_load_bounded(big_b, 200, 200)
+    check("i4_pass", bp.ok == 1 && bp.w == 100)
+    let brj = img_load_bounded(big_b, 50, 50)
+    check("i4_reject", brj.ok == 0)
+
     print("img_test: all passed")
 }
