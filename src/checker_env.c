@@ -1246,6 +1246,25 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
             pe->taint[pe->taint_n++] = src->taint[i];
     } else if (init->kind == NODE_CALL && init->callee &&
                init->callee->kind == NODE_IDENT) {
+        /* W3.9: производни контейнери — vec_slice/vec_concat копират
+         * ЕЛЕМЕНТИТЕ (за str/bytes — указателите, виж baga_vec_slice_str:
+         * baga_vec_push_str(r, (const char *)v->data[i])), значи резултатът
+         * наследява замърсяването на източника/източниците. Без това
+         * `cut = vec_slice(src, …)` излизаше чист от проверката и държеше
+         * висящ указател след world_free. */
+        if (strcmp(init->callee->name, "vec_slice") == 0 && init->args.len >= 1) {
+            EnvEntry *vs = w35_container(ctx, init->args.data[0]);
+            for (int i = 0; vs && i < vs->taint_n; i++)
+                w35_taint_entry(pe, vs->taint[i]);
+        } else if (strcmp(init->callee->name, "vec_concat") == 0 &&
+                   init->args.len >= 2) {
+            EnvEntry *c1 = w35_container(ctx, init->args.data[0]);
+            EnvEntry *c2 = w35_container(ctx, init->args.data[1]);
+            for (int i = 0; c1 && i < c1->taint_n; i++)
+                w35_taint_entry(pe, c1->taint[i]);
+            for (int i = 0; c2 && i < c2->taint_n; i++)
+                w35_taint_entry(pe, c2->taint[i]);
+        } else {
         /* W3.6: върнат замърсен контейнер — резюмето на callee казва от кой param
          * идва регионът; замърсяваме новата локална с региона на ТОЗИ аргумент.
          * `let out = build(w, v); world_free(w)` вече не минава тихо. */
@@ -1268,6 +1287,7 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
         if (fr && fr->checked && fr->ret_taint_param >= 0 &&
             fr->ret_taint_param < init->args.len)
             w35_taint_entry(pe, w36_value_region(ctx, init->args.data[fr->ret_taint_param]));
+        }
     }
 }
 

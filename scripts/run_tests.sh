@@ -1595,6 +1595,62 @@ else
 	echo "FAIL: non-generic неанотиран Vec се счупи"
 	exit 1
 fi
+echo "=== W3.8 производни контейнери наследяват замърсяването ==="
+# baga_vec_slice_str/concat_str копират УКАЗАТЕЛЯ, не низа — резултатът
+# наследява замърсяването на източника, иначе cut държи висящ указател след free.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let src = vec_new()\n    vec_push(src, wvec_get_str(w, v, 0))\n    let cut = vec_slice(src, 0, 1)\n    drop(src)\n    world_free(w)\n    print(vec_get(cut, 0))\n}\n' > /tmp/baga_w39_slice.baga
+RC=0
+run --check /tmp/baga_w39_slice.baga > /tmp/baga_w39_slice_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'cut' държи заемана стойност" /tmp/baga_w39_slice_out.txt; then
+	echo "OK: vec_slice наследява замърсяването (drop на източника не чисти среза)"
+else
+	echo "FAIL: срезът на замърсен контейнер трябваше да е обвинен"
+	cat /tmp/baga_w39_slice_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let a = vec_new()\n    let b = vec_new()\n    vec_push(b, wvec_get_str(w, v, 0))\n    let both = vec_concat(a, b)\n    drop(b)\n    world_free(w)\n    print(vec_get(both, 0))\n}\n' > /tmp/baga_w39_concat.baga
+RC=0
+run --check /tmp/baga_w39_concat.baga > /tmp/baga_w39_concat_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'both' държи заемана стойност" /tmp/baga_w39_concat_out.txt; then
+	echo "OK: vec_concat наследява замърсяването и от двата източника"
+else
+	echo "FAIL: конкатенацията трябваше да наследи замърсяването на втория източник"
+	cat /tmp/baga_w39_concat_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let src = vec_new()\n    vec_push(src, wvec_get_str(w, v, 0))\n    let cut = vec_slice(src, 0, 1)\n    let cut2 = vec_slice(cut, 0, 1)\n    drop(src)\n    drop(cut)\n    world_free(w)\n    print(vec_get(cut2, 0))\n}\n' > /tmp/baga_w39_chain.baga
+RC=0
+run --check /tmp/baga_w39_chain.baga > /tmp/baga_w39_chain_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'cut2' държи заемана стойност" /tmp/baga_w39_chain_out.txt; then
+	echo "OK: срез на срез — замърсяването е транзитивно"
+else
+	echo "FAIL: срезът на срез трябваше да наследи замърсяването"
+	cat /tmp/baga_w39_chain_out.txt
+	exit 1
+fi
+# Легалните пътища: копие преди срез, чисти контейнери, drop преди free.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let src = vec_new()\n    vec_push(src, concat(wvec_get_str(w, v, 0), ""))\n    let cut = vec_slice(src, 0, 1)\n    world_free(w)\n    print(vec_get(cut, 0))\n}\n' > /tmp/baga_w39_copy.baga
+if run /tmp/baga_w39_copy.baga 2>&1 | grep -qx "hi"; then
+	echo "OK: копиран низ в среза надживява света — легално и работи"
+else
+	echo "FAIL: копието преди срез трябваше да е легално"
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let src = vec_new()\n    vec_push(src, "чист низ")\n    let cut = vec_slice(src, 0, 1)\n    let both = vec_concat(src, cut)\n    world_free(w)\n    print(vec_get(both, 0))\n}\n' > /tmp/baga_w39_clean.baga
+if run /tmp/baga_w39_clean.baga 2>&1 | grep -qx "чист низ"; then
+	echo "OK: чисти контейнери в slice/concat — няма измислено обвинение"
+else
+	echo "FAIL: чистите контейнери не бива да се обвиняват"
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let src = vec_new()\n    vec_push(src, wvec_get_str(w, v, 0))\n    let cut = vec_slice(src, 0, 1)\n    drop(src)\n    drop(cut)\n    world_free(w)\n}\n' > /tmp/baga_w39_drop.baga
+if run --check /tmp/baga_w39_drop.baga > /tmp/baga_w39_drop_out.txt 2>&1; then
+	echo "OK: drop на среза преди free — легален изход"
+else
+	echo "FAIL: drop преди free трябваше да минава"
+	cat /tmp/baga_w39_drop_out.txt
+	exit 1
+fi
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и
