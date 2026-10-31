@@ -70,7 +70,10 @@
 - 2PC: `msg_free` за PREPARE/VOTE/COMMIT/ABORT/GET/GET_REP; coordinator и
   participant free-ват. `raft_test`, `raft_persist`, `txn_test`,
   `txn_stress` са ASan-clean.
-- Остава: rocksbaga job/reply nested дървета (следващ).
+- Rocksbaga (P57): `lsm_job_free`/`lsm_rep_free` за job/reply дърветата;
+  worker-ът и parallel reply пътят ги освобождават. Zero-copy key/value/
+  payload handles не се пипат. `workers_test` е ASan-clean.
+- С това nested cell2 дърветата в Raft, 2PC и rocksbaga са затворени.
 
 ### W2.19 — `str_repeat` с една алокация (P55)
 - Baga-имплементацията на `str_repeat` правеше двоично `concat` дърво:
