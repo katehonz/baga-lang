@@ -1,0 +1,113 @@
+// cfb_mini_test.baga — O11: mini stream четене през MiniFAT + root контейнер.
+// Конструираме минимален валиден CFB: header + 1 FAT сектор + 1 dir сектор
+// + 1 data сектор (root stream) с mini сектор в него.
+import "officebaga/ole/cfb.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+fn push_u16(b: bytes, v: i64) -> bytes {
+    return bytes_concat(bytes_concat(b, bytes_from_vec(vec_of(v & 255))), bytes_from_vec(vec_of((v >> 8) & 255)))
+}
+fn push_u32(b: bytes, v: i64) -> bytes {
+    let mut r = b
+    r = bytes_concat(r, bytes_from_vec(vec_of(v & 255)))
+    r = bytes_concat(r, bytes_from_vec(vec_of((v >> 8) & 255)))
+    r = bytes_concat(r, bytes_from_vec(vec_of((v >> 16) & 255)))
+    r = bytes_concat(r, bytes_from_vec(vec_of((v >> 24) & 255)))
+    return r
+}
+fn vec_of(v: i64) -> Vec<i64> { let mut r: Vec<i64> = vec_new(); vec_push(r, v); return r }
+fn sig_vec() -> Vec<i64> {
+    let mut r: Vec<i64> = vec_new()
+    vec_push(r, 208); vec_push(r, 207); vec_push(r, 17); vec_push(r, 224)
+    vec_push(r, 161); vec_push(r, 177); vec_push(r, 26); vec_push(r, 225)
+    return r
+}
+
+fn main() {
+    // Layout: sector 0 = FAT, sector 1 = directory, sector 2 = root stream (mini container)
+    // mini sector 0 в root stream = "Hi!" (3 байта, padding до 64)
+    let sec_size: i64 = 512
+    let mini_size: i64 = 64
+    // header (512 bytes)
+    let mut h = bytes_new(512)
+    // signature
+    let sig = sig_vec()
+    for si in 0..8 { bytes_set(h, si, vec_get(sig, si)) }
+    // ... просто попълваме нужните полета
+    // offset 30: sector shift = 9
+    bytes_set(h, 30, 9); bytes_set(h, 31, 0)
+    // offset 32: mini shift = 6
+    bytes_set(h, 32, 6); bytes_set(h, 33, 0)
+    // offset 44: num FAT sectors = 1
+    bytes_set(h, 44, 1); bytes_set(h, 45, 0); bytes_set(h, 46, 0); bytes_set(h, 47, 0)
+    // offset 48: dir start = 1
+    bytes_set(h, 48, 1); bytes_set(h, 49, 0); bytes_set(h, 50, 0); bytes_set(h, 51, 0)
+    // offset 56: mini cutoff = 4096
+    bytes_set(h, 56, 0); bytes_set(h, 57, 16); bytes_set(h, 58, 0); bytes_set(h, 59, 0)
+    // offset 60: mini FAT start = 3 (ще е sector 3)
+    bytes_set(h, 60, 3); bytes_set(h, 61, 0); bytes_set(h, 62, 0); bytes_set(h, 63, 0)
+    // offset 64: num mini FAT sectors = 1
+    bytes_set(h, 64, 1); bytes_set(h, 65, 0); bytes_set(h, 66, 0); bytes_set(h, 67, 0)
+    // offset 76: DIFAT[0] = 0 (FAT е в sector 0)
+    bytes_set(h, 76, 0); bytes_set(h, 77, 0); bytes_set(h, 78, 0); bytes_set(h, 79, 0)
+    // останалите DIFAT = 0xFFFFFFFF
+    let mut i: i64 = 80
+    while i < 76 + 109 * 4 { bytes_set(h, i, 255); i = i + 1 }
+    // sector 0: FAT — [0]=ENDOFCHAIN(0xFFFFFFFE... но FAT[0] е за sector 0 = FAT自己)
+    // FAT[0] = 0xFFFFFFFD (FATSECT), FAT[1] = ENDOFCHAIN (dir), FAT[2] = ENDOFCHAIN (root stream), FAT[3] = ENDOFCHAIN (minifat)
+    let mut fat = bytes_new(512)
+    // FAT[0] = 0xFFFFFFFD
+    bytes_set(fat, 0, 253); bytes_set(fat, 1, 255); bytes_set(fat, 2, 255); bytes_set(fat, 3, 255)
+    // FAT[1] = 0xFFFFFFFE
+    bytes_set(fat, 4, 254); bytes_set(fat, 5, 255); bytes_set(fat, 6, 255); bytes_set(fat, 7, 255)
+    // FAT[2] = 0xFFFFFFFE
+    bytes_set(fat, 8, 254); bytes_set(fat, 9, 255); bytes_set(fat, 10, 255); bytes_set(fat, 11, 255)
+    // FAT[3] = 0xFFFFFFFE
+    bytes_set(fat, 12, 254); bytes_set(fat, 13, 255); bytes_set(fat, 14, 255); bytes_set(fat, 15, 255)
+    // sector 1: directory (128-byte entries)
+    let mut dir = bytes_new(512)
+    // entry 0: Root Entry
+    let root_name = "Root Entry"
+    let mut k: i64 = 0
+    while k < len(root_name) { bytes_set(dir, k * 2, char_at(root_name, k)); bytes_set(dir, k * 2 + 1, 0); k = k + 1 }
+    bytes_set(dir, 64, (len(root_name) + 1) * 2)
+    bytes_set(dir, 66, 5)  // type = root
+    // root start sector = 2, size = 64 (един mini сектор)
+    bytes_set(dir, 116, 2); bytes_set(dir, 117, 0); bytes_set(dir, 118, 0); bytes_set(dir, 119, 0)
+    bytes_set(dir, 120, 64); bytes_set(dir, 121, 0); bytes_set(dir, 122, 0); bytes_set(dir, 123, 0)
+    // entry 1: small stream "Mini"
+    let mut off = 128
+    let nm = "Mini"
+    k = 0
+    while k < len(nm) { bytes_set(dir, off + k * 2, char_at(nm, k)); bytes_set(dir, off + k * 2 + 1, 0); k = k + 1 }
+    bytes_set(dir, off + 64, (len(nm) + 1) * 2)
+    bytes_set(dir, off + 66, 2)  // type = stream
+    // start mini sector = 0, size = 3
+    bytes_set(dir, off + 116, 0); bytes_set(dir, off + 117, 0); bytes_set(dir, off + 118, 0); bytes_set(dir, off + 119, 0)
+    bytes_set(dir, off + 120, 3); bytes_set(dir, off + 121, 0); bytes_set(dir, off + 122, 0); bytes_set(dir, off + 123, 0)
+    // sector 2: root stream container — mini sector 0 = "Hi!" + padding
+    let mut root_data = bytes_new(512)
+    bytes_set(root_data, 0, 72)  // 'H'
+    bytes_set(root_data, 1, 105) // 'i'
+    bytes_set(root_data, 2, 33)  // '!'
+    // sector 3: MiniFAT — mini sector 0 = ENDOFCHAIN
+    let mut minifat = bytes_new(512)
+    bytes_set(minifat, 0, 254); bytes_set(minifat, 1, 255); bytes_set(minifat, 2, 255); bytes_set(minifat, 3, 255)
+
+    let mut file = bytes_concat(h, fat)
+    file = bytes_concat(file, dir)
+    file = bytes_concat(file, root_data)
+    file = bytes_concat(file, minifat)
+
+    let cfb = cfb_open_bytes(file)
+    if cfb.ok == 0 { print(concat("FAIL-open: ", cfb.err)); return }
+    print(concat("mini_fat entries: ", int_to_str(vec_len(cfb.mini_fat))))
+    let r = cfb_read(cfb, "Mini")
+    if r.ok == 1 {
+        let s = str_of_bytes(r.data)
+        if s == "Hi!" { print("mini-stream-ok") } else { print(concat("FAIL-data: [", concat(s, "]"))) }
+    } else {
+        print(concat("FAIL-read: ", r.err))
+    }
+}
