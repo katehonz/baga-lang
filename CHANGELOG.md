@@ -69,7 +69,8 @@
   замразените данни. Документирано в §5.
 - C и LLVM (`baga_lw_wcache_add`); `tests/wcache_test.baga` добавя
   4×5000 = 20000 и е чист под TSan. Приложение: boilaDB SQL/HTTP/PG stats
-  и live conn броячи без gmu (оптимистичен admission с декремент при over-max).
+  и live conn броячи без gmu (оптимистичен admission с декремент при over-max);
+  fmrbaga runtime gauges също минаха на замразен свят + `wcache_add`.
 
 ### W3.12 — върнат Map носи и КЛЮЧОВОТО замърсяване
 - Резюмето на върнат контейнер пазеше само стойностното измерение
