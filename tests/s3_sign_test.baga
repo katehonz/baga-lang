@@ -1,8 +1,10 @@
 // s3_sign_test.baga — AWS SigV4 key and a fixed GET authorization.
 
 import "s3baga/sign.baga"
+import "s3baga/s3.baga"
 import "testbaga/assert.baga"
 import "std/bytes/bytes.baga"
+import "std/str/str.baga"
 
 fn s3_test_date() -> i64 !IO {
     assert_eq_str("epoch0", s3_amz_date(0), "19700101T000000Z")
@@ -38,10 +40,30 @@ fn s3_test_auth() -> i64 !IO {
     return 0
 }
 
+fn s3_test_chunked() -> i64 !IO {
+    // A3: chunked transfer-encoding decode
+    let head = bytes_of_str("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+    let body = bytes_of_str("5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n")
+    let out = s3_parse(bytes_concat(head, body))
+    assert_eq_i64("chunked_ok", out.ok, 1)
+    assert_eq_str("chunked_body", str_of_bytes(out.body), "Hello World")
+    assert_eq_i64("chunked_status", out.status, 200)
+    // hex размер
+    let big = bytes_of_str("1A\r\n0123456789abcdefghijklmnop\r\n0\r\n\r\n")
+    let out2 = s3_parse(bytes_concat(head, big))
+    assert_eq_str("chunked_hex", str_of_bytes(out2.body), "0123456789abcdefghijklmnop")
+    // Content-Length все още работи
+    let clh = bytes_of_str("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+    let out3 = s3_parse(bytes_concat(clh, bytes_of_str("HelloEXTRA")))
+    assert_eq_str("cl_body", str_of_bytes(out3.body), "Hello")
+    return 0
+}
+
 fn main() -> i64 !IO {
     s3_test_date()?
     s3_test_key()?
     s3_test_auth()?
+    s3_test_chunked()?
     print("s3_sign_test: all passed")
     return 0
 }
