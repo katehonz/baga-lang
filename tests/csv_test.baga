@@ -64,5 +64,26 @@ fn main() {
     let longq = csv_parse("\"abcdefghij\"\n")
     check("long_quote", longq.ok == 1 && csv_get(longq, 0, 0) == "abcdefghij")
 
+    // C1: streaming — ред по ред + equality с batch
+    let src = "A,B,C\n1,2,3\n4,5,6\n"
+    let mut pos: i64 = 0
+    let mut rows: i64 = 0
+    while pos < len(src) {
+        let r = csv_parse_row(src, pos)
+        check("stream_ok", r.ok == 1)
+        if r.eof == 1 && vec_len(r.fields) == 0 { break }
+        rows = rows + 1
+        pos = r.next_pos
+        if r.eof == 1 { break }
+    }
+    check("stream_rows", rows == 3)
+    let batch = csv_parse(src)
+    let stream = csv_parse_streaming(src)
+    check("stream_eq_batch", batch.ok == 1 && stream.ok == 1 &&
+          csv_get(stream, 0, 0) == csv_get(batch, 0, 0) &&
+          csv_get(stream, 2, 2) == csv_get(batch, 2, 2))
+    let qs = csv_parse_streaming("\"a\nb\",x\n1,2\n")
+    check("stream_quoted_nl", qs.ok == 1 && csv_get(qs, 0, 0) == "a\nb")
+
     print("csv_test: all passed")
 }
