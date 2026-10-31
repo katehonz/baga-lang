@@ -14,6 +14,7 @@ import "bn.baga"
 import "sha256.baga"
 import "der.baga"
 import "ct.baga"
+import "hmac.baga"
 import "../bytes/bytes.baga"
 
 // ---------- curve parameters (big-endian hex → 10 limbs) ----------
@@ -383,4 +384,63 @@ fn ecdsa_p256_sign_sha256(d32: bytes, msg: bytes, k32: bytes) -> bytes {
     let d = p256_nmod(bn_from_bytes_be(d32, 10))
     let k = p256_nmod(bn_from_bytes_be(k32, 10))
     return ecdsa_p256_sign_rs(d, msg, k)
+}
+
+// Детерминистичен nonce k = SHA256(d32 || msg) mod n (опростен RFC 6979 —
+// не е пълен HMAC-based алгоритъм, но е детерминистичен и криптографски
+// безопасен за тестове/JWT: k зависи и от ключа, и от съобщението).
+// Пълната RFC 6979 §3.2 HMAC верига е в бележка за бъдещо разширение.
+fn ecdsa_p256_det_k(d32: bytes, msg: bytes) -> bytes {
+    if bytes_len(d32) != 32 {
+        return bytes_new(0)
+    }
+    let buf = bytes_concat(d32, msg)
+    let h = sha256_b(buf)
+    let kv = p256_nmod(bn_from_bytes_be(h, 10))
+    let n = p256_n()
+    if bn_cmp(kv, n) >= 0 {
+        return bytes_new(0)
+    }
+    let zero = bn_from_bytes_be(bytes_new(32), 10)
+    if bn_cmp(kv, zero) <= 0 {
+        return bytes_new(0)
+    }
+    return bn_to_bytes_be(kv, 32)
+}
+
+// Deterministic ECDSA-SHA256 sign: един и същ (d, msg) → един подпис.
+fn ecdsa_p256_sign_sha256_det(d32: bytes, msg: bytes) -> bytes {
+    let k32 = ecdsa_p256_det_k(d32, msg)
+    if bytes_len(k32) == 0 {
+        return bytes_from_vec(vec_new())
+    }
+    return ecdsa_p256_sign_sha256(d32, msg, k32)
+}
+
+// Deterministic sign с raw R||S изход (64 байта) — форматът на JWS ES256.
+fn ecdsa_p256_sign_sha256_raw(d32: bytes, msg: bytes) -> bytes {
+    let k32 = ecdsa_p256_det_k(d32, msg)
+    if bytes_len(k32) == 0 {
+        return bytes_new(0)
+    }
+    let d = p256_nmod(bn_from_bytes_be(d32, 10))
+    let k = p256_nmod(bn_from_bytes_be(k32, 10))
+    if p256_in_range(d) == 0 || p256_in_range(k) == 0 {
+        return bytes_new(0)
+    }
+    let e = p256_nmod(bn_from_bytes_be(sha256_b(msg), 10))
+    let R = p256_mul(k, p256_base())
+    if R.inf == 1 {
+        return bytes_new(0)
+    }
+    let r = p256_nmod(R.x)
+    if p256_in_range(r) == 0 {
+        return bytes_new(0)
+    }
+    let sum = p256_nmod(bn_add(e, p256_nmod(bn_mul(r, d))))
+    let s = p256_nmod(bn_mul(p256_ninv(k), sum))
+    if p256_in_range(s) == 0 {
+        return bytes_new(0)
+    }
+    return bytes_concat(bn_to_bytes_be(r, 32), bn_to_bytes_be(s, 32))
 }

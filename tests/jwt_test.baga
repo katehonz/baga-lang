@@ -3,6 +3,8 @@
 import "jwtbaga/jwt.baga"
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
+import "std/crypto/p256.baga"
+import "std/crypto/bn.baga"
 
 fn check(name: str, ok: bool) {
     if ok {
@@ -106,6 +108,20 @@ fn main() {
     check("rs256_sign_ok", rs_tok != "")
     let rs_parts = jwt_split(rs_tok)
     check("rs256_header", str_find(str_of_bytes(base64url_decode_b(rs_parts.header_b64)), "RS256") >= 0)
+
+    // G11 ES256: deterministic sign (det-k) + verify round-trip с Q = 2·G
+    let mut ed: Vec<i64> = vec_new()
+    for i in 0..31 { vec_push(ed, 0) }
+    vec_push(ed, 2)
+    let ed32 = bytes_from_vec(ed)
+    let eQ = p256_mul(bn_from_bytes_be(ed32, 10), p256_base())
+    let eqx = bn_to_bytes_be(eQ.x, 32)
+    let eqy = bn_to_bytes_be(eQ.y, 32)
+    let es_tok = jwt_encode_es256(ed32, "{\"sub\":\"es256-user\"}")
+    check("es256_sign_ok", es_tok != "")
+    check("es256_roundtrip", jwt_verify_es256(eqx, eqy, es_tok) == 1)
+    check("es256_deterministic", jwt_encode_es256(ed32, "{\"sub\":\"es256-user\"}") == es_tok)
+    check("es256_diff_msg", jwt_encode_es256(ed32, "{\"sub\":\"x\"}") != es_tok)
 
     print("jwt_test: all passed")
 }
