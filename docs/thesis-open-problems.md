@@ -381,15 +381,16 @@ variable-count shifts. Remaining: the CDCL/GF(2) layer for collapse-free
 identities, multiplication wiring, i32 arithmetic shift.
 
 **M32 (2026-10-31):** CDCL инфраструктура в `verify_bv_sat.c` — reason
-tracking (коя клауза е имплицирала всеки литерал), 1-UIP conflict
-analysis (`cdcl_analyze`), non-chronological backjump, learned clause
-database. **НО: изключена по подразбиране** — първата имплементация
- произвеждаше грешни learned clauses при shift-случаи (lshr_var_bad
- стана лъжливо ДОКАЗАНО, хванато от soundness tripwire-а). Верификаторът
- остава на чист DPLL (sound, budget-bounded); CDCL кодът е в repo-то
- за одит и бъдещо включване след формален преглед на conflict analysis.
- Следващата стъпка: формална валидация на 1-UIP резолюцията срещу
- модела, преди да се включи `sat.cdcl = 1`.
+tracking, MiniSat-style 1-UIP conflict analysis (`cdcl_analyze`),
+non-chronological backjump, learned clause database, UIP propagation
+след backjump. **ИЗКЛЮЧЕНА по подразбиране** (`sat.cdcl = 0`): двете
+имплементации (hand-rolled и MiniSat-style) произвеждат грешни learned
+clauses при shift/wrap случаи — `lshr_var_bad` и `distrib_honest`
+стават лъжливо ДОКАЗАНО, хванато от soundness tripwire-а в run_verify.sh.
+Верификаторът остава на чист DPLL (sound, budget-bounded, 138/138 gates).
+CDCL кодът е в repo-то за одит; следваща стъпка — формална валидация на
+резолюцията (всяка learned clause трябва да е логическо следствие от
+оригиналните клаузи — проверка чрез отделен SAT солвер) преди включване.
 
 ---
 

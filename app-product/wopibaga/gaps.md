@@ -1,11 +1,13 @@
 # wopibaga gaps
 
-## Open
+## Closed
 
-### W1 — no X-WOPI-Proof
+### W1 — ~~no X-WOPI-Proof~~ — closed 2026-10-31
 
-The office server's RSA proof is not checked. The access token is the
-secret. A leaked token can be used until it expires.
+`wopi_verify_proof(proof_b64, msg, mod_b64, exp_b64)`: RSA PKCS#1 v1.5
+проверка с SHA-256 (чрез `std/crypto/rsa.baga` + `sha256_b`). Каноничното
+съобщение: `wopi_proof_message(timestamp, token, method, path, body_hash)`.
+Публичният ключ (mod/exp base64) идва от discovery `<proof-key>`.
 
 ## Closed
 

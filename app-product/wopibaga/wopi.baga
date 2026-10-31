@@ -3,6 +3,9 @@
 
 import "std/json/json_write.baga"
 import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/crypto/rsa.baga"
+import "std/crypto/sha256.baga"
 
 struct WopiAct {
     status: i64,
@@ -16,6 +19,70 @@ struct WopiAct {
 
 fn wopi_act(status: i64, lock: str, store: i64, clear: i64, new_lock: str) -> WopiAct {
     return WopiAct { status: status, lock: lock, store: store, clear: clear, new_lock: new_lock, name: "", url: "" }
+}
+
+// W1 (closed 2026-10-31): X-WOPI-Proof проверка по MS-WOPI §3.3.
+// Proof хедърът е base64 RSA подпис (PKCS#1 v1.5, SHA-256) на каноничното
+// съобщение: timestamp + access_token + method + "\n" + path + "\n" + body_sha256_hex.
+// Публичният ключ (mod, exp) идва от discovery XML <proof-key> — base64 DER SPKI;
+// тук приемаме mod/exp като base64 стрингове директно.
+// Връща 1 ако подписът е валиден, 0 иначе.
+fn wopi_proof_message(timestamp: str, token: str, method: str, path: str, body_hash_hex: str) -> str {
+    let mut m = timestamp
+    m = concat(m, token)
+    m = concat(m, method)
+    m = concat(m, "\n")
+    m = concat(m, path)
+    m = concat(m, "\n")
+    m = concat(m, body_hash_hex)
+    return m
+}
+
+fn wopi_verify_proof(proof_b64: str, msg: str, mod_b64: str, exp_b64: str) -> i64 {
+    if proof_b64 == "" || mod_b64 == "" || exp_b64 == "" {
+        return 0
+    }
+    let sig: bytes = bytes_from_vec(base64_decode(proof_b64))
+    let n: bytes = bytes_from_vec(base64_decode(mod_b64))
+    let e: bytes = bytes_from_vec(base64_decode(exp_b64))
+    let em = rsa_public(n, e, sig)
+    let msg_hash = sha256_b(bytes_of_str(msg))
+    let k = bytes_len(n)
+    let pad_len = k - 3 - 19 - 32
+    if pad_len < 8 {
+        return 0
+    }
+    let mut expected = bytes_push(bytes_new(0), 0)
+    expected = bytes_push(expected, 1)
+    for i in 0..pad_len {
+        expected = bytes_push(expected, 255)
+    }
+    expected = bytes_push(expected, 0)
+    let di = wopi_sha256_digest_info()
+    for i in 0..19 {
+        expected = bytes_push(expected, vec_get(di, i))
+    }
+    expected = bytes_concat(expected, msg_hash)
+    if bytes_len(em) != bytes_len(expected) {
+        return 0
+    }
+    for i in 0..bytes_len(em) {
+        if bytes_at(em, i) != bytes_at(expected, i) {
+            return 0
+        }
+    }
+    return 1
+}
+
+// DER DigestInfo prefix за SHA-256 (RFC 8017 §9.2 note 1) — 19 байта.
+fn wopi_sha256_digest_info() -> Vec<i64> {
+    let mut d: Vec<i64> = vec_new()
+    vec_push(d, 48); vec_push(d, 49); vec_push(d, 48); vec_push(d, 13)
+    vec_push(d, 6); vec_push(d, 9); vec_push(d, 96); vec_push(d, 134)
+    vec_push(d, 72); vec_push(d, 1); vec_push(d, 101); vec_push(d, 3)
+    vec_push(d, 4); vec_push(d, 2); vec_push(d, 1); vec_push(d, 5)
+    vec_push(d, 0); vec_push(d, 4); vec_push(d, 32)
+    return d
 }
 
 fn wopi_act_full(status: i64, lock: str, store: i64, clear: i64, new_lock: str, name: str, url: str) -> WopiAct {

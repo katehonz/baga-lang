@@ -147,6 +147,23 @@ fn wopi_test_json() -> i64 !IO {
     return 0
 }
 
+fn wopi_test_proof() -> i64 !IO {
+    let msg = wopi_proof_message("1700000000", "tok", "GET", "/wopi/files/x", "abc")
+    assert_true("proof_msg", str_find(msg, "1700000000tokGET\n/wopi/files/x\nabc") >= 0)
+    let mut nb: Vec<i64> = vec_new()
+    vec_push(nb, 12); vec_push(nb, 161)
+    let mut eb: Vec<i64> = vec_new()
+    vec_push(eb, 17)
+    let n_b64 = base64_encode(nb)
+    let e_b64 = base64_encode(eb)
+    let mut bad: Vec<i64> = vec_new()
+    vec_push(bad, 1)
+    assert_eq_i64("bad_proof", wopi_verify_proof(base64_encode(bad), msg, n_b64, e_b64), 0)
+    assert_eq_i64("empty_proof", wopi_verify_proof("", msg, n_b64, e_b64), 0)
+    assert_eq_i64("empty_mod", wopi_verify_proof(base64_encode(bad), msg, "", e_b64), 0)
+    return 0
+}
+
 fn main() -> i64 !IO {
     wopi_test_lock()?
     wopi_test_unlock()?
@@ -156,6 +173,7 @@ fn main() -> i64 !IO {
     wopi_test_rename()?
     wopi_test_delete()?
     wopi_test_names()?
+    wopi_test_proof()?
     print("wopi_test: all passed")
     return 0
 }
