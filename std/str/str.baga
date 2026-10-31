@@ -116,6 +116,19 @@ fn str_trim(s: str) -> str {
 // externs that take a `str` buffer (os/net/io rely on this).
 fn str_repeat(s: str, n: i64) -> str {
     // P55: runtime builtin — една алокация вместо O(log n) concat блока.
+    // Под --rc оставаме на concat-пътя: builtin-ът не е маркиран като
+    // owned RC return в LLVM tracking-а.
+    if rc_on() == 1 {
+        let mut out = ""
+        let mut cur = s
+        let mut left = n
+        while left > 0 {
+            if left % 2 == 1 { out = concat(out, cur) }
+            cur = concat(cur, cur)
+            left = left / 2
+        }
+        return out
+    }
     return str_repeat_b(s, n)
 }
 

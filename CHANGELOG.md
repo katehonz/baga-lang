@@ -63,6 +63,19 @@
 - `boila_p5_test`, `boila_pool_test`, `boila_pgwire_test`, `boila_chaos_test`,
   `boila_http_mux_test` — зелени; pool тестът е чист и под TSan.
 
+### W4.6 — `mem_*` в LLVM (non-RC) върху allocation log (P58)
+- LLVM IR вече има `mem_mark/mem_rewind/mem_persist_begin/end` и
+  `mem_arena_bytes/spare/peak`; `llv_rt_malloc/realloc/free` минават през
+  thread-local log в `libbaga_par.so` (persist оцелява rewind, freed
+  entries се пропускат).
+- `mem_spare_bytes` е 0 (LLVM няма bump free-list); `mem_arena_bytes`
+  брои само non-persist, за паритет с C.
+- Под `--rc` `mem_*` остава C-only: RC scope release и rewind не се
+  комбинират безопасно (`tests/rc_test`). `rc_on` вече е compile-time
+  константа в LLVM, за да остане `str_repeat` RC-пътят същият.
+- `tests/llvm_mem_test.baga` е в общия LLVM оракул. Следващият gap за
+  boilaDB на LLVM е field assignment на non-local обект.
+
 ### W2.20 — nested cell2 съобщения (P56)
 - Raft: `msg_free` за всички типове; `broadcast` клонира per peer, защото
   един handle до няколко peer-а се free-ва от всеки receiver (double-free).

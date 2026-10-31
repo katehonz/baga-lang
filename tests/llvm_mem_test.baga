@@ -1,0 +1,24 @@
+// llvm_mem_test — P58: mem_mark/rewind/persist върху LLVM allocation log.
+// Само non-RC: под --rc mem_* остава C-only (RC scope release + rewind).
+fn check(name: str, ok: bool) {
+    if ok { print(concat("ok ", name)) }
+    else { eprintln(concat("FAIL ", name)); exit(1) }
+}
+
+fn main() {
+    let m = mem_mark()
+    let a = concat("ab", "cd")
+    check("alloc", a == "abcd")
+    mem_rewind(m)
+    check("arena_after_rewind", mem_arena_bytes() == 0)
+
+    let p = mem_mark()
+    mem_persist_begin()
+    let keep = concat("keep", "!")
+    mem_persist_end()
+    mem_rewind(p)
+    check("persist_survives", keep == "keep!")
+    check("peak", mem_peak_bytes() > 0)
+    check("spare_zero", mem_spare_bytes() == 0)
+    print("llvm_mem_test: all passed")
+}

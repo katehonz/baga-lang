@@ -1159,8 +1159,10 @@ print(mem_peak_bytes())   // high-water — не расте между ходо�
 - **Persist регионът не се брои** — `mem_persist_begin/end` алоцира отделни
   malloc-и извън arena веригата; те са long-lived по дизайн (plan cache,
   session maps).
-- **Само C бекенда** — LLVM runtime-ът е plain malloc без bump арена
-  (`mem_*_bytes` там е явна грешка, като `mem_mark`/`mem_rewind`).
+- **LLVM (non-RC)** — `mem_mark/rewind/persist/*_bytes` работят върху
+  allocation log в `libbaga_par.so`; `mem_spare_bytes` е 0 (няма bump
+  free-list). Под `--rc` остават C-only (RC scope release + rewind не се
+  комбинират безопасно).
 - **Не замества RC** — метриката показва *обем*, не *обекти*; за live RC
   обекти по allocation site виж `BAGA_ALLOC_STATS=1` под `--rc`
   (watchdog нишка с backtrace сайтове).
@@ -1195,7 +1197,7 @@ world_free(w)                  // 2 = freed — целият свят навед
   проследяват — MEM-1 договор); move се моделира само през `chan_send`
   (go-аргумент е следваща стъпка); payload-ите са сурови офсети — typed
   относителни контейнери идват в W1. И двата бекенда: LLVM зарежда
-  `lib/libbaga_world_rt.so` (`make llvm`); `mem_*` остава само C.
+  `lib/libbaga_world_rt.so` (`make llvm`); `mem_*` е и в LLVM (non-RC).
 
 #### W1: wvec — typed контейнер в свят, position-independent
 

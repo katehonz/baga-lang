@@ -383,15 +383,15 @@ LLVMValueRef llv_rt_libc(const char *name, LLVMTypeRef ret,
 
 LLVMValueRef llv_rt_malloc(void) {
     LLVMTypeRef p[] = { lg.i64_ty };
-    return llv_rt_libc("malloc", lg.ptr_ty, p, 1);
+    return llv_rt_libc(lg.rc ? "malloc" : "baga_lm_malloc", lg.ptr_ty, p, 1);
 }
 LLVMValueRef llv_rt_realloc(void) {
     LLVMTypeRef p[] = { lg.ptr_ty, lg.i64_ty };
-    return llv_rt_libc("realloc", lg.ptr_ty, p, 2);
+    return llv_rt_libc(lg.rc ? "realloc" : "baga_lm_realloc", lg.ptr_ty, p, 2);
 }
 LLVMValueRef llv_rt_free(void) {
     LLVMTypeRef p[] = { lg.ptr_ty };
-    return llv_rt_libc("free", lg.void_ty, p, 1);
+    return llv_rt_libc(lg.rc ? "free" : "baga_lm_free", lg.void_ty, p, 1);
 }
 LLVMValueRef llv_rt_memcpy(void) {
     LLVMTypeRef p[] = { lg.ptr_ty, lg.ptr_ty, lg.i64_ty };

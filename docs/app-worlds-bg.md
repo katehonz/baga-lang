@@ -32,11 +32,10 @@ submodule-и; промяна в пакет се commit-ва в неговия re
 ## LLVM бележка
 
 Pure app-product стекът (20 теста) и световете минават през `lli`; `fmr_test`
-и `cloud_test` също се emit-ват и минават. `boilaDB`, `rocksbaga` и
-`queuebaga` обаче ползват `mem_mark/rewind/persist` и LLVM бекендът още ги
-отказва честно. Това е следващата голяма езикова задача, ако искаме
-storage/DB стекът на LLVM: `mem_*` изисква alloc log/bump arena в LLVM
-(не е задача за светове).
+и `cloud_test` също се emit-ват и минават. `mem_mark/rewind/persist` вече
+работят и в LLVM (non-RC) върху allocation log в `libbaga_par.so`. Това
+отключи `mem_*` за storage/DB кода, но `boilaDB` все още се спира на
+следващия LLVM gap — field assignment на non-local обект.
 
 ## Оставащи кандидати (по приоритет)
 

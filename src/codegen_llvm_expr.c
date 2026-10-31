@@ -1580,16 +1580,34 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
                 lrc_emit_drop(n);
                 return NULL;  /* drop е statement-израз без стойност */
             }
-            /* MEM-4: mark/rewind/persist работят върху bump arena-та, която
-             * съществува само в C бекенда (LLVM runtime-ът е plain malloc) */
-            if (!fn && (strcmp(n->callee->name, "mem_mark") == 0 ||
-                        strcmp(n->callee->name, "mem_rewind") == 0 ||
-                        strcmp(n->callee->name, "mem_persist_begin") == 0 ||
-                        strcmp(n->callee->name, "mem_arena_bytes") == 0 ||
-                        strcmp(n->callee->name, "mem_spare_bytes") == 0 ||
-                        strcmp(n->callee->name, "mem_peak_bytes") == 0 ||
-                        strcmp(n->callee->name, "mem_persist_end") == 0))
-                llv_llvm_unsupported("mem_mark/mem_rewind/mem_persist_*/mem_*_bytes — само C бекенда; вж. docs/language-en.md");
+            /* rc_on е compile-time режим в LLVM. */
+            if (!fn && !ef && strcmp(n->callee->name, "rc_on") == 0 && n->args.len == 0)
+                return LLVMConstInt(lg.i1_ty, lg.rc ? 1 : 0, 0);
+            /* P58: mem_* върху LLVM allocation log (libbaga_par.so).
+             * Под --rc остава C-only: RC scope release и rewind не се
+             * комбинират безопасно (rc_test). */
+            if (!fn && !ef && lg.rc &&
+                (strncmp(n->callee->name, "mem_", 4) == 0))
+                llv_llvm_unsupported("mem_* под --rc — само C бекенда");
+            if (!fn && !ef) {
+                const char *mn = n->callee->name;
+                if (strcmp(mn, "mem_mark") == 0)
+                    fn = llv_rt_libc("baga_lm_mark", lg.i64_ty, NULL, 0);
+                else if (strcmp(mn, "mem_arena_bytes") == 0)
+                    fn = llv_rt_libc("baga_lm_arena_bytes", lg.i64_ty, NULL, 0);
+                else if (strcmp(mn, "mem_spare_bytes") == 0)
+                    fn = llv_rt_libc("baga_lm_spare_bytes", lg.i64_ty, NULL, 0);
+                else if (strcmp(mn, "mem_peak_bytes") == 0)
+                    fn = llv_rt_libc("baga_lm_peak_bytes", lg.i64_ty, NULL, 0);
+                else if (strcmp(mn, "mem_persist_begin") == 0)
+                    fn = llv_rt_libc("baga_lm_persist_begin", lg.void_ty, NULL, 0);
+                else if (strcmp(mn, "mem_persist_end") == 0)
+                    fn = llv_rt_libc("baga_lm_persist_end", lg.void_ty, NULL, 0);
+                else if (strcmp(mn, "mem_rewind") == 0) {
+                    LLVMTypeRef mp[] = { lg.i64_ty };
+                    fn = llv_rt_libc("baga_lm_rewind", lg.void_ty, mp, 1);
+                }
+            }
             if (!fn) {
                 char buf[256];
                 snprintf(buf, sizeof buf, "вградена функция '%s'", n->callee->name);

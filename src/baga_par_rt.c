@@ -374,3 +374,92 @@ baga_Vec *baga_pool_map(baga_par_fn fn, baga_Vec *in, int64_t nw) {
     free(hs); free(ctx);
     return out;
 }
+
+/* ---- P58: LLVM allocation log за mem_mark/rewind/persist ----
+ * Thread-local; llv_rt_malloc/realloc/free са пренасочени към тези функции.
+ * Persist allocations оцеляват rewind; mark е индекс в log-а. */
+typedef struct { void *p; size_t n; int persist, alive; } baga_LmEnt;
+typedef struct { baga_LmEnt *e; size_t len, cap; int64_t live, live_np, peak; int depth; } baga_LmLog;
+static __thread baga_LmLog baga_lm;
+
+static void baga_lm_reserve(void) {
+    if (baga_lm.len < baga_lm.cap) return;
+    size_t nc = baga_lm.cap ? baga_lm.cap * 2 : 256;
+    baga_LmEnt *ne = (baga_LmEnt *)realloc(baga_lm.e, nc * sizeof(*ne));
+    if (!ne) { fprintf(stderr, "baga: mem log: oom\n"); exit(1); }
+    baga_lm.e = ne; baga_lm.cap = nc;
+}
+
+void *baga_lm_malloc(int64_t n) {
+    size_t sz = n > 0 ? (size_t)n : 1;
+    void *p = malloc(sz);
+    if (!p) { fprintf(stderr, "baga: mem: oom\n"); exit(1); }
+    baga_lm_reserve();
+    baga_lm.e[baga_lm.len].p = p;
+    baga_lm.e[baga_lm.len].n = sz;
+    baga_lm.e[baga_lm.len].persist = baga_lm.depth > 0;
+    baga_lm.e[baga_lm.len].alive = 1;
+    baga_lm.len++;
+    baga_lm.live += (int64_t)sz;
+    if (!baga_lm.e[baga_lm.len - 1].persist) {
+        baga_lm.live_np += (int64_t)sz;
+        if (baga_lm.live_np > baga_lm.peak) baga_lm.peak = baga_lm.live_np;
+    }
+    return p;
+}
+
+void *baga_lm_realloc(void *p, int64_t n) {
+    size_t sz = n > 0 ? (size_t)n : 1;
+    for (size_t i = baga_lm.len; i-- > 0; ) {
+        if (baga_lm.e[i].p != p) continue;
+        if (!baga_lm.e[i].alive) return p;
+        void *np = realloc(p, sz);
+        if (!np) { fprintf(stderr, "baga: mem: oom\n"); exit(1); }
+        baga_lm.live += (int64_t)sz - (int64_t)baga_lm.e[i].n;
+        if (!baga_lm.e[i].persist)
+            baga_lm.live_np += (int64_t)sz - (int64_t)baga_lm.e[i].n;
+        baga_lm.e[i].p = np; baga_lm.e[i].n = sz;
+        if (baga_lm.live_np > baga_lm.peak) baga_lm.peak = baga_lm.live_np;
+        return np;
+    }
+    return realloc(p, sz);
+}
+
+void baga_lm_free(void *p) {
+    if (!p) return;
+    for (size_t i = baga_lm.len; i-- > 0; ) {
+        if (baga_lm.e[i].p != p) continue;
+        if (!baga_lm.e[i].alive) return;   /* двоен free — no-op */
+        baga_lm.e[i].alive = 0;
+        baga_lm.live -= (int64_t)baga_lm.e[i].n;
+        if (!baga_lm.e[i].persist) baga_lm.live_np -= (int64_t)baga_lm.e[i].n;
+        free(p);
+        return;
+    }
+    free(p);   /* извън log-а (par/world runtime) */
+}
+
+int64_t baga_lm_mark(void) { return (int64_t)baga_lm.len; }
+
+void baga_lm_rewind(int64_t mark) {
+    if (mark < 0 || (size_t)mark > baga_lm.len) return;
+    size_t k = (size_t)mark;
+    for (size_t i = (size_t)mark; i < baga_lm.len; i++) {
+        if (baga_lm.e[i].alive) {
+            if (baga_lm.e[i].persist) {
+                baga_lm.e[k++] = baga_lm.e[i];
+            } else {
+                free(baga_lm.e[i].p);
+                baga_lm.live -= (int64_t)baga_lm.e[i].n;
+                baga_lm.live_np -= (int64_t)baga_lm.e[i].n;
+            }
+        }
+    }
+    baga_lm.len = k;
+}
+
+void baga_lm_persist_begin(void) { baga_lm.depth++; }
+void baga_lm_persist_end(void) { if (baga_lm.depth > 0) baga_lm.depth--; }
+int64_t baga_lm_arena_bytes(void) { return baga_lm.live_np; }
+int64_t baga_lm_spare_bytes(void) { return 0; }
+int64_t baga_lm_peak_bytes(void) { return baga_lm.peak; }
