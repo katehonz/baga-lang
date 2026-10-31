@@ -770,6 +770,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_bytes r; r.len = c - a; r.data = baga_alloc((size_t)(r.len ? r.len : 1));\n");
     fprintf(out, "    memcpy(r.data, b.data + a, (size_t)r.len); return r; }\n");
     fprintf(out, "static baga_bytes baga_bytes_concat(baga_bytes a, baga_bytes b) {\n");
+    /* Отрицателна дължина (от грешка нагоре по веригата) не бива да става
+     * огромен size_t memcpy — клъмпваме към 0, както baga_bytes_slice. Иначе
+     * gcc с право предупреждава за out-of-bounds, а warning-ът замърсява
+     * изхода на тестовете (C vs LLVM parity). */
+    fprintf(out, "    if (a.len < 0) a.len = 0; if (b.len < 0) b.len = 0;\n");
     fprintf(out, "    baga_bytes r; r.len = a.len + b.len; r.data = baga_alloc((size_t)(r.len ? r.len : 1));\n");
     fprintf(out, "    memcpy(r.data, a.data, (size_t)a.len); memcpy(r.data + a.len, b.data, (size_t)b.len); return r; }\n");
     /* R54: in-place bulk append — dst[off..off+src.len) = src. Kills the

@@ -1879,6 +1879,34 @@ else
 	exit 1
 fi
 
+echo "=== REPL (compile-and-run модел: декларации + let персистенция) ==="
+# REPL-ът трупа декларации и let-ове; всяка стойност се компилира с тях.
+REPL_OUT=$(printf 'fn inc(x: i64) -> i64 {\n    return x + 1\n}\ninc(41)\nlet x = 5\nx * 2\nlet mut y = 3\ny = 4\ny * 2\n:q\n' | scripts/baga-repl 2>&1)
+if echo "$REPL_OUT" | grep -qx "42" && echo "$REPL_OUT" | grep -qx "10" && echo "$REPL_OUT" | grep -qx "8"; then
+	echo "OK: REPL — fn декларация, израз и let/let mut персистенция"
+else
+	echo "FAIL: REPL сесията трябваше да върне 42/10/8"
+	echo "$REPL_OUT"
+	exit 1
+fi
+# :reset изчиства и let-овете
+REPL_OUT2=$(printf 'let x = 5\n:reset\nx\n:q\n' | scripts/baga-repl 2>&1)
+if echo "$REPL_OUT2" | grep -q "недефинирана променлива"; then
+	echo "OK: REPL :reset изчиства и let-овете"
+else
+	echo "FAIL: :reset не изчисти let-овете"
+	echo "$REPL_OUT2"
+	exit 1
+fi
+# IO ефект: main с широки ефекти при нужда
+REPL_OUT3=$(printf 'fn прочети() -> str !IO {\n    return "съдържание"\n}\nпрочети()\n:q\n' | scripts/baga-repl 2>&1)
+if echo "$REPL_OUT3" | grep -qx "съдържание"; then
+	echo "OK: REPL с !IO функция (main с широки ефекти)"
+else
+	echo "FAIL: REPL с !IO функция не мина"
+	echo "$REPL_OUT3"
+	exit 1
+fi
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

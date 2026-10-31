@@ -32,6 +32,10 @@ make && make sandak
 програма, първия доказан `spec` (`--verify` с контрапример) и първия хванат висящ
 указател в регион. Всеки изход в страницата е реално изпълнен с командите на нея.
 
+`make repl` — интерактивен REPL: декларациите и `let`-овете се пазят между редовете
+(преизчисляват се при всяка стойност), изразът се печата сам. `:q` изход, `:reset`
+нова сесия, `:decls` покажи.
+
 ## Pure-Baga cryptography (no OpenSSL at runtime)
 
 Cryptography is **implemented in Baga**, not linked against OpenSSL/libcrypto for runtime. OpenSSL is only a **test peer** (e.g. TLS handshake / `https` mock).

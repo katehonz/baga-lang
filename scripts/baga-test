@@ -52,7 +52,17 @@ echo "baga-test: ${#FILES[@]} file(s)"
 for f in "${FILES[@]}"; do
   rel="${f#"$ROOT/"}"
   echo "=== $rel ==="
-  if "$BAGA" "${IFLAGS[@]}" "$f"; then
+  # Тест с C shim (FFI): `// BAGA_EXTRA_OBJS: <path>` във файла. Пример:
+  # g10_extern_bytes_test.baga → tests/g10_shim.c.
+  extra="$(grep -m1 '^// BAGA_EXTRA_OBJS:' "$f" | sed 's|^// BAGA_EXTRA_OBJS: *||' || true)"
+  if [[ -n "$extra" ]]; then
+    if BAGA_EXTRA_OBJS="$ROOT/$extra" "$BAGA" "${IFLAGS[@]}" "$f"; then
+      pass=$((pass + 1))
+    else
+      fail=$((fail + 1))
+      failed_names+=("$rel")
+    fi
+  elif "$BAGA" "${IFLAGS[@]}" "$f"; then
     pass=$((pass + 1))
   else
     fail=$((fail + 1))

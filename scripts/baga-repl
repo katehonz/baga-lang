@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# baga-repl — интерактивен REPL за Baga.
+#
+# Моделът е честен за компилиран език (няма интерпретатор): декларациите
+# (fn/struct/spec/enum/trait/impl/extern) се трупат в сесия, а всяка нова стойност
+# или изявление се компилира ЗАЕДНО с тях и се изпълнява. Така `fn inc(…)` от един
+# ред е видима на следващия. Променливи от `let` НЕ се пазят между редовете —
+# всяка стойност се оценява в нов `fn main()` (ограничението е документирано).
+#
+# Израз (`1 + 2`) се печата автоматично (`print(expr)`). Изявление (`let x = 5`,
+# `if … { … }`) се изпълнява както е. Ефектите се разширяват при нужда: ако
+# `fn main()` без ефекти не мине (напр. тялото вика `!IO` функция), се опитва
+# `fn main() -> i64 !IO !Time !Par`.
+#
+#   scripts/baga-repl            # интерактивно
+#   scripts/baga-repl < file     # сесия от файл/пайп (за тестове)
+#   make repl
+#
+# Команди: :q изход, :reset нова сесия, :decls покажи декларациите, :help.
+
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="${BAGA:-$ROOT/baga}"
+IFLAGS="-I $ROOT -I $ROOT/app-product"
+
+if [[ ! -x "$BIN" ]]; then
+	echo "baga-repl: липсва $BIN (пусни make)" >&2
+	exit 127
+fi
+
+SESSION="$(mktemp -d /tmp/baga_repl.XXXXXX)"
+DECLS="$SESSION/decls.baga"
+LETS="$SESSION/lets.baga"
+MAIN="$SESSION/main.baga"
+OUT="$SESSION/out.txt"
+: > "$DECLS"
+: > "$LETS"
+trap 'rm -rf "$SESSION"' EXIT
+
+cat <<'EOF'
+Baga REPL — fn/struct/spec декларациите се пазят между редовете.
+Израз се печата сам; `let`/присвояване се преизчисляват при всяка стойност.
+:q изход · :reset нова сесия · :decls покажи · :help
+EOF
+
+is_expression() {
+	local b="$1"
+	case "$b" in
+		let\ *|if\ *|while\ *|for\ *|return\ *|break*|continue*|raise\ *|drop\ *|world\ *|match\ *|fn\ *|struct\ *|spec\ *|enum\ *|trait\ *|impl\ *|extern\ *|use\ *|import\ *)
+			return 1 ;;
+	esac
+	# присвояване на горно ниво („ = ") е изявление, не израз
+	if printf '%s' "$b" | grep -q ' = '; then return 1; fi
+	return 0
+}
+
+read_block() {
+	local block="$1" depth close more
+	depth=$(printf '%s' "$block" | tr -cd '{' | wc -c)
+	close=$(printf '%s' "$block" | tr -cd '}' | wc -c)
+	while (( depth > close )); do
+		if ! IFS= read -r -p "… " more; then break; fi
+		block="$block"$'\n'"$more"
+		depth=$(printf '%s' "$block" | tr -cd '{' | wc -c)
+		close=$(printf '%s' "$block" | tr -cd '}' | wc -c)
+	done
+	printf '%s' "$block"
+}
+
+emit_main() {
+	local body="$1" wide="$2"
+	{
+		cat "$DECLS"
+		if [[ "$wide" == 1 ]]; then
+			printf 'fn main() -> i64 !IO !Time !Par {\n'
+		else
+			printf 'fn main() {\n'
+		fi
+		cat "$LETS"
+		if is_expression "$body"; then
+			printf '    print(%s)\n' "$body"
+		else
+			printf '%s\n' "$body" | sed 's/^/    /'
+		fi
+		if [[ "$wide" == 1 ]]; then printf '    return 0\n'; fi
+		printf '}\n'
+	} > "$MAIN"
+}
+
+persist_stmt() {
+	local body="$1"
+	cp "$LETS" "$LETS.new"
+	printf '%s\n' "$body" >> "$LETS.new"
+	emit_main "$body" 0
+	if "$BIN" $IFLAGS "$MAIN" > "$OUT" 2>&1; then
+		mv "$LETS.new" "$LETS"
+		cat "$OUT"
+		return
+	fi
+	emit_main "$body" 1
+	if "$BIN" $IFLAGS "$MAIN" > "$OUT" 2>&1; then
+		mv "$LETS.new" "$LETS"
+	else
+		rm -f "$LETS.new"   # rollback — грешката не трябва да остава в сесията
+	fi
+	cat "$OUT"
+}
+
+run_expr() {
+	local body="$1"
+	emit_main "$body" 0
+	if "$BIN" $IFLAGS "$MAIN" > "$OUT" 2>&1; then
+		cat "$OUT"
+		return
+	fi
+	# втора проба с широки ефекти (тялото вика !IO/!Time/!Par функция)
+	emit_main "$body" 1
+	"$BIN" $IFLAGS "$MAIN" > "$OUT" 2>&1 || true
+	cat "$OUT"
+}
+
+while IFS= read -r -p "бага> " line; do
+	case "$line" in
+		'') continue ;;
+		':q'|':quit'|'quit'|'exit') break ;;
+		':reset') : > "$DECLS"; : > "$LETS"; echo "(сесията е изчистена)"; continue ;;
+		':decls') if [[ -s "$DECLS" ]]; then cat "$DECLS"; else echo "(няма декларации)"; fi; continue ;;
+		':help')
+			echo "fn/struct/spec/enum/trait/impl/extern — записва се; :reset изчиства; :q изход"
+			continue ;;
+	esac
+
+	block="$(read_block "$line")"
+
+	case "$block" in
+		let\ *|let\ mut\ *)
+			persist_stmt "$block"
+			;;
+		fn\ *|struct\ *|spec\ *|enum\ *|trait\ *|impl\ *|extern\ *|use\ *|import\ *)
+			cp "$DECLS" "$DECLS.new"
+			printf '%s\n' "$block" >> "$DECLS.new"
+			if "$BIN" $IFLAGS --check "$DECLS.new" > "$OUT" 2>&1; then
+				mv "$DECLS.new" "$DECLS"
+				echo "(записано)"
+			else
+				cat "$OUT"
+				rm -f "$DECLS.new"
+			fi
+			;;
+		*)
+			if printf '%s' "$block" | grep -q ' = '; then
+				persist_stmt "$block"
+			else
+				run_expr "$block"
+			fi
+			;;
+	esac
+done

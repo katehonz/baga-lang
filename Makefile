@@ -18,7 +18,7 @@ SRCS := src/main.c src/lexer.c src/parser_core.c src/parser_decl.c src/codegen_u
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
-.PHONY: all clean test test-llvm test-llvm-rc llvm self par-rt world-rt sandak docker
+.PHONY: all clean test test-llvm test-llvm-rc llvm self par-rt world-rt sandak docker repl
 
 all: $(BIN)
 
@@ -81,6 +81,9 @@ test-llvm: $(BIN) $(LLVM_BIN) $(PAR_SO) $(WORLD_RT_SO)
 	@LLI="$(LLI)" ./tests/llvm_app_pure.sh
 	@LLI="$(LLI)" ./tests/llvm_boila.sh
 	@LLI="$(LLI)" ./tests/llvm_storage.sh
+
+repl: $(BIN)
+	@./scripts/baga-repl
 
 test-llvm-rc: $(BIN) $(LLVM_BIN) $(PAR_SO)
 	@LLI="$(LLI)" ./tests/llvm_rc.sh

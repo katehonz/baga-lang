@@ -1425,6 +1425,15 @@ invalidates nothing:
   base name (`stash__iN`).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
+- **REPL** (2026-10-31): `make repl` (or `scripts/baga-repl`). Declarations
+  (`fn`/`struct`/`spec`/`enum`/`trait`/`impl`/`extern`) persist across lines;
+  `let` and simple assignments are re-evaluated on every new value inside
+  `fn main()` — so `let x = 5` then `x * 2` gives 10. Expressions print
+  themselves (`1 + 2` → 3); `!IO`/`!Time`/`!Par` are widened automatically when
+  needed. Commands: `:q` quit, `:reset` fresh session (clears lets too),
+  `:decls` show, `:help`. It is compile-and-run, not an interpreter: a let's
+  initializer side effects repeat on re-evaluation, and assigning to a `let`
+  without `mut` is an error, exactly as in normal code.
 - **Un-annotated Vec/Map argument in a generic call** (fixed 2026-10-31):
   `fn stash<T>(out: Vec<T>, s: T)` with `let out = vec_new()` + `stash(out, "s")`
   printed a pointer instead of the string — the generic path did not fix the

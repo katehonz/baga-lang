@@ -1,5 +1,6 @@
 // g10_extern_bytes_test.baga — G10: extern fn с bytes параметър и bytes връщан тип.
 // Линква се с tests/g10_shim.c през BAGA_EXTRA_OBJS.
+// BAGA_EXTRA_OBJS: tests/g10_shim.c
 import "std/bytes/bytes.baga"
 
 extern fn g10_sum(b: bytes) -> i64
