@@ -957,6 +957,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             {"cell2",       TYPE_I64, "aa", 0, 0},
             {"cell2_0",     TYPE_I64, "a", 0, 0},
             {"cell2_1",     TYPE_I64, "a", 0, 0},
+            {"cell2_free",  TYPE_VOID, "a", 0, 0},
             /* R51: unsafe str handle casts — zero-copy chan hop (C backend) */
             {"str_h",       TYPE_I64, "s", 0, 0},
             {"h_str",       TYPE_STR, "i", 0, 0},

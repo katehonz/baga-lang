@@ -30,6 +30,7 @@ int64_t baga_cell2(int64_t a, int64_t b) {
 }
 int64_t baga_cell2_0(int64_t h) { return ((int64_t *)(intptr_t)h)[0]; }
 int64_t baga_cell2_1(int64_t h) { return ((int64_t *)(intptr_t)h)[1]; }
+void baga_cell2_free(int64_t h) { if (h) free((void *)(intptr_t)h); }
 typedef int64_t (*baga_par_fn)(int64_t);
 typedef struct {
     baga_par_fn fn; int64_t arg; int64_t result; pthread_t th;

@@ -1229,6 +1229,7 @@ void emit_expr(Codegen *cg, Node *n) {
                     {"cell2",       "baga_cell2"},
                     {"cell2_0",     "baga_cell2_0"},
                     {"cell2_1",     "baga_cell2_1"},
+                    {"cell2_free",  "baga_cell2_free"},
                     {"str_h",       "baga_str_h"},
                     {"h_str",       "baga_h_str"},
                     {"bytes_h",     "baga_bytes_h"},

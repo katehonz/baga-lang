@@ -1632,6 +1632,13 @@ A worker takes a single `i64`. For more data use a heap pair — `cell2` is
 | `cell2` | `(a, b) -> i64` | A new heap pair; returns a handle. |
 | `cell2_0` | `(p: i64) -> i64` | The first element. |
 | `cell2_1` | `(p: i64) -> i64` | The second element. |
+| `cell2_free` | `(p: i64) -> void` | Frees the heap pair. |
+
+> **Ownership:** `chan_recv2`/`chan_try_recv`/`chan_recv_timeout`/`chan_select2*`
+> return a **fresh** heap pair — the receiver reads it and calls
+> `cell2_free`. `go(worker, cell2(...))` also transfers ownership to the
+> worker. Without the free this is a malloc leak per message/pack (boilaDB
+> mux measured ~35 B/query → 1.9 GB RSS in 20 s).
 
 ```baga
 fn producer(ctx: i64) -> i64 !Par {

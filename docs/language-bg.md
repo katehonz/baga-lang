@@ -1628,6 +1628,13 @@ Worker-ът приема само един `i64`. За повече данни �
 | `cell2` | `(a, b) -> i64` | Нова heap двойка; връща handle. |
 | `cell2_0` | `(p: i64) -> i64` | Първият елемент. |
 | `cell2_1` | `(p: i64) -> i64` | Вторият елемент. |
+| `cell2_free` | `(p: i64) -> void` | Освобождава heap двойката. |
+
+> **Собственост:** `chan_recv2`/`chan_try_recv`/`chan_recv_timeout`/`chan_select2*`
+> връщат **нова** heap двойка — получателят я чете и вика `cell2_free`.
+> `go(worker, cell2(...))` също прехвърля собствеността на worker-а. Без
+> free това е malloc leak на всяко съобщение/пакет (boilaDB mux го хвана:
+> ~35 B/заявка → 1.9 GB RSS за 20 s).
 
 ```baga
 fn producer(ctx: i64) -> i64 !Par {

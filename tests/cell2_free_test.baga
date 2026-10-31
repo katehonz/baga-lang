@@ -1,0 +1,10 @@
+// cell2_free_test — heap pair ownership: read, then free (C и LLVM).
+fn main() {
+    let c = cell2(41, 42)
+    if cell2_0(c) != 41 || cell2_1(c) != 42 {
+        eprintln("FAIL: cell2 стойности")
+        exit(1)
+    }
+    cell2_free(c)
+    print("cell2_free_test: all passed")
+}

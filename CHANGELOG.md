@@ -63,6 +63,18 @@
 - `boila_p5_test`, `boila_pool_test`, `boila_pgwire_test`, `boila_chaos_test`,
   `boila_http_mux_test` — зелени; pool тестът е чист и под TSan.
 
+### W2.18 — `cell2_free` + boilaDB mux memory stability (P48/P49)
+- `cell2` (и cell2-овете от `chan_recv2`/`chan_try_recv`/`chan_recv_timeout`/
+  `chan_select2*`) са malloc блокове; досега нямаше Baga builtin за
+  освобождаването им. Добавен е `cell2_free(p) -> void` (C `baga_cell2_free`,
+  LLVM `baga_par_rt`).
+- boilaDB: всички channel cell-ове в mux/pool се освобождават;
+  `boila_mt_data_lock_st_epoch` вече връща epoch директно (без cell2 на
+  всяка заявка); main mux loop-ът прави `mem_mark`/`mem_rewind` с фиксиран
+  idle Vec; wake-ът пише с raw `write` без `substr`.
+- Резултат: 20 s @ ~160k tps, RSS **1.9 GB → ~8 MB** (преди теча на
+  `cell2`/wake-а). `tests/cell2_free_test.baga` е в LLVM оракула.
+
 ### App — boilaDB mux wake (P47): 5 tps → 151k tps
 - `boila_mux_wake` пишеше wake байт с `tcp_write` върху `pipe2`. `tcp_write`
   ползва `sendto` → `ENOTSOCK`; `catch` го гълташе, worker wake-ът не

@@ -41,6 +41,22 @@ PostgreSQL 0.066/0.088/0.113/0.174/0.350 ms.
 main poll-ът не получаваше wake и чакаше целия 200 ms timeout. След P47
 (`fd_write` върху pipe) latency-ът падна от ~200 ms на ~0.06–0.2 ms.
 
+## Памет (P48/P49)
+
+Същият 20 s прогон @ c=16, RSS на сървъра:
+
+| версия | RSS след 20 s |
+|---|---:|
+| P47 (само wake fix) | 1.88 GB |
+| + P48 (idle Vec + mem_rewind) | 420 MB |
+| + P49 (epoch без cell2) | 102 MB |
+| + P49 (channel cell2_free + raw wake) | **7.7 MB** |
+
+Причината: `cell2`/`chan_recv2` връщат malloc двойки, които никой не
+освобождаваше; `boila_mt_data_lock_st_epoch` правеше по една на заявка; а
+wake-ът alokiraше `substr` извън turn rewind-а. Сега `cell2_free` е builtin
+и горещите пътища го ползват.
+
 ## Честни граници
 
 - Read-only point SELECT с 5k реда; не пише, не JOIN-ва, не сканира.
