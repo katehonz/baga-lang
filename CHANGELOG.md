@@ -75,6 +75,16 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.12 — RC handle escape + `rc_test` на LLVM (P62)
+- LLVM `map_h`/`str_h`/`bytes_h` не retain-ваха под `--rc`; `map_h_escape`
+  връщаше висящ handle и `rc_test` падаше в `baga_map_slot`. Сега трите
+  handle builtin-а правят `baga_rc_retain` под RC (като C).
+- `mem_*` под `--rc` е no-op (RC owns lifetimes): `mem_mark`/`mem_*_bytes`
+  връщат 0, rewind/persist са statement no-op. Така `rc_test` вече се
+  пуска на LLVM и **PASS-ва**, вместо да се SKIP-ва.
+- RC оракулът е напълно зелен; `make test-llvm` и `make test-llvm-rc`
+  минават.
+
 ### W4.11 — известен RC gap: `rc_test` под LLVM
 - `mem_*` под `--rc` остава C-only. Опитът да се пуснат като no-op показа,
   че `rc_test` под LLVM се счупва и **без** `mem_*` (дори със секцията
@@ -84,8 +94,8 @@
   самостоятелно минава; crash-ът иска комбинацията на всички 1–10 заедно с
   persist p/pv + 30×64KB `str_repeat`. Значи е RC release/alias bug в
   взаимодействието на контейнерите, не в mem log-а.
-- Следващ debug: минимален reproducer от тази комбинация; едва тогава
-  `mem_*` под `--rc`.
+- Closed by W4.12: причината бяха не-retain-нати `map_h/str_h/bytes_h`
+  handle-и под LLVM RC.
 
 ### P61 — scratch pool + persist map entries; C churn 60→38 KB/връзка
 - `pgw_reader` default в mux вече не алокира 8KB scratch (startup-ът

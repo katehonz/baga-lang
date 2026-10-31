@@ -569,8 +569,13 @@ LLVMValueRef llv_build_baga_map_h(void) {
     LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_h",
         LLVMFunctionType(lg.i64_ty, p, 1, 0));
     llv_h_begin(fn);
+    LLVMValueRef mh = LLVMGetParam(fn, 0);
+    if (lg.rc) {
+        LLVMValueRef ra[] = { mh };
+        llv_h_call(llv_baga_rt("baga_rc_retain"), ra, 1, "");
+    }
     LLVMBuildRet(lg.builder,
-        LLVMBuildPtrToInt(lg.builder, LLVMGetParam(fn, 0), lg.i64_ty, "h"));
+        LLVMBuildPtrToInt(lg.builder, mh, lg.i64_ty, "h"));
     return fn;
 }
 LLVMValueRef llv_build_baga_h_map(void) {

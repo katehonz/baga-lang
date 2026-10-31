@@ -39,8 +39,8 @@ Pure app-product стекът (20 теста) и световете минава
 Rocksbaga и queuebaga също минават (W4.8) през `tests/llvm_storage.sh`.
 LLVM boilaDB `serve_pg` работи под pgbench и в двата режима: go_bg ~19.6k
 tps @ c=4, mux ~18.4k tps @ c=16 (RSS стабилен). C бекендът остава
-~151k tps; LLVM е функционален, но по-бавен. `mem_*` под `--rc` остава
-C-only: `rc_test` има pre-existing LLVM RC crash и без mem_* (виж W4.11).
+~151k tps; LLVM е функционален, но по-бавен. `mem_*` под `--rc` е no-op
+(RC owns lifetimes); `rc_test` вече минава на LLVM (W4.12).
 
 ## Оставащи кандидати (по приоритет)
 

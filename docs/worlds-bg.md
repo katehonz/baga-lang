@@ -1726,7 +1726,7 @@ bytes/str от `world_dump`/`world_dump_compact`/`wcache_get_bytes`/
 вика `baga_lw_*`; `tests/llvm_worlds.sh` пуска 7 world програми през `lli` и
 сравнява изхода/exit кода с C бекенда. `if` като израз (phi/alloca) също е
 добавен в LLVM, за да работи `let wi = if c { world_new() } else { world_new() }`.
-Граници: `mem_*` работи и в LLVM (non-RC, allocation log); под `--rc` е C-only. `lli` изисква `-load` на двата .so.
+Граници: `mem_*` работи и в LLVM (non-RC allocation log; под `--rc` no-op). `lli` изисква `-load` на двата .so.
 
 **W3 (нататък)** — агрегатна стойност директно в `wcache` е по дизайн
 невъзможна: агрегатът е контейнер/регион (`wrec`), а кешът пази i64/str/bytes

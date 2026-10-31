@@ -1197,7 +1197,7 @@ RC cannot handle — as a single transferable, freezable value:
   not tracked — the MEM-1 contract); move is modeled only through
   `chan_send` (go-arguments are the next step); payloads are raw offsets —
   typed relative containers land in W1. Both backends: LLVM loads
-  `lib/libbaga_world_rt.so` (`make llvm`); `mem_*` also works on LLVM (non-RC).
+  `lib/libbaga_world_rt.so` (`make llvm`); `mem_*` also works on LLVM (no-op under `--rc`).
 
 #### W1: wvec — a typed, position-independent container inside a world
 

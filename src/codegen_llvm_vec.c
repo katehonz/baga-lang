@@ -676,8 +676,13 @@ LLVMValueRef llv_build_baga_str_h(void) {
     LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_str_h",
         LLVMFunctionType(lg.i64_ty, p, 1, 0));
     llv_h_begin(fn);
+    LLVMValueRef sh = LLVMGetParam(fn, 0);
+    if (lg.rc) {
+        LLVMValueRef ra[] = { sh };
+        llv_h_call(llv_baga_rt("baga_rc_retain"), ra, 1, "");
+    }
     LLVMBuildRet(lg.builder,
-        LLVMBuildPtrToInt(lg.builder, LLVMGetParam(fn, 0), lg.i64_ty, "h"));
+        LLVMBuildPtrToInt(lg.builder, sh, lg.i64_ty, "h"));
     return fn;
 }
 LLVMValueRef llv_build_baga_h_str(void) {
@@ -730,6 +735,10 @@ LLVMValueRef llv_build_baga_bytes_h(void) {
         LLVMFunctionType(lg.i64_ty, p, 1, 0));
     llv_h_begin(fn);
     LLVMValueRef a = llv_bytes_param_alloca(LLVMGetParam(fn, 0));
+    if (lg.rc) {
+        LLVMValueRef ra[] = { llv_bytes_load_data(a) };
+        llv_h_call(llv_baga_rt("baga_rc_retain"), ra, 1, "");
+    }
     LLVMValueRef sz[] = { LLVMConstInt(lg.i64_ty, 16, 0) };
     LLVMValueRef box = llv_h_call(llv_rt_malloc(), sz, 1, "box");
     LLVMValueRef bp = LLVMBuildBitCast(lg.builder, box,

@@ -1614,12 +1614,16 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
             /* rc_on е compile-time режим в LLVM. */
             if (!fn && !ef && strcmp(n->callee->name, "rc_on") == 0 && n->args.len == 0)
                 return LLVMConstInt(lg.i1_ty, lg.rc ? 1 : 0, 0);
-            /* P58: mem_* върху LLVM allocation log (libbaga_par.so).
-             * Под --rc остава C-only: RC scope release и rewind не се
-             * комбинират безопасно (rc_test). */
-            if (!fn && !ef && lg.rc &&
-                (strncmp(n->callee->name, "mem_", 4) == 0))
-                llv_llvm_unsupported("mem_* под --rc — само C бекенда");
+            /* P62: под --rc mem_* са no-op — RC owns lifetimes; без
+             * външни извиквания, за да не се смесват release и log. */
+            if (!fn && !ef && lg.rc && strncmp(n->callee->name, "mem_", 4) == 0) {
+                if (strcmp(n->callee->name, "mem_mark") == 0 ||
+                    strcmp(n->callee->name, "mem_arena_bytes") == 0 ||
+                    strcmp(n->callee->name, "mem_spare_bytes") == 0 ||
+                    strcmp(n->callee->name, "mem_peak_bytes") == 0)
+                    return LLVMConstInt(lg.i64_ty, 0, 0);
+                return NULL;
+            }
             if (!fn && !ef) {
                 const char *mn = n->callee->name;
                 if (strcmp(mn, "mem_mark") == 0)
