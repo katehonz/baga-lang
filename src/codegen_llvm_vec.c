@@ -345,6 +345,78 @@ LLVMValueRef llv_build_baga_vec_concat(const char *suf, const char *push_rt) {
     return fn;
 }
 
+/* static baga_bytes baga_bytes_from_vec(baga_Vec *v) — C parity:
+ * всеки елемент се взима като int64 и се орязва до байт. */
+LLVMValueRef llv_build_baga_bytes_from_vec(void) {
+    LLVMTypeRef p[] = { llv_baga_vec_ptr_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_from_vec",
+        LLVMFunctionType(llv_baga_bytes_ty(), p, 1, 0));
+    llv_h_begin(fn);
+    LLVMValueRef v = LLVMGetParam(fn, 0);
+    LLVMValueRef n = llv_vec_load_len(v);
+    LLVMValueRef b = llv_h_call(llv_baga_rt("baga_bytes_new"), &n, 1, "b");
+    LLVMValueRef ba = llv_bytes_param_alloca(b);
+    LLVMValueRef data = llv_bytes_load_data(ba);
+    LLVMValueRef iv = LLVMBuildAlloca(lg.builder, lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), iv);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, n, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef e = llv_vec_load_at(v, i);
+    LLVMValueRef x = LLVMBuildPtrToInt(lg.builder, e, lg.i64_ty, "x");
+    LLVMValueRef dp = LLVMBuildGEP2(lg.builder, lg.i8_ty, data, &i, 1, "dp");
+    LLVMBuildStore(lg.builder, LLVMBuildTrunc(lg.builder, x, lg.i8_ty, "x8"), dp);
+    LLVMValueRef inext = LLVMBuildAdd(lg.builder, i,
+        LLVMConstInt(lg.i64_ty, 1, 0), "in");
+    LLVMBuildStore(lg.builder, inext, iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMBuildRet(lg.builder, b);
+    return fn;
+}
+
+/* static baga_Vec *baga_vec_from_bytes(baga_bytes b) — C parity: всеки байт
+ * става i64 елемент (0..255). */
+LLVMValueRef llv_build_baga_vec_from_bytes(void) {
+    LLVMTypeRef p[] = { llv_baga_bytes_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_from_bytes",
+        LLVMFunctionType(llv_baga_vec_ptr_ty(), p, 1, 0));
+    llv_h_begin(fn);
+    LLVMValueRef ba = llv_bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef data = llv_bytes_load_data(ba);
+    LLVMValueRef n = llv_bytes_load_len(ba);
+    LLVMValueRef v = llv_h_call(llv_baga_rt("baga_vec_new"), NULL, 0, "v");
+    LLVMValueRef iv = LLVMBuildAlloca(lg.builder, lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), iv);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, n, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef sp = LLVMBuildGEP2(lg.builder, lg.i8_ty, data, &i, 1, "sp");
+    LLVMValueRef x8 = LLVMBuildLoad2(lg.builder, lg.i8_ty, sp, "x8");
+    LLVMValueRef x = LLVMBuildZExt(lg.builder, x8, lg.i64_ty, "x");
+    LLVMValueRef pa[] = { v, x };
+    llv_h_call(llv_baga_rt("baga_vec_push_i64"), pa, 2, "");
+    LLVMValueRef inext = LLVMBuildAdd(lg.builder, i,
+        LLVMConstInt(lg.i64_ty, 1, 0), "in");
+    LLVMBuildStore(lg.builder, inext, iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMBuildRet(lg.builder, v);
+    return fn;
+}
+
 /* ---- arena (mirror на baga_arena_* в codegen_c) ---- */
 static LLVMTypeRef baga_arena_ty(void) {
     LLVMTypeRef t = LLVMGetTypeByName(lg.mod, "baga_Arena");

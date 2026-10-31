@@ -15,7 +15,7 @@ if [ ! -f "$PAR_SO" ]; then
 fi
 LOAD_ARGS=(-load "$PAR_SO")
 [ -f "$WORLD_SO" ] && LOAD_ARGS+=(-load "$WORLD_SO")
-for f in examples/*.baga; do
+for f in examples/*.baga tests/bridge_test.baga; do
     [ "$f" = "examples/spec_bad.baga" ] && continue     # очаквана compile грешка
     [ "$f" = "examples/vec_typed.baga" ] && continue    # очаквана compile грешка
     [ "$f" = "examples/arg_type_bad.baga" ] && continue # очаквана compile грешка

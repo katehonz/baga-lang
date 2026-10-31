@@ -1241,6 +1241,31 @@ LLVMValueRef llv_build_baga_str_eq(void) {
     return fn;
 }
 
+/* static const char *baga_byte_chr(int64_t c) — един суров байт (C parity:
+ * baga_alloc(2), r[0]=(char)c, r[1]=0, set_slen(c==0?0:1)). */
+LLVMValueRef llv_build_baga_byte_chr(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_byte_chr",
+        LLVMFunctionType(lg.ptr_ty, p, 1, 0));
+    llv_h_begin(fn);
+    LLVMValueRef c = LLVMGetParam(fn, 0);
+    LLVMValueRef r = llv_str_alloc_call(LLVMConstInt(lg.i64_ty, 2, 0), "r");
+    LLVMValueRef i0 = LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef p0 = LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &i0, 1, "p0");
+    LLVMBuildStore(lg.builder, LLVMBuildTrunc(lg.builder, c, lg.i8_ty, "c8"), p0);
+    LLVMValueRef i1 = LLVMConstInt(lg.i64_ty, 1, 0);
+    LLVMValueRef p1 = LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &i1, 1, "p1");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i8_ty, 0, 0), p1);
+    LLVMValueRef isz0 = LLVMBuildICmp(lg.builder, LLVMIntEQ, c,
+        LLVMConstInt(lg.i64_ty, 0, 0), "isz0");
+    LLVMValueRef ln = LLVMBuildSelect(lg.builder, isz0,
+        LLVMConstInt(lg.i64_ty, 0, 0), LLVMConstInt(lg.i64_ty, 1, 0), "ln");
+    LLVMValueRef ss[] = { r, ln };
+    llv_h_call(llv_baga_rt("baga_set_slen"), ss, 2, "");
+    LLVMBuildRet(lg.builder, r);
+    return fn;
+}
+
 /* static const char *baga_chr(int64_t c) — UTF-8 encode (1–4 bytes);
  * оглежда C runtime helper-а. Преди LP3 LLVM версията орязваше до един
  * байт ((char)c) и се разминаваше с C за code point-ове ≥ 0x80. */

@@ -172,6 +172,7 @@ LLVMValueRef llv_build_baga_substr(void);   /* 1645 */
 LLVMValueRef llv_build_baga_concat(void);   /* 1676 */
 LLVMValueRef llv_build_baga_str_eq(void);   /* 1706 */
 LLVMValueRef llv_build_baga_chr(void);   /* 1722 */
+LLVMValueRef llv_build_baga_byte_chr(void);   /* baga_byte_chr */
 LLVMValueRef llv_build_baga_ord(void);   /* 1817 */
 LLVMValueRef llv_build_baga_i64_to_str(void);   /* 1927 */
 LLVMValueRef llv_build_baga_f64_to_str(void);   /* 2018 */
@@ -193,6 +194,8 @@ LLVMValueRef llv_build_baga_vec_len(void);   /* 2273 */
 void llv_slice_clamp(LLVMValueRef v, LLVMValueRef *a, LLVMValueRef *b);   /* 2283 */
 LLVMValueRef llv_build_baga_vec_slice(const char *suf, const char *push_rt);   /* 2319 */
 LLVMValueRef llv_build_baga_vec_concat(const char *suf, const char *push_rt);   /* 2361 */
+LLVMValueRef llv_build_baga_bytes_from_vec(void);   /* baga_bytes_from_vec */
+LLVMValueRef llv_build_baga_vec_from_bytes(void);   /* baga_vec_from_bytes */
 LLVMValueRef llv_build_baga_arena_new(void);   /* 2393 */
 LLVMValueRef llv_build_baga_arena_alloc(void);   /* 2414 */
 LLVMValueRef llv_build_baga_arena_reset(void);   /* 2452 */

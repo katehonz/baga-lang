@@ -1,0 +1,44 @@
+// bridge_test — byte_chr / bytes_from_vec / vec_from_bytes паритет C↔LLVM.
+// Тези три builtin-а отварят codec стека (str/utf8, json, zip, img) за LLVM.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let v = vec_new()
+    vec_push(v, 0)
+    vec_push(v, 65)
+    vec_push(v, 200)
+    vec_push(v, 255)
+    vec_push(v, 256)   // орязва се до 0
+    vec_push(v, 0 - 1) // орязва се до 255
+    let b = bytes_from_vec(v)
+    check("bytes_len", bytes_len(b) == 6)
+    check("bytes_0", bytes_at(b, 0) == 0)
+    check("bytes_65", bytes_at(b, 1) == 65)
+    check("bytes_200", bytes_at(b, 2) == 200)
+    check("bytes_255", bytes_at(b, 3) == 255)
+    check("bytes_wrap0", bytes_at(b, 4) == 0)
+    check("bytes_wrap-1", bytes_at(b, 5) == 255)
+
+    let v2 = vec_from_bytes(b)
+    check("vec_len", vec_len(v2) == 6)
+    check("vec_65", vec_get(v2, 1) == 65)
+    check("vec_200", vec_get(v2, 2) == 200)
+
+    let a = byte_chr(65)
+    check("byte_chr_len", len(a) == 1)
+    check("byte_chr_byte", byte_at(a, 0) == 65)
+    check("byte_chr_eq", str_eq(a, "A") == 1)
+    check("byte_chr_zero_len", len(byte_chr(0)) == 0)
+    let hi = byte_chr(200)
+    check("byte_chr_high", len(hi) == 1 && byte_at(hi, 0) == 200)
+
+    print("bridge_test: all passed")
+}

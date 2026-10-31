@@ -39,6 +39,17 @@
   влиза в общия LLVM оракул.
 - Docs: worlds-bg §5/§6, CHANGELOG.
 
+### W4.3 — LLVM отваря codec стека: `byte_chr` + bytes/vec мостове
+- LLVM бекендът вече поддържа `byte_chr`, `bytes_from_vec` и `vec_from_bytes`.
+  `byte_chr` е критичен: `std/str/str.baga` го ползва за UTF-8, `std/net/tcp.baga`
+  за сурови байтове, затова преди това почти всеки codec/app не можеше да се
+  emit-не за LLVM (img, json, xml, zip, pdf, jwt, glob, tpl, smtp).
+- `tests/bridge_test.baga` е в общия LLVM оракул и проверява C↔LLVM паритет
+  за трите builtin-а (вкл. орязване до байт и `byte_chr(0)` с дължина 0).
+- Scan на app-product codec тестовете: zip/pb/pdf/jwt/glob/xml/tpl/smtp вече
+  минават през `lli`; img_test и jsonrpc_test емит-ват, но още се сриват по
+  време на изпълнение — следващ LLVM backend bug за дебъг, не липсващ builtin.
+
 ### W4.2 — пълният worlds_test в LLVM паритета
 - Единствената C-only проверка в `tests/worlds_test.baga` беше
   `mem_arena_bytes` (светът не пипа bump арената). Извадена е в
