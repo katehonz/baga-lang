@@ -1,6 +1,8 @@
 // jwt_test.baga — HS256 golden + RS256/ES256 verify + alg:none / exp guards.
 
 import "jwtbaga/jwt.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
 
 fn check(name: str, ok: bool) {
     if ok {
@@ -89,6 +91,21 @@ fn main() {
     check("es256_payload", str_find(es_payload, "ec-user") >= 0)
     check("es256_as_hs_fail", jwt_verify_hs256(key, es) == 0)
     check("es256_bad_point", jwt_verify_es256(qy, qx, es) == 0)
+
+    // G11: RS256 sign — малък ключ отхвърлен, голям произвежда валиден токен
+    let mut small_n: Vec<i64> = vec_new()
+    vec_push(small_n, 12); vec_push(small_n, 161)
+    let mut small_d: Vec<i64> = vec_new()
+    vec_push(small_d, 10); vec_push(small_d, 193)
+    check("rs256_small_rejected", jwt_encode_rs256(bytes_from_vec(small_n), bytes_from_vec(small_d), "{}") == "")
+    let mut big_n: Vec<i64> = vec_new()
+    for i in 0..64 { vec_push(big_n, 200) }
+    let mut big_d: Vec<i64> = vec_new()
+    for i in 0..64 { vec_push(big_d, 7) }
+    let rs_tok = jwt_encode_rs256(bytes_from_vec(big_n), bytes_from_vec(big_d), "{\"sub\":\"x\"}")
+    check("rs256_sign_ok", rs_tok != "")
+    let rs_parts = jwt_split(rs_tok)
+    check("rs256_header", str_find(str_of_bytes(base64url_decode_b(rs_parts.header_b64)), "RS256") >= 0)
 
     print("jwt_test: all passed")
 }
