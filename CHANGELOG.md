@@ -63,6 +63,15 @@
 - `boila_p5_test`, `boila_pool_test`, `boila_pgwire_test`, `boila_chaos_test`,
   `boila_http_mux_test` — зелени; pool тестът е чист и под TSan.
 
+### W2.20 — nested cell2 съобщения (P56)
+- Raft: `msg_free` за всички типове; `broadcast` клонира per peer, защото
+  един handle до няколко peer-а се free-ва от всеки receiver (double-free).
+  Node/coordinator освобождават външния cell и nested съобщението.
+- 2PC: `msg_free` за PREPARE/VOTE/COMMIT/ABORT/GET/GET_REP; coordinator и
+  participant free-ват. `raft_test`, `raft_persist`, `txn_test`,
+  `txn_stress` са ASan-clean.
+- Остава: rocksbaga job/reply nested дървета (следващ).
+
 ### W2.19 — `str_repeat` с една алокация (P55)
 - Baga-имплементацията на `str_repeat` правеше двоично `concat` дърво:
   за 8192 байта ~13 междинни низа. Под `mem_persist` те остават до края
