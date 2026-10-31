@@ -1621,7 +1621,8 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
                 if (strcmp(n->callee->name, "mem_mark") == 0 ||
                     strcmp(n->callee->name, "mem_arena_bytes") == 0 ||
                     strcmp(n->callee->name, "mem_spare_bytes") == 0 ||
-                    strcmp(n->callee->name, "mem_peak_bytes") == 0)
+                    strcmp(n->callee->name, "mem_peak_bytes") == 0 ||
+                    strcmp(n->callee->name, "mem_persist_bytes") == 0)
                     return LLVMConstInt(lg.i64_ty, 0, 0);
                 return NULL;
             }
@@ -1635,6 +1636,8 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
                     fn = llv_rt_libc("baga_lm_spare_bytes", lg.i64_ty, NULL, 0);
                 else if (strcmp(mn, "mem_peak_bytes") == 0)
                     fn = llv_rt_libc("baga_lm_peak_bytes", lg.i64_ty, NULL, 0);
+                else if (strcmp(mn, "mem_persist_bytes") == 0)
+                    fn = llv_rt_libc("baga_lm_persist_bytes", lg.i64_ty, NULL, 0);
                 else if (strcmp(mn, "mem_persist_begin") == 0)
                     fn = llv_rt_libc("baga_lm_persist_begin", lg.void_ty, NULL, 0);
                 else if (strcmp(mn, "mem_persist_end") == 0)

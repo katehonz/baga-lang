@@ -144,6 +144,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "/* Генериран от компилатора на Бага. Фаза 1. */\n");
     fprintf(out, "#include <stdio.h>\n");
     fprintf(out, "#include <stdlib.h>\n");
+    fprintf(out, "#include <malloc.h>\n");
     fprintf(out, "#include <stdint.h>\n");
     fprintf(out, "#include <string.h>\n");
     fprintf(out, "#include <errno.h>\n");
@@ -179,6 +180,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static _Atomic long baga_mt_live = 0;\n");
     fprintf(out, "static _Atomic long baga_mt_spare = 0;\n");
     fprintf(out, "static _Atomic long baga_mt_peak = 0;\n");
+    fprintf(out, "static _Atomic long baga_mt_persist = 0;\n");
     fprintf(out, "static void baga_mt_bump(long d) {\n");
     fprintf(out, "    long v = atomic_fetch_add(&baga_mt_live, d) + d;\n");
     fprintf(out, "    long p = atomic_load_explicit(&baga_mt_peak, memory_order_relaxed);\n");
@@ -188,6 +190,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static int64_t baga_mem_arena_bytes(void) { return (int64_t)atomic_load(&baga_mt_live); }\n");
     fprintf(out, "static int64_t baga_mem_spare_bytes(void) { return (int64_t)atomic_load(&baga_mt_spare); }\n");
     fprintf(out, "static int64_t baga_mem_peak_bytes(void)  { return (int64_t)atomic_load(&baga_mt_peak); }\n");
+    fprintf(out, "static int64_t baga_mem_persist_bytes(void) { return (int64_t)atomic_load(&baga_mt_persist); }\n");
     if (cg->leak_check) {
         fprintf(out, "static void baga_mt_report(void) {\n");
         fprintf(out, "    long live = atomic_load(&baga_mt_live), spare = atomic_load(&baga_mt_spare), peak = atomic_load(&baga_mt_peak);\n");
@@ -401,7 +404,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * връща паметта на libc. Преди това free пълнеше thread-local freelist,
      * а slab-ът оставаше в нишката, която е bump-нала — RSS растеше с
      * всяка заявка при 8 worker-а (hot span, page, scan snapshot). */
-    fprintf(out, "    if (persist) { free(h); return; }\n");
+    fprintf(out, "    if (persist) { atomic_fetch_sub(&baga_mt_persist, (long)(malloc_usable_size(h) - %d)); free(h); return; }\n", hs);
     fprintf(out, "    if (n <= 1024) {\n");
     fprintf(out, "        int c = (int)((n + 15) / 16) - 1;\n");
     fprintf(out, "        void **fl = persist ? &baga_fl_p[c] : &baga_fl[c];\n");
@@ -427,6 +430,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        else { int bi = baga_fl_big_idx((int64_t)n); pan = bi >= 0 ? ((size_t)2048 << bi) : n; }\n");
     fprintf(out, "        char *blk = (char *)malloc(pan + %d);\n", hs);
     fprintf(out, "        if (!blk) { fprintf(stderr, \"baga: persist malloc\\n\"); exit(1); }\n");
+    fprintf(out, "        atomic_fetch_add(&baga_mt_persist, (long)(malloc_usable_size(blk) - %d));\n", hs);
     if (cg->rc)
         fprintf(out, "        { baga_Hdr *hh = (baga_Hdr *)blk; hh->magic = BAGA_HDR_MAGIC; hh->pe = ((uint64_t)baga_rc_epoch << 1) | 1ULL; hh->rc = 1; hh->an = pan; }\n");
     else

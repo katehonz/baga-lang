@@ -75,6 +75,15 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.16 — `mem_persist_bytes` telemetry (P66)
+- Нов C/LLVM builtin `mem_persist_bytes()`: live persist malloc байтове
+  (C: `malloc_usable_size`; LLVM: per-thread `live_p`). `tests/llvm_mem_test`
+  проверява, че persist стойност вдига брояча.
+- Използван за диагностика на boilaDB `pgbench -C`: persist расте
+  ~75–150 KB/връзка; release/forget освобождават само ~4–6 KB, значи
+  leak-ът е в session startup (`psess`/`sc`/e_*), не в map box-а.
+  Следващ fix: освобождаване на per-session persist при close.
+
 ### W4.15 — thread_id + sharded SQL броячи (P65)
 - Нов builtin `thread_id() -> i64` (C/LLVM); използва се за sharding.
 - boilaDB SQL/HTTP/PG броячите са в **8 frozen-world shard-а** (wvec

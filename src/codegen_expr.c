@@ -1186,6 +1186,7 @@ void emit_expr(Codegen *cg, Node *n) {
                     {"mem_arena_bytes", "baga_mem_arena_bytes"},
                     {"mem_spare_bytes", "baga_mem_spare_bytes"},
                     {"mem_peak_bytes",  "baga_mem_peak_bytes"},
+                    {"mem_persist_bytes", "baga_mem_persist_bytes"},
                     {"mem_persist_begin", "baga_mem_persist_begin"},
                     {"mem_persist_end",   "baga_mem_persist_end"},
                     {"arg_count",   "baga_arg_count"},

@@ -385,7 +385,7 @@ typedef struct baga_LmLog {
     size_t cap, used, fill;
     void **v;
     size_t len, vcap;
-    int64_t live, peak;
+    int64_t live, peak, live_p;
     pthread_mutex_t mu;
     struct baga_LmLog *next;
 } baga_LmLog;
@@ -499,6 +499,8 @@ void *baga_lm_malloc(int64_t n) {
     if (!persist) {
         L->live += (int64_t)sz;
         if (L->live > L->peak) L->peak = L->live;
+    } else {
+        L->live_p += (int64_t)sz;
     }
     baga_lm_log_push(L, p);
     pthread_mutex_unlock(&L->mu);
@@ -518,6 +520,8 @@ void *baga_lm_realloc(void *p, int64_t n) {
         if (!persist) {
             L->live += (int64_t)sz - (int64_t)oldn;
             if (L->live > L->peak) L->peak = L->live;
+        } else {
+            L->live_p += (int64_t)sz - (int64_t)oldn;
         }
         L->tab[i].p = BAGA_LM_TOMB; L->used--;
         baga_lm_put(L, np, sz, persist);
@@ -541,6 +545,8 @@ void *baga_lm_realloc(void *p, int64_t n) {
             if (!persist) {
                 O->live += (int64_t)sz - (int64_t)oldn;
                 if (O->live > O->peak) O->peak = O->live;
+            } else {
+                O->live_p += (int64_t)sz - (int64_t)oldn;
             }
             O->tab[j].p = BAGA_LM_TOMB; O->used--;
             baga_lm_put(O, np, sz, persist);
@@ -562,6 +568,7 @@ void baga_lm_free(void *p) {
     size_t i = baga_lm_find(L, p);
     if (i != (size_t)-1) {
         if (!L->tab[i].persist) L->live -= (int64_t)L->tab[i].n;
+        else L->live_p -= (int64_t)L->tab[i].n;
         L->tab[i].p = BAGA_LM_TOMB; L->used--;
         free(p);
         pthread_mutex_unlock(&L->mu);
@@ -576,6 +583,7 @@ void baga_lm_free(void *p) {
         size_t j = baga_lm_find(O, p);
         if (j != (size_t)-1) {
             if (!O->tab[j].persist) O->live -= (int64_t)O->tab[j].n;
+            else O->live_p -= (int64_t)O->tab[j].n;
             O->tab[j].p = BAGA_LM_TOMB; O->used--;
             free(p);
             pthread_mutex_unlock(&O->mu);
@@ -625,4 +633,8 @@ int64_t baga_lm_spare_bytes(void) { return 0; }
 int64_t baga_lm_peak_bytes(void) {
     baga_LmLog *L = baga_lm_tl;
     return L ? L->peak : 0;
+}
+int64_t baga_lm_persist_bytes(void) {
+    baga_LmLog *L = baga_lm_tl;
+    return L ? L->live_p : 0;
 }

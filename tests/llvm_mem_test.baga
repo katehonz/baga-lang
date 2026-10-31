@@ -18,6 +18,7 @@ fn main() {
     mem_persist_end()
     mem_rewind(p)
     check("persist_survives", keep == "keep!")
+    check("persist_bytes", mem_persist_bytes() > 0)
     check("peak", mem_peak_bytes() > 0)
     check("spare_zero", mem_spare_bytes() == 0)
     print("llvm_mem_test: all passed")
