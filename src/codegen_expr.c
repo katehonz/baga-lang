@@ -1180,6 +1180,7 @@ void emit_expr(Codegen *cg, Node *n) {
                     {"wrec_get",        "baga_wrec_get"},
                     {"wrec_get_str",    "baga_wrec_get_str"},
                     {"wrec_get_bytes",  "baga_wrec_get_bytes"},
+                    {"thread_id",   "baga_thread_id"},
                     {"mem_mark",    "baga_mem_mark"},
                     {"mem_rewind",  "baga_mem_rewind"},
                     {"mem_arena_bytes", "baga_mem_arena_bytes"},

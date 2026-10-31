@@ -1226,6 +1226,7 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
                     {"cell2_0", "baga_cell2_0", 1},
                     {"cell2_1", "baga_cell2_1", 1},
                     {"cell2_free", "baga_cell2_free", 1},
+                    {"thread_id", "baga_thread_id", 0},
                 };
                 for (int pi = 0; pi < (int)(sizeof(pmap) / sizeof(pmap[0])); pi++) {
                     if (strcmp(cn, pmap[pi].baga) != 0) continue;

@@ -916,6 +916,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             {"mem_spare_bytes", TYPE_I64, "", 0, 0},
             {"mem_peak_bytes",  TYPE_I64, "", 0, 0},
             {"rc_on",       TYPE_BOOL, "", 0, 0},
+            {"thread_id",   TYPE_I64, "", 0, 0},
             {"mem_persist_begin", TYPE_VOID, "", 0, 0},
             {"mem_persist_end",   TYPE_VOID, "", 0, 0},
             {"bytes_len",   TYPE_I64, "b", 0, 0},

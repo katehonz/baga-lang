@@ -75,6 +75,14 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.15 — thread_id + sharded SQL броячи (P65)
+- Нов builtin `thread_id() -> i64` (C/LLVM); използва се за sharding.
+- boilaDB SQL/HTTP/PG броячите са в **8 frozen-world shard-а** (wvec
+  registry); `wcache_add` вече не удря един глобален wcache mutex на
+  всяка заявка. Live conn/config остават в shard 0; `stat_get` сумира.
+- C `pgbench` point SELECT @ c=16: ~151.5k → **162.9k tps**; LLVM mux
+  ~69.5k (в рамките на шума). Тестовете и gate-овете са зелени.
+
 ### W4.14 — queuebaga: frozen-world cache за статус/резултат (P64)
 - `Queue` държи singleton замразен свят; `q_status`/`q_result` кешират
   ТЕРМИНАЛНИ статуси (`done`/`failed`) и непразни резултати в `wcache`

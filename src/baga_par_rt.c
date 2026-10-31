@@ -23,6 +23,7 @@ static int64_t par_vec_get_i64(baga_Vec *v, int64_t i) { return (int64_t)(intptr
 static void par_vec_set_i64(baga_Vec *v, int64_t i, int64_t x) { v->data[i] = (void *)(intptr_t)x; }
 static int64_t par_vec_len(baga_Vec *v) { return v->len; }
 
+int64_t baga_thread_id(void) { return (int64_t)(intptr_t)pthread_self(); }
 int64_t baga_cell2(int64_t a, int64_t b) {
     int64_t *p = (int64_t *)malloc(2 * sizeof(int64_t));
     if (!p) { fprintf(stderr, "baga: cell2: oom\n"); exit(1); }

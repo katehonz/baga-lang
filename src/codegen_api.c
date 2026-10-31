@@ -184,6 +184,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    long p = atomic_load_explicit(&baga_mt_peak, memory_order_relaxed);\n");
     fprintf(out, "    while (v > p && !atomic_compare_exchange_weak(&baga_mt_peak, &p, v)) { }\n");
     fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_thread_id(void) { return (int64_t)(intptr_t)pthread_self(); }\n");
     fprintf(out, "static int64_t baga_mem_arena_bytes(void) { return (int64_t)atomic_load(&baga_mt_live); }\n");
     fprintf(out, "static int64_t baga_mem_spare_bytes(void) { return (int64_t)atomic_load(&baga_mt_spare); }\n");
     fprintf(out, "static int64_t baga_mem_peak_bytes(void)  { return (int64_t)atomic_load(&baga_mt_peak); }\n");

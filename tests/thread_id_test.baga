@@ -1,0 +1,10 @@
+// thread_id_test — C/LLVM parity: стабилен ненулев id в една нишка.
+fn main() {
+    let a = thread_id()
+    let b = thread_id()
+    if a != b || a == 0 {
+        eprintln("FAIL thread_id")
+        exit(1)
+    }
+    print("thread_id_test: all passed")
+}
