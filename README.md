@@ -253,6 +253,9 @@ the **spec-as-source, machine-checked** end of the spectrum.
 
 ## Worlds — machine-checked regions (W0…W2.14 + W3.1–W3.12, C and LLVM)
 
+App-product mapping (what uses worlds, what does not, and why):
+[docs/app-worlds-bg.md](docs/app-worlds-bg.md).
+
 **Worlds** are owned memory regions with a freeze/move/share discipline — and
 the discipline is **machine-checked**, not prose: `--verify` refutes protocol
 violations with concrete counterexamples, while comparable region/actor
