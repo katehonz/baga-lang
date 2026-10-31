@@ -133,6 +133,15 @@ fn main() -> i64 !IO {
     let s2 = zip_read(mz, "xl/worksheets/sheet2.xml")
     check("multi_sheet2", s2.ok == 1 && str_find(str_of_bytes(s2.data), "Month") >= 0)
 
+    // R4: number formatting
+    check("r4_is_num", report_is_number("1234.5") == 1 && report_is_number("abc") == 0)
+    check("r4_fmt_int", report_fmt_bgn("42") == "42,00")
+    check("r4_fmt_neg", str_find(report_fmt_bgn("-3.14159"), "-3,14") == 0)
+    check("r4_passthrough", report_fmt_bgn("hello") == "hello")
+    let rt = csv_parse("Name,Sum\nA,1234.5\nB,-42\n")
+    let rhtml = report_table_to_html_fmt(rt)
+    check("r4_table", str_find(rhtml, ",50") >= 0 && str_find(rhtml, "-42,00") >= 0)
+
     print("report_test: all passed")
     return 0
 }
