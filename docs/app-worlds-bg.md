@@ -23,7 +23,7 @@ submodule-и; промяна в пакет се commit-ва в неговия re
 | `rocksbaga` | per-shard `LsmDB` е под собствен mutex; `dbs` entries са preinserted/boxed, `exps` е под `emu`; page cache е per-LsmDB |
 | `raftbaga` | state-ът е локален за node loop-а; линеаризуемите четения минават през канала до leader |
 | `txnbaga` | participant state е локален; координацията е през chan |
-| `queuebaga` | дискът е source of truth; in-memory cache би сменил restart семантиката |
+| `queuebaga` | дискът е source of truth; от P64 има само read-through `wcache` за терминални статуси/резултати (restart → fallback към диска) |
 | `ormbaga` | pool слотовете са channel-owned; parallel Vec-овете се пишат на различни индекси |
 | `oauthbaga` | PG режимът е stateless; in-memory store е serial dev режим |
 | `chatbaga`, `kvbaga`, `wsbaga` | един poll/accept thread притежава state-а |

@@ -75,6 +75,14 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.14 — queuebaga: frozen-world cache за статус/резултат (P64)
+- `Queue` държи singleton замразен свят; `q_status`/`q_result` кешират
+  ТЕРМИНАЛНИ статуси (`done`/`failed`) и непразни резултати в `wcache`
+  (key = id*2 / id*2+1). При липса се чете дискът; той остава source of
+  truth, така че restart/корекция не чупи семантиката.
+- `q_start_workers` носи същия handle. C и LLVM queue тестът минават;
+  storage gate-ът остава зелен.
+
 ### W4.13 — per-thread mem log; LLVM boilaDB 18→72k tps (P63)
 - Глобалният mutex около allocation log-а беше bottleneck за LLVM mux.
   Сега всяка нишка има собствен hash + pointer log; cross-thread free
