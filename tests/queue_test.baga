@@ -82,6 +82,20 @@ fn main() -> i64 !IO !Par !Time {
     assert_eq_str("u2_done", q_wait(q3, u2, 2000)?, "done")
     q_close(q3)?
 
+    // P64: терминалните статус/резултат се кешират в frozen wcache; след
+    // изтриване на файловете q_status/q_result още ги връщат.
+    let p4 = concat("/tmp/baga_queue_cache_", int_to_str(monotonic_ms()?))
+    let mut q4 = q_open(p4, 1)?
+    q4 = q_start_workers(q4, 1)?
+    let cid = q_enqueue(q4, "cache-me")?
+    assert_eq_str("cache_done", q_wait(q4, cid, 2000)?, "done")
+    assert_eq_str("cache_result", q_result(q4, cid)?, "em-ehcac")
+    let _u1 = unlink(q_path(p4, cid, "status")) catch !IO => 0
+    let _u2 = unlink(q_path(p4, cid, "result")) catch !IO => 0
+    assert_eq_str("cache_status_hit", q_status(q4, cid)?, "done")
+    assert_eq_str("cache_result_hit", q_result(q4, cid)?, "em-ehcac")
+    q_close(q4)?
+
     print("queue_test: all passed")
     return 0
 }

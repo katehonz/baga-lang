@@ -80,8 +80,9 @@
   ТЕРМИНАЛНИ статуси (`done`/`failed`) и непразни резултати в `wcache`
   (key = id*2 / id*2+1). При липса се чете дискът; той остава source of
   truth, така че restart/корекция не чупи семантиката.
-- `q_start_workers` носи същия handle. C и LLVM queue тестът минават;
-  storage gate-ът остава зелен.
+- `q_start_workers` носи същия handle. `queue_test` изтрива status/result
+  файловете след terminal и проверява, че `q_status`/`q_result` още ги
+  връщат от кеша. C и LLVM queue тестът минават; storage gate-ът е зелен.
 
 ### W4.13 — per-thread mem log; LLVM boilaDB 18→72k tps (P63)
 - Глобалният mutex около allocation log-а беше bottleneck за LLVM mux.
