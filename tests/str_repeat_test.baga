@@ -1,0 +1,17 @@
+// str_repeat_test — P55: една алокация, C↔LLVM паритет.
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok { print(concat("ok ", name)) }
+    else { eprintln(concat("FAIL ", name)); exit(1) }
+}
+
+fn main() {
+    check("basic", str_repeat("ab", 3) == "ababab")
+    check("zero", str_repeat("x", 0) == "")
+    check("negative", str_repeat("x", 0 - 5) == "")
+    check("empty_src", str_repeat("", 7) == "")
+    check("one", str_repeat("z", 1) == "z")
+    check("long", len(str_repeat("xyz", 1000)) == 3000)
+    print("str_repeat_test: all passed")
+}

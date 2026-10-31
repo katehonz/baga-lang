@@ -665,6 +665,19 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    size_t la = (size_t)baga_str_len(a), lb = (size_t)baga_str_len(b);\n");
     fprintf(out, "    char *r = baga_alloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); baga_set_slen(r, (int64_t)(la + lb)); return r;\n");
     fprintf(out, "}\n");
+    /* P55: една алокация за повторение. Baga-версията правеше
+     * concat-двойки под mem_persist и оставяше ~4× повече persist блокове
+     * (scratch release на всяка връзка). */
+    fprintf(out, "static const char *baga_str_repeat(const char *s, int64_t n) {\n");
+    fprintf(out, "    if (!s || n <= 0) return \"\";\n");
+    fprintf(out, "    int64_t l = baga_str_len(s);\n");
+    fprintf(out, "    if (l == 0) return \"\";\n");
+    fprintf(out, "    if (n > (INT64_MAX - 1) / l) { fprintf(stderr, \"baga: str_repeat: прекалено дълъг низ\\n\"); exit(1); }\n");
+    fprintf(out, "    int64_t total = l * n;\n");
+    fprintf(out, "    char *r = baga_alloc((size_t)total + 1);\n");
+    fprintf(out, "    for (int64_t i = 0; i < n; i++) memcpy(r + i * l, s, (size_t)l);\n");
+    fprintf(out, "    r[total] = 0; baga_set_slen(r, total); return r;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static const char *baga_read_file(const char *path) {\n");
     fprintf(out, "    FILE *f = fopen(path, \"rb\"); if (!f) return \"\";\n");
     fprintf(out, "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n");

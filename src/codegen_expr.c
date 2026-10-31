@@ -1116,6 +1116,7 @@ void emit_expr(Codegen *cg, Node *n) {
                     {"chr",       "baga_chr"},
                     {"ord",       "baga_ord"},
                     {"str_eq",    "baga_str_eq"},
+                    {"str_repeat_b", "baga_str_repeat"},
                     {"i64_to_str","baga_i64_to_str"},
                     {"f64_to_str","baga_f64_to_str"},
                     {"vec_new",     "baga_vec_new"},

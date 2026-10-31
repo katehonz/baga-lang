@@ -1222,6 +1222,7 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
                 {"read_file",   "baga_read_file"},
                 {"chr",         "baga_chr"},
                 {"byte_chr",    "baga_byte_chr"},
+                {"str_repeat_b","baga_str_repeat"},
                 {"ord",         "baga_ord"},
                 {"str_eq",      "baga_str_eq"},
                 {"i64_to_str",  "baga_i64_to_str"},

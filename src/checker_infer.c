@@ -851,6 +851,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             {"i64_to_str", TYPE_STR, "i", 0, 0},
             {"f64_to_str", TYPE_STR, "f", 0, 0},
             {"str_eq",    TYPE_BOOL, "ss", 0, 0},
+            {"str_repeat_b", TYPE_STR, "si", 0, 0},
             {"arg_count", TYPE_I64, "", 0, 0},
             {"arg",       TYPE_STR, "i", 0, 0},
             {"exit",      TYPE_VOID, "i", 0, 0},

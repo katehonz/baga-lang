@@ -73,9 +73,10 @@ wake-ът alokiraше `substr` извън turn rewind-а. Сега `cell2_free` 
 
 ## Кратки връзки (`pgbench -C`)
 
-`pgbench -n -C -c1 -t100` (100 нови връзки): RSS расте с ~11 MB при
-`BOILA_WORKERS=0` и ~16 MB при mux след P51/P52 (преди P52 ~18 MB).
-Остава per-connection persist/arena leak; keep-alive пътят е стабилен.
+`pgbench -n -C -c1 -t100` (100 нови връзки): след P55 (ефективен
+`str_repeat`) ръстът е ~6.5 MB при `BOILA_WORKERS=0` и ~6 MB при mux
+(преди: ~11/18 MB). Остава per-connection persist/arena; keep-alive
+пътят е стабилен.
 
 ## Честни граници
 

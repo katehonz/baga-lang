@@ -1241,6 +1241,49 @@ LLVMValueRef llv_build_baga_str_eq(void) {
     return fn;
 }
 
+/* static const char *baga_str_repeat(const char *s, int64_t n) — една
+ * алокация (P55); RHS е чист, без concat-двойки. */
+LLVMValueRef llv_build_baga_str_repeat(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_str_repeat",
+        LLVMFunctionType(lg.ptr_ty, p, 2, 0));
+    llv_h_begin(fn);
+    LLVMValueRef s = LLVMGetParam(fn, 0);
+    LLVMValueRef n = LLVMGetParam(fn, 1);
+    LLVMValueRef la[] = { s };
+    LLVMValueRef l = llv_h_call(llv_baga_rt("baga_str_len"), la, 1, "l");
+    LLVMValueRef npos = LLVMBuildSelect(lg.builder,
+        LLVMBuildICmp(lg.builder, LLVMIntSGT, n, LLVMConstInt(lg.i64_ty, 0, 0), "npos?"),
+        n, LLVMConstInt(lg.i64_ty, 0, 0), "npos");
+    LLVMValueRef total = LLVMBuildMul(lg.builder, l, npos, "total");
+    LLVMValueRef total1 = LLVMBuildAdd(lg.builder, total, LLVMConstInt(lg.i64_ty, 1, 0), "total1");
+    LLVMValueRef r = llv_str_alloc_call(total1, "r");
+    LLVMValueRef iv = LLVMBuildAlloca(lg.builder, lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), iv);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "rep_cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "rep_body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "rep_done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, npos, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef off = LLVMBuildMul(lg.builder, i, l, "off");
+    LLVMValueRef dp = LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &off, 1, "dp");
+    LLVMBuildMemCpy(lg.builder, dp, 1, s, 1, l);
+    LLVMValueRef inext = LLVMBuildAdd(lg.builder, i, LLVMConstInt(lg.i64_ty, 1, 0), "in");
+    LLVMBuildStore(lg.builder, inext, iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMValueRef zp = LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &total, 1, "zp");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i8_ty, 0, 0), zp);
+    LLVMValueRef ss[] = { r, total };
+    llv_h_call(llv_baga_rt("baga_set_slen"), ss, 2, "");
+    LLVMBuildRet(lg.builder, r);
+    return fn;
+}
+
 /* static const char *baga_byte_chr(int64_t c) — един суров байт (C parity:
  * baga_alloc(2), r[0]=(char)c, r[1]=0, set_slen(c==0?0:1)). */
 LLVMValueRef llv_build_baga_byte_chr(void) {

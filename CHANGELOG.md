@@ -63,6 +63,15 @@
 - `boila_p5_test`, `boila_pool_test`, `boila_pgwire_test`, `boila_chaos_test`,
   `boila_http_mux_test` — зелени; pool тестът е чист и под TSan.
 
+### W2.19 — `str_repeat` с една алокация (P55)
+- Baga-имплементацията на `str_repeat` правеше двоично `concat` дърво:
+  за 8192 байта ~13 междинни низа. Под `mem_persist` те остават до края
+  на връзката и бяха основният per-connection leak.
+- Добавен е runtime builtin `str_repeat_b` (C `baga_str_repeat`, LLVM IR):
+  една алокация + memcpy цикъл. `std/str.str_repeat` е тънка обвивка.
+- `pgbench -C` churn: mux ~164 → **60 KB/връзка**, go_bg ~115 → **65 KB**
+  (100 връзки: ~6–6.5 MB). `tests/str_repeat_test.baga` е в LLVM оракула.
+
 ### W2.18 — `cell2_free` + boilaDB mux memory stability (P48/P49)
 - `cell2` (и cell2-овете от `chan_recv2`/`chan_try_recv`/`chan_recv_timeout`/
   `chan_select2*`) са malloc блокове; досега нямаше Baga builtin за

@@ -173,6 +173,7 @@ LLVMValueRef llv_build_baga_concat(void);   /* 1676 */
 LLVMValueRef llv_build_baga_str_eq(void);   /* 1706 */
 LLVMValueRef llv_build_baga_chr(void);   /* 1722 */
 LLVMValueRef llv_build_baga_byte_chr(void);   /* baga_byte_chr */
+LLVMValueRef llv_build_baga_str_repeat(void);   /* baga_str_repeat */
 LLVMValueRef llv_build_baga_ord(void);   /* 1817 */
 LLVMValueRef llv_build_baga_i64_to_str(void);   /* 1927 */
 LLVMValueRef llv_build_baga_f64_to_str(void);   /* 2018 */
