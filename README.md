@@ -16,9 +16,21 @@
 
 The **toolchain** is a small C bootstrap (`baga`, optional LLVM backend, package manager **sandak**). **Product code** is written in Baga itself under `std/`, `app-product/`, and `apps/`.
 
-The flagship language concept is **Worlds** — memory regions with machine-checked ownership/freeze/share discipline (see [Worlds](#worlds--machine-checked-regions-w0w214--w31w39) below).
+The flagship language concept is **Worlds** — memory regions with machine-checked ownership/freeze/share discipline (see [Worlds](#worlds--machine-checked-regions-w0w214--w31w312-c-and-llvm) below).
 
 Canonical repo: [github.com/katehonz/baga-lang](https://github.com/katehonz/baga-lang).
+
+## Getting started
+
+```sh
+make && make sandak
+./baga -I . -I app-product examples/zdravei.baga
+# Здравей, багатуре. Боят започва.
+```
+
+**[docs/GETTING-STARTED-bg.md](docs/GETTING-STARTED-bg.md)** — от `make` до първата
+програма, първия доказан `spec` (`--verify` с контрапример) и първия хванат висящ
+указател в регион. Всеки изход в страницата е реално изпълнен с командите на нея.
 
 ## Pure-Baga cryptography (no OpenSSL at runtime)
 
