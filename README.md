@@ -16,7 +16,7 @@
 
 The **toolchain** is a small C bootstrap (`baga`, optional LLVM backend, package manager **sandak**). **Product code** is written in Baga itself under `std/`, `app-product/`, and `apps/`.
 
-The flagship language concept is **Worlds** — memory regions with machine-checked ownership/freeze/share discipline (see [Worlds](#worlds--machine-checked-regions-w0w214--w31w35) below).
+The flagship language concept is **Worlds** — memory regions with machine-checked ownership/freeze/share discipline (see [Worlds](#worlds--machine-checked-regions-w0w214--w31w36) below).
 
 Canonical repo: [github.com/katehonz/baga-lang](https://github.com/katehonz/baga-lang).
 
@@ -251,7 +251,7 @@ the **spec-as-source, machine-checked** end of the spectrum.
 > Защо го правим и какъв е смисълът, в крайна сметка —
 > виж [docs/meaning-bg.md](docs/meaning-bg.md).
 
-## Worlds — machine-checked regions (W0…W2.14 + W3.1–W3.5)
+## Worlds — machine-checked regions (W0…W2.14 + W3.1–W3.6)
 
 **Worlds** are owned memory regions with a freeze/move/share discipline — and
 the discipline is **machine-checked**, not prose: `--verify` refutes protocol
@@ -279,20 +279,23 @@ covered by a guarantee — `ensures: world_frozen(output)` / `world_owned(output
 — which the builder proves per return path and the caller registers as a handle,
 so the whole protocol applies to results, not just locals.
 
-Every stage (W0…W2.14 + W3.1–W3.5) is locked by oracle files
+Every stage (W0…W2.14 + W3.1–W3.6) is locked by oracle files
 (`examples/verify/worlds*.baga` — proven ensures + refuted protocols with
 counterexamples), ASan/TSan gates, and an honest limits section in the design
 doc. Full write-up (BG): **[docs/worlds-bg.md](docs/worlds-bg.md)** — model,
 bench numbers (dump compaction 2.6×; ~3 ns per in-cache container access,
 ~5.7 ns streaming, after W2.14 cut access cost 30–51% **without removing a
 single check**), the Verona/Pony/Cyclone/Rust comparison, and the open frontier
-(value flows across function boundaries; derived containers).
+(derived containers and multi-source taint relations).
 
 A borrowed region value cannot outlive its world — not as a local (W2.2), not
 through a struct field, and since W3.5 not through a `Vec`/`Map` either:
 `vec_push(out, wvec_get_str(w, v, 0))` before `world_free(w)` is a compile
 error, where it used to be a heap-use-after-free that ASan caught while the
-plain build appeared to work.
+plain build appeared to work. W3.6 carries the same rule **across function
+boundaries** — a callee that stores a borrowed value into a container parameter
+taints the caller's argument, and a returned tainted container carries the
+region of the argument it came from, transitively.
 
 ## Examples
 

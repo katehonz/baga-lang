@@ -1407,6 +1407,13 @@ invalidates nothing:
   `drop(out)` before the free, or don't free at all. Same for `map_set` and for
   `arena_alloc`/`arena_free`; reading from a tainted container yields a tracked
   local that dies with the region too.
+- The same holds **across function boundaries** (W3.6): a function that stores a
+  borrowed value into a container parameter (`vec_push(out, s)`) taints the
+  caller's argument container, and a returned tainted container carries the region
+  of the argument it came from — transitively, across several fn layers. An i64
+  world handle stored in a vector dangles after `world_free` just like a borrowed
+  string. More than one "param-container ← source" relation in a body is not
+  summarized (a miss, never a fabricated accusation).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

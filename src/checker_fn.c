@@ -669,11 +669,15 @@ int generic_fn_value_bind(CheckCtx *ctx, Node *id, Type *annot) {
 }
 
 static void mem3_collect_rets(CheckCtx *ctx, Node *n,
-                              int *rids, int *nr, int *hids, int *nh, int cap) {
-    if (!n || (*nr >= cap && *nh >= cap)) return;
+                              int *rids, int *nr, int *hids, int *nh, int cap,
+                              int *tids, int *nt) {
+    if (!n || (*nr >= cap && *nh >= cap && *nt >= cap)) return;
     switch (n->kind) {
         case NODE_RETURN:
             if (n->ret_val) {
+                /* W3.6: връща ли ЗАМЪРСЕН контейнер (не payload)? */
+                int tr = mem3_container_region(ctx, n->ret_val);
+                if (tr > 0 && *nt < cap) tids[(*nt)++] = tr;
                 int r = region_of_expr(ctx, n->ret_val);
                 if (r > 0 && *nr < cap) rids[(*nr)++] = r;
                 int h = lookup_arena_id(ctx, n->ret_val);
@@ -686,31 +690,31 @@ static void mem3_collect_rets(CheckCtx *ctx, Node *n,
             return;
         case NODE_BLOCK:
             for (int i = 0; i < n->stmts.len; i++)
-                mem3_collect_rets(ctx, n->stmts.data[i], rids, nr, hids, nh, cap);
+                mem3_collect_rets(ctx, n->stmts.data[i], rids, nr, hids, nh, cap, tids, nt);
             return;
         case NODE_IF:
-            mem3_collect_rets(ctx, n->then_br, rids, nr, hids, nh, cap);
-            mem3_collect_rets(ctx, n->else_br, rids, nr, hids, nh, cap);
+            mem3_collect_rets(ctx, n->then_br, rids, nr, hids, nh, cap, tids, nt);
+            mem3_collect_rets(ctx, n->else_br, rids, nr, hids, nh, cap, tids, nt);
             return;
         case NODE_WHILE:
-            mem3_collect_rets(ctx, n->while_body, rids, nr, hids, nh, cap);
+            mem3_collect_rets(ctx, n->while_body, rids, nr, hids, nh, cap, tids, nt);
             return;
         case NODE_FOR:
-            mem3_collect_rets(ctx, n->for_body, rids, nr, hids, nh, cap);
+            mem3_collect_rets(ctx, n->for_body, rids, nr, hids, nh, cap, tids, nt);
             return;
         case NODE_MATCH:
             for (int i = 0; i < n->match_arms.len; i++)
-                mem3_collect_rets(ctx, n->match_arms.data[i]->arm_body, rids, nr, hids, nh, cap);
+                mem3_collect_rets(ctx, n->match_arms.data[i]->arm_body, rids, nr, hids, nh, cap, tids, nt);
             return;
         case NODE_CATCH:
-            mem3_collect_rets(ctx, n->catch_expr, rids, nr, hids, nh, cap);
-            mem3_collect_rets(ctx, n->catch_handler, rids, nr, hids, nh, cap);
+            mem3_collect_rets(ctx, n->catch_expr, rids, nr, hids, nh, cap, tids, nt);
+            mem3_collect_rets(ctx, n->catch_handler, rids, nr, hids, nh, cap, tids, nt);
             return;
         case NODE_EXPR_STMT:
-            mem3_collect_rets(ctx, n->expr, rids, nr, hids, nh, cap);
+            mem3_collect_rets(ctx, n->expr, rids, nr, hids, nh, cap, tids, nt);
             return;
         case NODE_LET:
-            mem3_collect_rets(ctx, n->let_init, rids, nr, hids, nh, cap);
+            mem3_collect_rets(ctx, n->let_init, rids, nr, hids, nh, cap, tids, nt);
             return;
         default:
             return;
@@ -733,14 +737,24 @@ static int mem3_ids_to_param(CheckCtx *ctx, Node *fn, int *ids, int nids) {
     return param_idx;
 }
 
+/* W3.6: индекс на param по име (-1 = не е param). */
+static int w36_param_index(Node *fn, const char *name) {
+    if (!fn || !name) return -1;
+    for (int i = 0; i < fn->params.len; i++)
+        if (strcmp(fn->params.data[i]->param_name, name) == 0) return i;
+    return -1;
+}
+
 static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
     if (!rec || !fn || !fn->fn_body) return;
-    int rids[32], hids[32];
-    int nr = 0, nh = 0;
-    mem3_collect_rets(ctx, fn->fn_body, rids, &nr, hids, &nh, 32);
+    int rids[32], hids[32], tids[32];
+    int nr = 0, nh = 0, nt = 0;
+    mem3_collect_rets(ctx, fn->fn_body, rids, &nr, hids, &nh, 32, tids, &nt);
     if (fn->fn_body->stmts.len > 0) {
         Node *last = fn->fn_body->stmts.data[fn->fn_body->stmts.len - 1];
         if (last->kind == NODE_EXPR_STMT && last->expr) {
+            int tr = mem3_container_region(ctx, last->expr);
+            if (tr > 0 && nt < 32) tids[nt++] = tr;   /* W3.6 */
             int r = region_of_expr(ctx, last->expr);
             if (r > 0 && nr < 32) rids[nr++] = r;
             int h = lookup_arena_id(ctx, last->expr);
@@ -753,6 +767,26 @@ static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
     }
     rec->ret_arena_param = mem3_ids_to_param(ctx, fn, rids, nr);
     rec->ret_handle_param = mem3_ids_to_param(ctx, fn, hids, nh);
+    /* W3.6: върнат замърсен контейнер (само един param-източник, както
+     * ret_arena_param; повече = -1 и не пренасяме). */
+    rec->ret_taint_param = mem3_ids_to_param(ctx, fn, tids, nt);
+    /* W3.6: тялото замърсява param-контейнер — имената, записани по време на
+     * тялото, стават индекси чак тук, докато param-ите са в scope. */
+    rec->out_taint_param = -1;
+    rec->out_taint_from = -1;
+    if (!ctx->w36_ambiguous && ctx->w36_out_name) {
+        int out = w36_param_index(fn, ctx->w36_out_name);
+        int from = -1;
+        if (ctx->w36_from_name) from = w36_param_index(fn, ctx->w36_from_name);
+        if (from < 0 && ctx->w36_from_rid > 0) {
+            int ids[1] = { ctx->w36_from_rid };
+            from = mem3_ids_to_param(ctx, fn, ids, 1);
+        }
+        if (out >= 0 && from >= 0) {
+            rec->out_taint_param = out;
+            rec->out_taint_from = from;
+        }
+    }
 }
 
 void mem3_ensure_fn(CheckCtx *ctx, Node *fn) {
@@ -785,6 +819,12 @@ void check_fn(CheckCtx *ctx, Node *fn) {
     EnvEntry *saved_flog_arr[256];
     memcpy(saved_dlog_arr, ctx->drop_log, sizeof saved_dlog_arr);
     memcpy(saved_flog_arr, ctx->freeze_log, sizeof saved_flog_arr);
+    const char *saved_w36_out = ctx->w36_out_name;
+    const char *saved_w36_from = ctx->w36_from_name;
+    int saved_w36_rid = ctx->w36_from_rid;
+    int saved_w36_amb = ctx->w36_ambiguous;
+    ctx->w36_out_name = NULL; ctx->w36_from_name = NULL;
+    ctx->w36_from_rid = 0; ctx->w36_ambiguous = 0;
 
     ctx->cur_fn = fn->fn_name;
     ctx->cur_ret = fn->ret_type ? resolve_type_node(ctx, fn->ret_type) : type_new(TYPE_VOID);
@@ -915,6 +955,10 @@ void check_fn(CheckCtx *ctx, Node *fn) {
     memcpy(ctx->drop_log, saved_dlog_arr, sizeof saved_dlog_arr);
     memcpy(ctx->freeze_log, saved_flog_arr, sizeof saved_flog_arr);
     ctx->n_arena_freed = saved_nfreed;
+    ctx->w36_out_name = saved_w36_out;
+    ctx->w36_from_name = saved_w36_from;
+    ctx->w36_from_rid = saved_w36_rid;
+    ctx->w36_ambiguous = saved_w36_amb;
 }
 
 /* ============================================================

@@ -1456,6 +1456,79 @@ else
 	echo "FAIL: без world_free програмата трябваше да работи"
 	exit 1
 fi
+echo "=== W3.6 замърсяване на контейнер през fn граница ==="
+# W3.5 хващаше изтичането в една функция; през fn граница минаваше тихо.
+printf 'fn stash(out: Vec<str>, s: str) {\n    vec_push(out, s)\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    stash(out, wvec_get_str(w, v, 0))\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w36_out.baga
+RC=0
+run --check /tmp/baga_w36_out.baga > /tmp/baga_w36_out_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'out' държи заемана стойност" /tmp/baga_w36_out_out.txt; then
+	echo "OK: callee замърсява param-контейнер — аргументът се обвинява при world_free"
+else
+	echo "FAIL: out-param замърсяване през fn граница трябваше да се хване"
+	cat /tmp/baga_w36_out_out.txt
+	exit 1
+fi
+# Върнат замърсен контейнер — резюмето ret_taint_param.
+printf 'fn build(w: i64, v: i64) -> Vec<str> {\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w, v, 0))\n    return out\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = build(w, v)\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w36_ret.baga
+RC=0
+run --check /tmp/baga_w36_ret.baga > /tmp/baga_w36_ret_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'out' държи заемана стойност" /tmp/baga_w36_ret_out.txt; then
+	echo "OK: върнат замърсен контейнер — регионът идва от аргумента-източник"
+else
+	echo "FAIL: върнат замърсен контейнер трябваше да е грешка"
+	cat /tmp/baga_w36_ret_out.txt
+	exit 1
+fi
+# Източникът е ПРЯК payload-израз вътре в callee (не param).
+printf 'fn stash2(out: Vec<str>, w: i64, v: i64) {\n    vec_push(out, wvec_get_str(w, v, 0))\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    stash2(out, w, v)\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w36_expr.baga
+RC=0
+run --check /tmp/baga_w36_expr.baga > /tmp/baga_w36_expr_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'out' държи заемана стойност" /tmp/baga_w36_expr_out.txt; then
+	echo "OK: пряк payload-израз в callee — резюмето мапва региона към param-а"
+else
+	echo "FAIL: директният payload-израз като източник трябваше да се хване"
+	cat /tmp/baga_w36_expr_out.txt
+	exit 1
+fi
+# Транзитивно: main → f → g.
+printf 'fn g(out: Vec<str>, s: str) {\n    vec_push(out, s)\n}\nfn f(out: Vec<str>, s: str) {\n    g(out, s)\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    f(out, wvec_get_str(w, v, 0))\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w36_chain.baga
+RC=0
+run --check /tmp/baga_w36_chain.baga > /tmp/baga_w36_chain_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'out' държи заемана стойност" /tmp/baga_w36_chain_out.txt; then
+	echo "OK: замърсяването е транзитивно през два fn слоя"
+else
+	echo "FAIL: транзитивното замърсяване трябваше да се хване"
+	cat /tmp/baga_w36_chain_out.txt
+	exit 1
+fi
+# Самият HANDLE, съхранен в контейнер — също висящ след free.
+printf 'fn main() {\n    let w = world_new()\n    let out = vec_new()\n    vec_push(out, w)\n    world_free(w)\n    print(i64_to_str(vec_get(out, 0)))\n}\n' > /tmp/baga_w36_handle.baga
+RC=0
+run --check /tmp/baga_w36_handle.baga > /tmp/baga_w36_handle_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'out' държи заемана стойност" /tmp/baga_w36_handle_out.txt; then
+	echo "OK: world handle във вектор увисва при free, не само заеманите низове"
+else
+	echo "FAIL: handle в контейнер след free трябваше да е грешка"
+	cat /tmp/baga_w36_handle_out.txt
+	exit 1
+fi
+# Две различни връзки → не резюмираме (пропуск, не измислено обвинение).
+printf 'fn two(out: Vec<str>, other: Vec<str>, s: str) {\n    vec_push(out, s)\n    vec_push(other, s)\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    let other = vec_new()\n    two(out, other, wvec_get_str(w, v, 0))\n    world_free(w)\n}\n' > /tmp/baga_w36_amb.baga
+if run --check /tmp/baga_w36_amb.baga > /tmp/baga_w36_amb_out.txt 2>&1; then
+	echo "OK: повече от една връзка — не резюмираме (M8: пропуск, не измислено)"
+else
+	echo "FAIL: двусмисленото резюме не биваше да обвинява"
+	cat /tmp/baga_w36_amb_out.txt
+	exit 1
+fi
+# Обикновен низ в същата функция — няма регион, няма грешка.
+printf 'fn stash(out: Vec<str>, s: str) {\n    vec_push(out, s)\n}\nfn main() {\n    let w = world_new()\n    let out = vec_new()\n    stash(out, "обикновен низ")\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w36_plain.baga
+if run /tmp/baga_w36_plain.baga 2>&1 | grep -qx "обикновен низ"; then
+	echo "OK: обикновен низ през същата fn — няма измислено обвинение"
+else
+	echo "FAIL: обикновеният низ трябваше да минава без грешка"
+	exit 1
+fi
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

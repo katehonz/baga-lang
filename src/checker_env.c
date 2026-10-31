@@ -299,6 +299,9 @@ void register_fn(CheckCtx *ctx, Node *item) {
         ctx->fns[ctx->n_fns].decl = item;
         ctx->fns[ctx->n_fns].ret_arena_param = -1;
         ctx->fns[ctx->n_fns].ret_handle_param = -1;
+        ctx->fns[ctx->n_fns].ret_taint_param = -1;
+        ctx->fns[ctx->n_fns].out_taint_param = -1;
+        ctx->fns[ctx->n_fns].out_taint_from = -1;
         ctx->fns[ctx->n_fns].checked = 0;
         ctx->fns[ctx->n_fns].checking = 0;
         ctx->n_fns++;
@@ -771,12 +774,53 @@ static EnvEntry *w35_container(CheckCtx *ctx, Node *e) {
     return ck_env_find(ctx, e->name);
 }
 
-void mem3_taint_container(CheckCtx *ctx, Node *container, int rid) {
-    if (rid <= 0) return;
-    EnvEntry *e = w35_container(ctx, container);
-    if (!e || e->taint_n >= W35_TAINT_MAX) return;
+static void w35_taint_entry(EnvEntry *e, int rid) {
+    if (!e || rid <= 0 || e->taint_n >= W35_TAINT_MAX) return;
     for (int i = 0; i < e->taint_n; i++) if (e->taint[i] == rid) return;
     e->taint[e->taint_n++] = rid;
+}
+
+/* W3.6: регионът на стойността, която влиза в контейнер. `region_of_expr`
+ * покрива payload-и (заеман низ/bytes), но НЕ и i64 HANDLE на свят/арена: той
+ * има arena_id, не region_id, а съхранен в контейнер увисва при free по същия
+ * начин (`vec_push(out, w); world_free(w); wvec_get(vec_get(out, 0), …)`).
+ * Параметрите i64 са is_world=1 със собствен arena_id, но той няма да съвпадне
+ * с id-то на освобождавания свят — значи няма измислено обвинение за обикновени
+ * числа, а само за реални handle-и. */
+static int w36_value_region(CheckCtx *ctx, Node *value) {
+    int r = region_of_expr(ctx, value);
+    if (r > 0) return r;
+    if (value && value->kind == NODE_IDENT) {
+        EnvEntry *e = ck_env_find(ctx, value->name);
+        if (e && (e->is_world || e->is_arena) && e->arena_id > 0) return e->arena_id;
+    }
+    return 0;
+}
+
+void mem3_taint_container(CheckCtx *ctx, Node *container, Node *value) {
+    int rid = w36_value_region(ctx, value);
+    if (rid > 0) w35_taint_entry(w35_container(ctx, container), rid);
+    /* W3.6: контейнерът е ПАРАМЕТЪР — тялото пише върху буфера на извикващия.
+     * Записваме връзката „param-контейнер ← източник"; при всяко извикване тя се
+     * прилага върху аргумента-контейнер (mem3_summarize_fn + call site).
+     * Източникът е param (регионът му се решава при извикващия) или пряк
+     * payload-израз с region id. */
+    EnvEntry *ce = w35_container(ctx, container);
+    if (!ce || !ce->is_param) return;
+    const char *from_name = (value && value->kind == NODE_IDENT) ? value->name : NULL;
+    if (!from_name && rid <= 0) return;
+    if (!ctx->w36_out_name && !ctx->w36_ambiguous) {
+        ctx->w36_out_name = ce->name;
+        ctx->w36_from_name = from_name;
+        ctx->w36_from_rid = rid;
+        return;
+    }
+    int same = ctx->w36_out_name && strcmp(ctx->w36_out_name, ce->name) == 0;
+    int same_from = (ctx->w36_from_name == NULL && from_name == NULL) ||
+                    (ctx->w36_from_name && from_name &&
+                     strcmp(ctx->w36_from_name, from_name) == 0);
+    if (!same || !same_from || ctx->w36_from_rid != rid)
+        ctx->w36_ambiguous = 1;   /* повече от една връзка — не резюмираме */
 }
 
 /* Регионът на стойност, прочетена от контейнер. При повече от един регион не
@@ -1200,6 +1244,15 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
         EnvEntry *src = ck_env_find(ctx, init->name);
         for (int i = 0; src && i < src->taint_n && pe->taint_n < W35_TAINT_MAX; i++)
             pe->taint[pe->taint_n++] = src->taint[i];
+    } else if (init->kind == NODE_CALL && init->callee &&
+               init->callee->kind == NODE_IDENT) {
+        /* W3.6: върнат замърсен контейнер — резюмето на callee казва от кой param
+         * идва регионът; замърсяваме новата локална с региона на ТОЗИ аргумент.
+         * `let out = build(w, v); world_free(w)` вече не минава тихо. */
+        FnRec *fr = find_fn_rec(ctx, init->callee->name);
+        if (fr && fr->checked && fr->ret_taint_param >= 0 &&
+            fr->ret_taint_param < init->args.len)
+            w35_taint_entry(pe, w36_value_region(ctx, init->args.data[fr->ret_taint_param]));
     }
 }
 

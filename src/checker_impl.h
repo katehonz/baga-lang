@@ -62,6 +62,11 @@ typedef struct {
      * ret_arena_param — payload (arena_alloc); ret_handle_param — самия handle. */
     int ret_arena_param;
     int ret_handle_param;
+    /* W3.6: замърсяване на контейнер през fn граница — само една-единствена
+     * връзка; повече = не резюмираме (пропуск, не измислено обвинение). */
+    int ret_taint_param;   /* -1 или индекс на param, чийто регион замърсява ВЪРНАТИЯ контейнер */
+    int out_taint_param;   /* -1 или индекс на param-контейнер, който тялото замърсява */
+    int out_taint_from;    /* -1 или индекс на param, чиято стойност/регион замърсява out_taint_param */
     int checked;
     int checking;
 } FnRec;
@@ -125,6 +130,13 @@ typedef struct {
     int next_arena_id; /* MEM-3: монотонен id за arena_new (handle алиаси) */
     int arena_freed_ids[128]; /* MEM-3: arena_id-та, върху които имаше arena_free */
     int n_arena_freed;
+    /* W3.6: връзка „param-контейнер ← източник", записана по време на тялото на
+     * текущата функция; имената се резолват до индекси в mem3_summarize_fn.
+     * check_fn ги snapshot-ва/нулира/възстановява, както drop_log масивите. */
+    const char *w36_out_name;
+    const char *w36_from_name;
+    int w36_from_rid;
+    int w36_ambiguous;
     /* M21 generics: активна substitution (имена → конкретни типове) и
      * типовите параметри на текущо-декларираната fn (за TYPE_VAR) */
     VEC(char *) g_names;
@@ -169,7 +181,7 @@ void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos);   /* 7
 void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_mut, SrcPos pos);   /* 809 */
 void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h, SrcPos pos);   /* 857 */
 void mem3_free_world(CheckCtx *ctx, EnvEntry *h, SrcPos pos);   /* W2.2: free на свят + заеманите низове */
-void mem3_taint_container(CheckCtx *ctx, Node *container, int rid);   /* W3.5: заемана стойност влиза в контейнер */
+void mem3_taint_container(CheckCtx *ctx, Node *container, Node *value);   /* W3.5/W3.6: заемана стойност влиза в контейнер */
 int mem3_container_region(CheckCtx *ctx, Node *container);   /* W3.5: единственият регион на контейнер или 0 */
 EnvEntry *ck_env_find(CheckCtx *ctx, const char *name);   /* 877 */
 const char *ck_suggest(const char *name, const char *const *cands, int n);

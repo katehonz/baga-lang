@@ -440,6 +440,16 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             {
                 FnRec *fr = find_fn_rec(ctx, n->callee->name);
                 if (fr) mem3_ensure_fn(ctx, fr->decl);
+                /* W3.6: callee замърсява param-контейнер → замърсяваме
+                 * аргумента-контейнер тук, с региона на аргумента-източник.
+                 * Иначе `stash(out, wvec_get_str(w, …)); world_free(w)`
+                 * минаваше тихо (висящ указател в out след free). */
+                if (fr && fr->checked && fr->out_taint_param >= 0 &&
+                    fr->out_taint_from >= 0 &&
+                    fr->out_taint_param < n->args.len &&
+                    fr->out_taint_from < n->args.len)
+                    mem3_taint_container(ctx, n->args.data[fr->out_taint_param],
+                                         n->args.data[fr->out_taint_from]);
             }
             return result;
         }
@@ -493,8 +503,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
              * вектор, увисва при free — векторът е в bump арената и надживява
              * региона. ASan: heap-use-after-free при print на vec_get след
              * world_free. Отбелязваме контейнера, не елемента. */
-            mem3_taint_container(ctx, n->args.data[0],
-                                 region_of_expr(ctx, n->args.data[xidx]));
+            mem3_taint_container(ctx, n->args.data[0], n->args.data[xidx]);
             return type_new(TYPE_VOID);
         }
         if (strcmp(name, "vec_get") == 0 || strcmp(name, "vec_get_str") == 0) {
@@ -653,8 +662,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                 }
             }
             /* W3.5: като vec_push — заемана стойност в карта увисва при free */
-            mem3_taint_container(ctx, n->args.data[0],
-                                 region_of_expr(ctx, n->args.data[2]));
+            mem3_taint_container(ctx, n->args.data[0], n->args.data[2]);
             return type_new(TYPE_VOID);
         }
         if (strcmp(name, "map_get") == 0 || strcmp(name, "map_has") == 0 ||
