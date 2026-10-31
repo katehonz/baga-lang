@@ -29,6 +29,15 @@ submodule-и; промяна в пакет се commit-ва в неговия re
 | `chatbaga`, `kvbaga`, `wsbaga` | един poll/accept thread притежава state-а |
 | pure codecs (`json`, `xml`, `zip`, `pdf`, `pb`, `img`, `jwt`, `glob`, `tpl`, `smtp`, …) | няма shared mutable state; ползата е LLVM, не светове |
 
+## LLVM бележка
+
+Pure app-product стекът (20 теста) и световете минават през `lli`; `fmr_test`
+и `cloud_test` също се emit-ват и минават. `boilaDB`, `rocksbaga` и
+`queuebaga` обаче ползват `mem_mark/rewind/persist` и LLVM бекендът още ги
+отказва честно. Това е следващата голяма езикова задача, ако искаме
+storage/DB стекът на LLVM: `mem_*` изисква alloc log/bump arena в LLVM
+(не е задача за светове).
+
 ## Оставащи кандидати (по приоритет)
 
 1. **Raft/txn snapshot читатели** — frozen world на committed KV store за
