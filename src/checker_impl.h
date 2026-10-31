@@ -71,7 +71,8 @@ typedef struct {
     int ret_handle_param;
     /* W3.6: замърсяване на контейнер през fn граница. Върнатият контейнер
      * носи един източник (повече = -1); out-param връзките са няколко. */
-    int ret_taint_param;   /* -1 или индекс на param, чийто регион замърсява ВЪРНАТИЯ контейнер */
+    int n_ret_taint;       /* W3.11: колко param-а замърсяват ВЪРНАТИЯ контейнер */
+    int ret_taint_param[W36_LINKS_MAX];   /* индекси на тези param-и */
     int n_out_taint;       /* брой различни out-param връзки (0 = няма) */
     int out_taint_param[W36_LINKS_MAX];   /* param-контейнер, който тялото замърсява */
     int out_taint_from[W36_LINKS_MAX];    /* param, чиято стойност/регион го замърсява */
@@ -191,6 +192,7 @@ void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h, SrcPos pos);   /* 857 */
 void mem3_free_world(CheckCtx *ctx, EnvEntry *h, SrcPos pos);   /* W2.2: free на свят + заеманите низове */
 void mem3_taint_container(CheckCtx *ctx, Node *container, Node *value, int key);   /* W3.5/W3.6/W3.9: заемана стойност (key=0) или ключ (key=1) влиза в контейнер */
 int mem3_container_region(CheckCtx *ctx, Node *container, int key);   /* W3.5: единственият регион в дадено измерение или 0 */
+int mem3_container_taints(CheckCtx *ctx, Node *container, int key, int *out, int cap);   /* W3.11: всички региони в измерението */
 EnvEntry *ck_env_find(CheckCtx *ctx, const char *name);   /* 877 */
 const char *ck_suggest(const char *name, const char *const *cands, int n);
 int region_of_expr(CheckCtx *ctx, Node *n);   /* 891 */

@@ -299,7 +299,7 @@ void register_fn(CheckCtx *ctx, Node *item) {
         ctx->fns[ctx->n_fns].decl = item;
         ctx->fns[ctx->n_fns].ret_arena_param = -1;
         ctx->fns[ctx->n_fns].ret_handle_param = -1;
-        ctx->fns[ctx->n_fns].ret_taint_param = -1;
+        ctx->fns[ctx->n_fns].n_ret_taint = 0;
         ctx->fns[ctx->n_fns].n_out_taint = 0;
         ctx->fns[ctx->n_fns].checked = 0;
         ctx->fns[ctx->n_fns].checking = 0;
@@ -855,6 +855,20 @@ int mem3_container_region(CheckCtx *ctx, Node *container, int key) {
     return (n == 1) ? a[0] : 0;
 }
 
+/* W3.11: ВСИЧКИ региони, с които контейнерът е замърсен (не само един).
+ * Връща броя записани в out (до cap). Използва се от резюмето на върнат
+ * контейнер, който може да носи заемани стойности от няколко param-а. */
+int mem3_container_taints(CheckCtx *ctx, Node *container, int key,
+                          int *out, int cap) {
+    EnvEntry *e = w35_container(ctx, container);
+    if (!e || !out || cap <= 0) return 0;
+    int n = key ? e->ktaint_n : e->taint_n;
+    const int *a = key ? e->ktaint : e->taint;
+    int w = 0;
+    for (int i = 0; i < n && w < cap; i++) out[w++] = a[i];
+    return w;
+}
+
 /* W3.5: при free на регион — живите контейнери, които държат заемани стойности
  * от него, остават с висящи указатели. Обвинението е на мястото на free-а,
  * защото по-късното четене (`vec_get`) връща обикновена стойност и изглежда
@@ -1319,9 +1333,15 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
                 }
             }
         }
-        if (fr && fr->checked && fr->ret_taint_param >= 0 &&
-            fr->ret_taint_param < init->args.len)
-            w35_taint_entry(pe, w36_value_region(ctx, init->args.data[fr->ret_taint_param]), 0);
+        if (fr && fr->checked) {
+            for (int ti = 0; ti < fr->n_ret_taint; ti++) {
+                int pi = fr->ret_taint_param[ti];
+                if (pi >= 0 && pi < init->args.len) {
+                    int rid2 = w36_value_region(ctx, init->args.data[pi]);
+                    if (rid2 > 0) w35_taint_entry(pe, rid2, 0);
+                }
+            }
+        }
         }
     }
 }

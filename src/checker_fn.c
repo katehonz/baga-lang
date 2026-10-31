@@ -675,9 +675,10 @@ static void mem3_collect_rets(CheckCtx *ctx, Node *n,
     switch (n->kind) {
         case NODE_RETURN:
             if (n->ret_val) {
-                /* W3.6: връща ли ЗАМЪРСЕН контейнер (не payload)? */
-                int tr = mem3_container_region(ctx, n->ret_val, 0);
-                if (tr > 0 && *nt < cap) tids[(*nt)++] = tr;
+                /* W3.6/W3.11: връща ли ЗАМЪРСЕН контейнер (не payload) и с
+                 * колко различни региона — всички се резюмират. */
+                *nt += mem3_container_taints(ctx, n->ret_val, 0,
+                                             tids + *nt, cap - *nt);
                 int r = region_of_expr(ctx, n->ret_val);
                 if (r > 0 && *nr < cap) rids[(*nr)++] = r;
                 int h = lookup_arena_id(ctx, n->ret_val);
@@ -737,6 +738,26 @@ static int mem3_ids_to_param(CheckCtx *ctx, Node *fn, int *ids, int nids) {
     return param_idx;
 }
 
+/* W3.11: като mem3_ids_to_param, но пази ВСИЧКИ различни param-и.
+ * Регион, който не принадлежи на param (локален свят), се пропуска. */
+static int mem3_ids_to_params(CheckCtx *ctx, Node *fn, int *ids, int nids,
+                              int *out, int cap) {
+    int n = 0;
+    for (int k = 0; k < nids; k++) {
+        int pi = -1;
+        for (int i = 0; i < fn->params.len; i++) {
+            EnvEntry *pe = ck_env_find(ctx, fn->params.data[i]->param_name);
+            if (pe && pe->arena_id == ids[k] && pe->arena_id > 0)
+                { pi = i; break; }
+        }
+        if (pi < 0) continue;
+        int dup = 0;
+        for (int j = 0; j < n; j++) if (out[j] == pi) { dup = 1; break; }
+        if (!dup && n < cap) out[n++] = pi;
+    }
+    return n;
+}
+
 /* W3.6: индекс на param по име (-1 = не е param). */
 static int w36_param_index(Node *fn, const char *name) {
     if (!fn || !name) return -1;
@@ -753,8 +774,8 @@ static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
     if (fn->fn_body->stmts.len > 0) {
         Node *last = fn->fn_body->stmts.data[fn->fn_body->stmts.len - 1];
         if (last->kind == NODE_EXPR_STMT && last->expr) {
-            int tr = mem3_container_region(ctx, last->expr, 0);
-            if (tr > 0 && nt < 32) tids[nt++] = tr;   /* W3.6 */
+            nt += mem3_container_taints(ctx, last->expr, 0,
+                                        tids + nt, 32 - nt);   /* W3.6/W3.11 */
             int r = region_of_expr(ctx, last->expr);
             if (r > 0 && nr < 32) rids[nr++] = r;
             int h = lookup_arena_id(ctx, last->expr);
@@ -767,9 +788,10 @@ static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
     }
     rec->ret_arena_param = mem3_ids_to_param(ctx, fn, rids, nr);
     rec->ret_handle_param = mem3_ids_to_param(ctx, fn, hids, nh);
-    /* W3.6: върнат замърсен контейнер (само един param-източник, както
-     * ret_arena_param; повече = -1 и не пренасяме). */
-    rec->ret_taint_param = mem3_ids_to_param(ctx, fn, tids, nt);
+    /* W3.6/W3.11: върнат замърсен контейнер — всички param-източници (до
+     * W36_LINKS_MAX); при повече региони от един и същ param се дедупликира. */
+    rec->n_ret_taint = mem3_ids_to_params(ctx, fn, tids, nt,
+                                          rec->ret_taint_param, W36_LINKS_MAX);
     /* W3.6: тялото замърсява param-контейнери — имената, записани по време на
      * тялото, стават индекси чак тук, докато param-ите са в scope. Всички
      * различни връзки се пазят; при преливане на капацитета не резюмираме

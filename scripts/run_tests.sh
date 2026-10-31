@@ -1811,6 +1811,41 @@ else
 	exit 1
 fi
 
+echo "=== W3.11 върнат контейнер от няколко param-източника ==="
+# Резюмето на върнат контейнер пазеше само ЕДИН param-източник (като
+# ret_arena_param). Сега пази всички (до W36_LINKS_MAX) и замърсява
+# резултата с региона на всеки съответен аргумент.
+printf 'fn build(w1: i64, v1: i64, w2: i64, v2: i64) -> Vec<str> {\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w1, v1, 0))\n    vec_push(out, wvec_get_str(w2, v2, 0))\n    return out\n}\nfn main() {\n    let w1 = world_new()\n    let v1 = wvec_new(w1)\n    wvec_push_str(w1, v1, "a")\n    let w2 = world_new()\n    let v2 = wvec_new(w2)\n    wvec_push_str(w2, v2, "b")\n    let r = build(w1, v1, w2, v2)\n    world_free(w1)\n    print(vec_get_str(r, 0))\n}\n' > /tmp/baga_w311_ret1.baga
+RC=0
+run --check /tmp/baga_w311_ret1.baga > /tmp/baga_w311_ret1_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'r' държи" /tmp/baga_w311_ret1_out.txt; then
+	echo "OK: върнат контейнер от два свята — освобождаването на първия е грешка"
+else
+	echo "FAIL: multi-source резюмето не замърси върнатия контейнер"
+	cat /tmp/baga_w311_ret1_out.txt
+	exit 1
+fi
+printf 'fn build(w1: i64, v1: i64, w2: i64, v2: i64) -> Vec<str> {\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w1, v1, 0))\n    vec_push(out, wvec_get_str(w2, v2, 0))\n    return out\n}\nfn main() {\n    let w1 = world_new()\n    let v1 = wvec_new(w1)\n    wvec_push_str(w1, v1, "a")\n    let w2 = world_new()\n    let v2 = wvec_new(w2)\n    wvec_push_str(w2, v2, "b")\n    let r = build(w1, v1, w2, v2)\n    world_free(w2)\n    print(vec_get_str(r, 1))\n}\n' > /tmp/baga_w311_ret2.baga
+RC=0
+run --check /tmp/baga_w311_ret2.baga > /tmp/baga_w311_ret2_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'r' държи" /tmp/baga_w311_ret2_out.txt; then
+	echo "OK: ... и на втория свят също (двата източника се пазят)"
+else
+	echo "FAIL: вторият param-източник не е в резюмето"
+	cat /tmp/baga_w311_ret2_out.txt
+	exit 1
+fi
+# ТОЧНОСТТА: върнатият контейнер е замърсен само от w1; free на независимия
+# w2 не бива да обвинява (M8).
+printf 'fn build(w1: i64, v1: i64) -> Vec<str> {\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w1, v1, 0))\n    return out\n}\nfn main() {\n    let w1 = world_new()\n    let v1 = wvec_new(w1)\n    wvec_push_str(w1, v1, "a")\n    let w2 = world_new()\n    let r = build(w1, v1)\n    world_free(w2)\n    print(i64_to_str(vec_len(r)))\n    drop(r)\n    world_free(w1)\n}\n' > /tmp/baga_w311_prec.baga
+if run /tmp/baga_w311_prec.baga 2>&1 | grep -qx "1"; then
+	echo "OK: независим свят не обвинява върнат контейнер от друг свят"
+else
+	echo "FAIL: multi-source резюмето обвинява независим свят"
+	run /tmp/baga_w311_prec.baga 2>&1 | head -3
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и
