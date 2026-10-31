@@ -39,6 +39,19 @@
   влиза в общия LLVM оракул.
 - Docs: worlds-bg §5/§6, CHANGELOG.
 
+### Concurrency — TSan-clean mutex + boilaDB plan/catalog cache
+- `baga_Mutex.owner/locked` (double-lock детекцията) станаха `_Atomic` с
+  acquire/release store-ове. TSan преди виждаше race във ВСЯКА заключена
+  секция (`baga_mutex_lock`), което маскираше истинските races; сега
+  `boila_pool_test` под TSan е чист.
+- boilaDB: план/каталог кешът (`m`, `sm`, `tm` в `BoilaPlanCache`) вече се
+  пипа под per-db mutex. Hot path-ът подава `boila_mt_pc_mu(st)` вместо
+  `pc_mu=0`; `boila_pc_cat_mu` резолвва miss-а ИЗВЪН ключалката и вмъква
+  под нея. Преди shared data lock позволяваше едновременни `map_set` в
+  трите Map-а от няколко worker-а.
+- `boila_p5_test`, `boila_pool_test`, `boila_pgwire_test`, `boila_chaos_test`,
+  `boila_http_mux_test` — зелени; pool тестът е чист и под TSan.
+
 ### W4.3 — LLVM отваря codec стека: `byte_chr` + bytes/vec мостове
 - LLVM бекендът вече поддържа `byte_chr`, `bytes_from_vec` и `vec_from_bytes`.
   `byte_chr` е критичен: `std/str/str.baga` го ползва за UTF-8, `std/net/tcp.baga`

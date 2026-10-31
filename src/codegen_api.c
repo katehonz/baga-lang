@@ -2801,17 +2801,19 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return n;\n");
     fprintf(out, "}\n");
     /* mutex — opaque i64 handle с double-lock детекция */
-    fprintf(out, "typedef struct { pthread_mutex_t mu; pthread_t owner; int locked; void *bt[16]; int btn; } baga_Mutex;\n");
+    fprintf(out, "typedef struct { pthread_mutex_t mu; _Atomic pthread_t owner; _Atomic int locked; void *bt[16]; int btn; } baga_Mutex;\n");
     fprintf(out, "static int64_t baga_mutex_new(void) {\n");
     fprintf(out, "    baga_Mutex *m = (baga_Mutex *)calloc(1, sizeof(baga_Mutex));\n");
     fprintf(out, "    if (!m) { fprintf(stderr, \"baga: mutex_new: oom\\n\"); exit(1); }\n");
     fprintf(out, "    pthread_mutex_init(&m->mu, NULL);\n");
+    fprintf(out, "    atomic_init(&m->owner, pthread_self()); atomic_init(&m->locked, 0);\n");
     fprintf(out, "    return (int64_t)(intptr_t)m;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_mutex_lock(int64_t h) {\n");
     fprintf(out, "    baga_Mutex *m = (baga_Mutex *)(intptr_t)h;\n");
     fprintf(out, "    if (!m) return -1;\n");
-    fprintf(out, "    if (m->locked && pthread_equal(m->owner, pthread_self())) {\n");
+    fprintf(out, "    if (atomic_load_explicit(&m->locked, memory_order_acquire) &&\n");
+    fprintf(out, "        pthread_equal(atomic_load_explicit(&m->owner, memory_order_relaxed), pthread_self())) {\n");
     fprintf(out, "        /* Re-entrant same-thread lock: НЕ abort-ваме целия сървър.\n");
     fprintf(out, "           Възниква при lock leak от effect-raise (`?`) в заключен регион —\n");
     fprintf(out, "           нишката вече държи mutex-а, значи е вътре в критичния регион;\n");
@@ -2823,15 +2825,16 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        return 0;\n");
     fprintf(out, "    }\n");
     fprintf(out, "    int rc = pthread_mutex_lock(&m->mu);\n");
-    fprintf(out, "    m->owner = pthread_self(); m->locked = 1;\n");
     fprintf(out, "    m->bt[0] = __builtin_return_address(0);\n");
+    fprintf(out, "    atomic_store_explicit(&m->owner, pthread_self(), memory_order_relaxed);\n");
+    fprintf(out, "    atomic_store_explicit(&m->locked, 1, memory_order_release);\n");
     fprintf(out, "    m->btn = 1;\n");
     fprintf(out, "    return (int64_t)rc;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_mutex_unlock(int64_t h) {\n");
     fprintf(out, "    baga_Mutex *m = (baga_Mutex *)(intptr_t)h;\n");
     fprintf(out, "    if (!m) return -1;\n");
-    fprintf(out, "    m->locked = 0;\n");
+    fprintf(out, "    atomic_store_explicit(&m->locked, 0, memory_order_release);\n");
     fprintf(out, "    return (int64_t)pthread_mutex_unlock(&m->mu);\n");
     fprintf(out, "}\n");
     /* Bounded worker pool: pool_map(fn, Vec<i64>, nworkers) -> Vec<i64> */
