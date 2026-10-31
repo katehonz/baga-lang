@@ -4,6 +4,8 @@
 // as JSON; the client side reads the serialized response bytes.
 
 import "httpdbaga/http.baga"
+import "std/net/http_client.baga"
+import "std/bytes/bytes.baga"
 
 fn check(name: str, ok: bool) {
     if ok {
@@ -165,6 +167,17 @@ fn main() -> i64 !Net !IO {
     tcp_close(s9)?
 
     tcp_close(listener)?
+    // A1: http_build_request_bytes запазва null байтове в тялото
+    let mut nb: Vec<i64> = vec_new()
+    vec_push(nb, 65); vec_push(nb, 0); vec_push(nb, 66); vec_push(nb, 0); vec_push(nb, 67)
+    let nb_bytes = bytes_from_vec(nb)
+    let hdrs: Map<str, str> = map_new()
+    let breq = http_build_request_bytes("POST", "/up", "h", hdrs, nb_bytes)
+    let head_len = len("POST /up HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nConnection: close\r\n\r\n")
+    check("a1_nulls", bytes_len(breq) == head_len + 5 &&
+          bytes_at(bytes_slice(breq, head_len, bytes_len(breq)), 1) == 0 &&
+          bytes_at(bytes_slice(breq, head_len, bytes_len(breq)), 3) == 0)
+
     print("http_test: all passed")
     return 0
 }

@@ -294,6 +294,87 @@ fn http_request_anchor(method: str, url: str, headers: Map<str, str>, body: str,
     return http_request_tls_anchor(u.host, u.port, req, timeout_s, anchor_der)?
 }
 
+// A1 (closed 2026-10-31): binary body — хедърите се строят като str, тялото
+// идва като bytes (с null байтове). Content-Length се смята от bytes_len.
+fn http_build_request_bytes(method: str, path: str, host: str, headers: Map<str, str>, body: bytes) -> bytes {
+    let mut head = concat(concat(method, " "), concat(path, " HTTP/1.1\r\n"))
+    head = concat(head, concat(concat("Host: ", host), "\r\n"))
+    let ks = map_keys(headers)
+    let mut i: i64 = 0
+    while i < vec_len(ks) {
+        let name = vec_get(ks, i)
+        head = concat(head, concat(concat(concat(name, ": "), map_get(headers, name)), "\r\n"))
+        i = i + 1
+    }
+    if bytes_len(body) > 0 {
+        head = concat(head, concat(concat("Content-Length: ", int_to_str(bytes_len(body))), "\r\n"))
+    }
+    head = concat(head, "Connection: close\r\n\r\n")
+    return bytes_concat(bytes_of_str(head), body)
+}
+
+fn http_request_bytes_plain(host: str, port: i64, req: bytes, timeout_s: i64) -> HttpResponse !Net !IO {
+    let fd = tcp_connect_to(host, port, timeout_s)?
+    if fd < 0 {
+        return http_resp_bad()
+    }
+    let w = tcp_write_bytes(fd, req)?
+    if w != 0 {
+        tcp_close(fd)?
+        return http_resp_bad()
+    }
+    let mut buf = bytes_from_vec(vec_new())
+    let mut reading: i64 = 1
+    while reading == 1 {
+        let chunk = tcp_read_bytes(fd, 8192)?
+        if bytes_len(chunk) == 0 {
+            reading = 0
+        } else {
+            buf = bytes_concat(buf, chunk)
+        }
+    }
+    tcp_close(fd)?
+    return http_parse_response(buf)
+}
+
+// Пълен bytes-вариант: method/url/headers + binary body. За https виж
+// http_request_tls_anchor (str req) — TLS пътят с bytes тяло добавяме при нужда.
+fn http_request_bytes(method: str, url: str, headers: Map<str, str>, body: bytes, timeout_s: i64) -> HttpResponse !Net !IO !Random {
+    let u = http_parse_url(url)
+    if u.ok == 0 {
+        return http_resp_bad()
+    }
+    let req = http_build_request_bytes(method, u.path, u.host, headers, body)
+    if u.https == 0 {
+        return http_request_bytes_plain(u.host, u.port, req, timeout_s)?
+    }
+    // TLS: конструираме str хедър + bytes тяло — TLS write също е bytes
+    return http_request_tls_bytes_anchor(u.host, u.port, req, timeout_s, bytes_from_vec(vec_new()))?
+}
+
+fn http_request_tls_bytes_anchor(host: str, port: i64, req: bytes, timeout_s: i64, anchor_der: bytes) -> HttpResponse !Net !IO !Random {
+    let mut conn = tls_connect(host, port, timeout_s, anchor_der)?
+    if conn.ok == 0 {
+        return http_resp_bad()
+    }
+    conn = tls_conn_write(conn, req)?
+    let mut buf = bytes_from_vec(vec_new())
+    let mut reading: i64 = 1
+    while reading == 1 {
+        let r = tls_conn_read(conn)?
+        if r.typ == 0 || bytes_len(r.data) == 0 {
+            reading = 0
+        } else if r.typ == 23 {
+            buf = bytes_concat(buf, r.data)
+            conn = r.conn
+        } else {
+            conn = r.conn
+        }
+    }
+    tls_conn_close(conn)?
+    return http_parse_response(buf)
+}
+
 fn http_request_plain(host: str, port: i64, req: str, timeout_s: i64) -> HttpResponse !Net !IO {
     let fd = tcp_connect_to(host, port, timeout_s)?
     if fd < 0 {
