@@ -80,8 +80,12 @@
   че `rc_test` под LLVM се счупва и **без** `mem_*` (дори със секцията
   премахната) — pre-existing RC bug в комбинацията map/RC, не в
   allocation log-а. Затова RC оракулът продължава да SKIP-ва `rc_test`.
-- Следващ debug: минимален RC reproducer около map/bytes секциите на
-  `rc_test`; едва тогава `mem_*` под `--rc`.
+- Bisection: секции 1–8 + 10 минават, 1–8 + 9–10 минават, p/pv + loop
+  самостоятелно минава; crash-ът иска комбинацията на всички 1–10 заедно с
+  persist p/pv + 30×64KB `str_repeat`. Значи е RC release/alias bug в
+  взаимодействието на контейнерите, не в mem log-а.
+- Следващ debug: минимален reproducer от тази комбинация; едва тогава
+  `mem_*` под `--rc`.
 
 ### P61 — scratch pool + persist map entries; C churn 60→38 KB/връзка
 - `pgw_reader` default в mux вече не алокира 8KB scratch (startup-ът
