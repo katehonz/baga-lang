@@ -1382,7 +1382,7 @@ echo "=== W3.5 заемана стойност, която изтича в ко�
 printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w, v, 0))\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w35_vec.baga
 RC=0
 run --check /tmp/baga_w35_vec.baga > /tmp/baga_w35_vec_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "държи заемана стойност от света" /tmp/baga_w35_vec_out.txt; then
+if [[ $RC -ne 0 ]] && grep -q "държи заемана стойност или ключ от света" /tmp/baga_w35_vec_out.txt; then
 	echo "OK: заеман низ във Vec надживява света — compile грешка (ASan: heap-use-after-free)"
 else
 	echo "FAIL: vec_push със заеман низ + world_free трябваше да е грешка"
@@ -1404,7 +1404,7 @@ fi
 printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 8)\n    let out = vec_new()\n    vec_push(out, p)\n    arena_free(a)\n    print(i64_to_str(vec_get(out, 0)))\n}\n' > /tmp/baga_w35_arena.baga
 RC=0
 run --check /tmp/baga_w35_arena.baga > /tmp/baga_w35_arena_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "държи заемана стойност от арената" /tmp/baga_w35_arena_out.txt; then
+if [[ $RC -ne 0 ]] && grep -q "държи заемана стойност или ключ от арената" /tmp/baga_w35_arena_out.txt; then
 	echo "OK: payload от арена във Vec + arena_free — същата грешка (регионите са едно пространство)"
 else
 	echo "FAIL: arena payload във вектор след arena_free трябваше да е грешка"
@@ -1415,7 +1415,7 @@ fi
 printf 'fn main() {\n    let out = vec_new()\n    world g {\n        let v = wvec_new(g)\n        wvec_push_str(g, v, "hi")\n        vec_push(out, wvec_get_str(g, v, 0))\n    }\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w35_block.baga
 RC=0
 run --check /tmp/baga_w35_block.baga > /tmp/baga_w35_block_out.txt 2>&1 || RC=$?
-if [[ $RC -ne 0 ]] && grep -q "държи заемана стойност от света 'g'" /tmp/baga_w35_block_out.txt; then
+if [[ $RC -ne 0 ]] && grep -q "държи заемана стойност или ключ от света 'g'" /tmp/baga_w35_block_out.txt; then
 	echo "OK: изтичане през world g { … } — авто-free-ът се хваща като явен"
 else
 	echo "FAIL: world блок с изтичане в контейнер трябваше да е грешка"
@@ -1560,7 +1560,7 @@ else
 	echo "FAIL: generic с обикновен низ трябваше да минава"
 	exit 1
 fi
-echo "=== W3.8 generic fn + неанотиран Vec/Map аргумент — елементният вид ==="
+echo "=== generic извиквания: неанотиран Vec/Map аргумент — елементният вид ==="
 # Преди W3.8 generic извикването не фиксираше елементния вид на неанотирания
 # Vec/Map аргумент (non-generic пътят го правеше) — vec_get фиксираше i64 и
 # program-ата печаташе указател вместо низа.
@@ -1649,6 +1649,67 @@ if run --check /tmp/baga_w39_drop.baga > /tmp/baga_w39_drop_out.txt 2>&1; then
 else
 	echo "FAIL: drop преди free трябваше да минава"
 	cat /tmp/baga_w39_drop_out.txt
+	exit 1
+fi
+echo "=== W3.9 key/value taint — map_keys наследява КЛЮЧОВОТО замърсяване ==="
+# Ключовете на Map са заемани указатели (e->sk = sk). Затова taint-ът е в ДВЕ
+# измерения: ако map_keys наследяваше стойностното, щеше да обвинява фалшиво при
+# чисти ключове + заемана стойност (precision-тестът по-долу).
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let m = map_new()\n    map_set(m, wvec_get_str(w, v, 0), 42)\n    world_free(w)\n    print(i64_to_str(map_len(m)))\n}\n' > /tmp/baga_w40_key.baga
+RC=0
+run --check /tmp/baga_w40_key.baga > /tmp/baga_w40_key_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'm' държи заемана стойност или ключ" /tmp/baga_w40_key_out.txt; then
+	echo "OK: заеман КЛЮЧ в карта увисва при free — картата е обвинена"
+else
+	echo "FAIL: картата със заеман ключ трябваше да е грешка"
+	cat /tmp/baga_w40_key_out.txt
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let m = map_new()\n    map_set(m, wvec_get_str(w, v, 0), 42)\n    let ks = map_keys(m)\n    drop(m)\n    world_free(w)\n    print(vec_get(ks, 0))\n}\n' > /tmp/baga_w40_mapkeys.baga
+RC=0
+run --check /tmp/baga_w40_mapkeys.baga > /tmp/baga_w40_mapkeys_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'ks' държи заемана стойност или ключ" /tmp/baga_w40_mapkeys_out.txt; then
+	echo "OK: map_keys връща заемани ключове — резултатът е обвинен след free"
+else
+	echo "FAIL: map_keys със заемани ключове трябваше да е грешка"
+	cat /tmp/baga_w40_mapkeys_out.txt
+	exit 1
+fi
+# ТОЧНОСТТА: чисти ключове + заемана СТОЙНОСТ — map_keys държи чисти ключове и
+# не бива да се обвинява. Ако този тест се провали, обещанието M8 е счупено.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let m = map_new()\n    map_set(m, "чист ключ", wvec_get_str(w, v, 0))\n    let ks = map_keys(m)\n    drop(m)\n    world_free(w)\n    print(vec_get(ks, 0))\n}\n' > /tmp/baga_w40_prec.baga
+if run /tmp/baga_w40_prec.baga 2>&1 | grep -qx "чист ключ"; then
+	echo "OK: чисти ключове + заемана стойност — map_keys не обвинява (M8: никакво измислено)"
+else
+	echo "FAIL: map_keys с чисти ключове не биваше да се обвинява — това е фалшиво обвинение"
+	run /tmp/baga_w40_prec.baga 2>&1 | head -3
+	exit 1
+fi
+# fn граница с ключ: stash(m, k) { map_set(m, k, 42) }
+printf 'fn stash(m: Map<str, i64>, k: str) {\n    map_set(m, k, 42)\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let m = map_new()\n    stash(m, wvec_get_str(w, v, 0))\n    world_free(w)\n}\n' > /tmp/baga_w40_fn.baga
+RC=0
+run --check /tmp/baga_w40_fn.baga > /tmp/baga_w40_fn_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'm' държи заемана стойност или ключ" /tmp/baga_w40_fn_out.txt; then
+	echo "OK: fn граница със заеман ключ — резюмето носи измерението (key)"
+else
+	echo "FAIL: ключът през fn граница трябваше да замърси ключовете на аргумента"
+	cat /tmp/baga_w40_fn_out.txt
+	exit 1
+fi
+# Легални: копие на ключа; drop преди free.
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let m = map_new()\n    map_set(m, concat(wvec_get_str(w, v, 0), ""), 42)\n    let ks = map_keys(m)\n    world_free(w)\n    print(vec_get(ks, 0))\n}\n' > /tmp/baga_w40_copy.baga
+if run /tmp/baga_w40_copy.baga 2>&1 | grep -qx "hi"; then
+	echo "OK: копиран ключ надживява света — легално и работи"
+else
+	echo "FAIL: копието на ключа трябваше да е легално"
+	exit 1
+fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let m = map_new()\n    map_set(m, wvec_get_str(w, v, 0), 42)\n    drop(m)\n    world_free(w)\n}\n' > /tmp/baga_w40_drop.baga
+if run --check /tmp/baga_w40_drop.baga > /tmp/baga_w40_drop_out.txt 2>&1; then
+	echo "OK: drop на картата преди free — легален изход (ключът изчезва с нея)"
+else
+	echo "FAIL: drop преди free трябваше да минава"
+	cat /tmp/baga_w40_drop_out.txt
 	exit 1
 fi
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="

@@ -676,7 +676,7 @@ static void mem3_collect_rets(CheckCtx *ctx, Node *n,
         case NODE_RETURN:
             if (n->ret_val) {
                 /* W3.6: връща ли ЗАМЪРСЕН контейнер (не payload)? */
-                int tr = mem3_container_region(ctx, n->ret_val);
+                int tr = mem3_container_region(ctx, n->ret_val, 0);
                 if (tr > 0 && *nt < cap) tids[(*nt)++] = tr;
                 int r = region_of_expr(ctx, n->ret_val);
                 if (r > 0 && *nr < cap) rids[(*nr)++] = r;
@@ -753,7 +753,7 @@ static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
     if (fn->fn_body->stmts.len > 0) {
         Node *last = fn->fn_body->stmts.data[fn->fn_body->stmts.len - 1];
         if (last->kind == NODE_EXPR_STMT && last->expr) {
-            int tr = mem3_container_region(ctx, last->expr);
+            int tr = mem3_container_region(ctx, last->expr, 0);
             if (tr > 0 && nt < 32) tids[nt++] = tr;   /* W3.6 */
             int r = region_of_expr(ctx, last->expr);
             if (r > 0 && nr < 32) rids[nr++] = r;
@@ -774,6 +774,7 @@ static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
      * тялото, стават индекси чак тук, докато param-ите са в scope. */
     rec->out_taint_param = -1;
     rec->out_taint_from = -1;
+    rec->out_taint_dim = 0;
     if (!ctx->w36_ambiguous && ctx->w36_out_name) {
         int out = w36_param_index(fn, ctx->w36_out_name);
         int from = -1;
@@ -785,6 +786,7 @@ static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
         if (out >= 0 && from >= 0) {
             rec->out_taint_param = out;
             rec->out_taint_from = from;
+            rec->out_taint_dim = ctx->w36_from_dim;
         }
     }
 }
@@ -822,9 +824,10 @@ void check_fn(CheckCtx *ctx, Node *fn) {
     const char *saved_w36_out = ctx->w36_out_name;
     const char *saved_w36_from = ctx->w36_from_name;
     int saved_w36_rid = ctx->w36_from_rid;
+    int saved_w36_dim = ctx->w36_from_dim;
     int saved_w36_amb = ctx->w36_ambiguous;
     ctx->w36_out_name = NULL; ctx->w36_from_name = NULL;
-    ctx->w36_from_rid = 0; ctx->w36_ambiguous = 0;
+    ctx->w36_from_rid = 0; ctx->w36_from_dim = 0; ctx->w36_ambiguous = 0;
 
     ctx->cur_fn = fn->fn_name;
     ctx->cur_ret = fn->ret_type ? resolve_type_node(ctx, fn->ret_type) : type_new(TYPE_VOID);
@@ -958,6 +961,7 @@ void check_fn(CheckCtx *ctx, Node *fn) {
     ctx->w36_out_name = saved_w36_out;
     ctx->w36_from_name = saved_w36_from;
     ctx->w36_from_rid = saved_w36_rid;
+    ctx->w36_from_dim = saved_w36_dim;
     ctx->w36_ambiguous = saved_w36_amb;
 }
 

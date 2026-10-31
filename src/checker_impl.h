@@ -45,8 +45,13 @@ struct EnvEntry {
      * `vec_get` връща като обикновени стойности. Затова се следи отделно от
      * region_id: payload-локалата умира при free, контейнерът трябва да бъде
      * ОБВИНЕН на мястото на free-а. */
-    int taint[W35_TAINT_MAX];
+    int taint[W35_TAINT_MAX];    /* стойности/елементи */
     int taint_n;
+    /* W3.9: КЛЮЧОВЕТЕ се следят отделно — map_keys връща точно тях, значи
+     * наследяването трябва да е по ключовете, не по стойностите. Иначе map_keys
+     * обвинява фалшиво при чисти ключове + заемана стойност (M8). */
+    int ktaint[W35_TAINT_MAX];
+    int ktaint_n;
     SrcPos pos;       /* позиция на let (за leak предупреждения) */
 };
 typedef struct {
@@ -67,6 +72,7 @@ typedef struct {
     int ret_taint_param;   /* -1 или индекс на param, чийто регион замърсява ВЪРНАТИЯ контейнер */
     int out_taint_param;   /* -1 или индекс на param-контейнер, който тялото замърсява */
     int out_taint_from;    /* -1 или индекс на param, чиято стойност/регион замърсява out_taint_param */
+    int out_taint_dim;     /* W3.9: 0 = замърсяване на стойностите, 1 = на ключовете */
     int checked;
     int checking;
 } FnRec;
@@ -136,6 +142,7 @@ typedef struct {
     const char *w36_out_name;
     const char *w36_from_name;
     int w36_from_rid;
+    int w36_from_dim;   /* W3.9: 0 = стойност, 1 = ключ */
     int w36_ambiguous;
     /* M21 generics: активна substitution (имена → конкретни типове) и
      * типовите параметри на текущо-декларираната fn (за TYPE_VAR) */
@@ -181,8 +188,8 @@ void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos);   /* 7
 void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_mut, SrcPos pos);   /* 809 */
 void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h, SrcPos pos);   /* 857 */
 void mem3_free_world(CheckCtx *ctx, EnvEntry *h, SrcPos pos);   /* W2.2: free на свят + заеманите низове */
-void mem3_taint_container(CheckCtx *ctx, Node *container, Node *value);   /* W3.5/W3.6: заемана стойност влиза в контейнер */
-int mem3_container_region(CheckCtx *ctx, Node *container);   /* W3.5: единственият регион на контейнер или 0 */
+void mem3_taint_container(CheckCtx *ctx, Node *container, Node *value, int key);   /* W3.5/W3.6/W3.9: заемана стойност (key=0) или ключ (key=1) влиза в контейнер */
+int mem3_container_region(CheckCtx *ctx, Node *container, int key);   /* W3.5: единственият регион в дадено измерение или 0 */
 EnvEntry *ck_env_find(CheckCtx *ctx, const char *name);   /* 877 */
 const char *ck_suggest(const char *name, const char *const *cands, int n);
 int region_of_expr(CheckCtx *ctx, Node *n);   /* 891 */

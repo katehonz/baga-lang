@@ -709,6 +709,7 @@ void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) {
         s->entries[s->count].is_world = 0;
         s->entries[s->count].world_frozen = 0;
         s->entries[s->count].taint_n = 0;   /* W3.5 */
+        s->entries[s->count].ktaint_n = 0;  /* W3.9 */
         s->entries[s->count].pos = pos;
         s->count++;
     }
@@ -737,6 +738,7 @@ void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_mut, Src
         s->entries[s->count].is_world = 0;
         s->entries[s->count].world_frozen = 0;
         s->entries[s->count].taint_n = 0;   /* W3.5 */
+        s->entries[s->count].ktaint_n = 0;  /* W3.9 */
         s->entries[s->count].pos = pos;
         s->count++;
     }
@@ -774,10 +776,13 @@ static EnvEntry *w35_container(CheckCtx *ctx, Node *e) {
     return ck_env_find(ctx, e->name);
 }
 
-static void w35_taint_entry(EnvEntry *e, int rid) {
-    if (!e || rid <= 0 || e->taint_n >= W35_TAINT_MAX) return;
-    for (int i = 0; i < e->taint_n; i++) if (e->taint[i] == rid) return;
-    e->taint[e->taint_n++] = rid;
+static void w35_taint_entry(EnvEntry *e, int rid, int key) {
+    if (!e || rid <= 0) return;
+    int *a = key ? e->ktaint : e->taint;
+    int *n = key ? &e->ktaint_n : &e->taint_n;
+    if (*n >= W35_TAINT_MAX) return;
+    for (int i = 0; i < *n; i++) if (a[i] == rid) return;
+    a[(*n)++] = rid;
 }
 
 /* W3.6: регионът на стойността, която влиза в контейнер. `region_of_expr`
@@ -797,9 +802,9 @@ static int w36_value_region(CheckCtx *ctx, Node *value) {
     return 0;
 }
 
-void mem3_taint_container(CheckCtx *ctx, Node *container, Node *value) {
+void mem3_taint_container(CheckCtx *ctx, Node *container, Node *value, int key) {
     int rid = w36_value_region(ctx, value);
-    if (rid > 0) w35_taint_entry(w35_container(ctx, container), rid);
+    if (rid > 0) w35_taint_entry(w35_container(ctx, container), rid, key);
     /* W3.6: контейнерът е ПАРАМЕТЪР — тялото пише върху буфера на извикващия.
      * Записваме връзката „param-контейнер ← източник"; при всяко извикване тя се
      * прилага върху аргумента-контейнер (mem3_summarize_fn + call site).
@@ -813,21 +818,25 @@ void mem3_taint_container(CheckCtx *ctx, Node *container, Node *value) {
         ctx->w36_out_name = ce->name;
         ctx->w36_from_name = from_name;
         ctx->w36_from_rid = rid;
+        ctx->w36_from_dim = key;
         return;
     }
     int same = ctx->w36_out_name && strcmp(ctx->w36_out_name, ce->name) == 0;
     int same_from = (ctx->w36_from_name == NULL && from_name == NULL) ||
                     (ctx->w36_from_name && from_name &&
                      strcmp(ctx->w36_from_name, from_name) == 0);
-    if (!same || !same_from || ctx->w36_from_rid != rid)
+    if (!same || !same_from || ctx->w36_from_rid != rid || ctx->w36_from_dim != key)
         ctx->w36_ambiguous = 1;   /* повече от една връзка — не резюмираме */
 }
 
 /* Регионът на стойност, прочетена от контейнер. При повече от един регион не
  * знаем кой е елементът → 0 (честен пропуск, не измислено обвинение). */
-int mem3_container_region(CheckCtx *ctx, Node *container) {
+int mem3_container_region(CheckCtx *ctx, Node *container, int key) {
     EnvEntry *e = w35_container(ctx, container);
-    return (e && e->taint_n == 1) ? e->taint[0] : 0;
+    if (!e) return 0;
+    int n = key ? e->ktaint_n : e->taint_n;
+    const int *a = key ? e->ktaint : e->taint;
+    return (n == 1) ? a[0] : 0;
 }
 
 /* W3.5: при free на регион — живите контейнери, които държат заемани стойности
@@ -841,15 +850,15 @@ static void mem3_report_tainted(CheckCtx *ctx, int rid, SrcPos pos, const char *
         EnvScope *s = &ctx->scopes[d];
         for (int i = 0; i < s->count; i++) {
             EnvEntry *e = &s->entries[i];
-            if (e->dropped || e->taint_n == 0) continue;
-            for (int k = 0; k < e->taint_n; k++) {
-                if (e->taint[k] != rid) continue;
+            if (e->dropped) continue;
+            int hit = 0;
+            for (int k = 0; !hit && k < e->taint_n; k++) if (e->taint[k] == rid) hit = 1;
+            for (int k = 0; !hit && k < e->ktaint_n; k++) if (e->ktaint[k] == rid) hit = 1;
+            if (hit)
                 check_error(ctx, pos,
-                    "контейнерът '%s' държи заемана стойност от %s — след free елементите му са висящи указатели; "
+                    "контейнерът '%s' държи заемана стойност или ключ от %s — след free елементите му са висящи указатели; "
                     "копирай стойността преди free (concat(s, \"\") за низ) или освободи контейнера първо (drop(%s))",
                     e->name, what, e->name);
-                break;
-            }
         }
     }
 }
@@ -1010,7 +1019,7 @@ int region_of_expr(CheckCtx *ctx, Node *n) {
                 (strcmp(n->callee->name, "vec_get") == 0 ||
                  strcmp(n->callee->name, "vec_get_str") == 0 ||
                  strcmp(n->callee->name, "map_get") == 0))
-                return mem3_container_region(ctx, n->args.data[0]);
+                return mem3_container_region(ctx, n->args.data[0], 0);
             if (n->callee && n->callee->kind == NODE_IDENT &&
                 strcmp(n->callee->name, "arena_alloc") == 0 &&
                 n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT) {
@@ -1240,10 +1249,13 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
      * иначе висящите елементи минават през новото име невидимо) и се чисти при
      * всяка друга инициализация (`v = vec_new()`). */
     pe->taint_n = 0;
+    pe->ktaint_n = 0;
     if (init->kind == NODE_IDENT) {
         EnvEntry *src = ck_env_find(ctx, init->name);
         for (int i = 0; src && i < src->taint_n && pe->taint_n < W35_TAINT_MAX; i++)
             pe->taint[pe->taint_n++] = src->taint[i];
+        for (int i = 0; src && i < src->ktaint_n && pe->ktaint_n < W35_TAINT_MAX; i++)
+            pe->ktaint[pe->ktaint_n++] = src->ktaint[i];
     } else if (init->kind == NODE_CALL && init->callee &&
                init->callee->kind == NODE_IDENT) {
         /* W3.9: производни контейнери — vec_slice/vec_concat копират
@@ -1255,15 +1267,22 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
         if (strcmp(init->callee->name, "vec_slice") == 0 && init->args.len >= 1) {
             EnvEntry *vs = w35_container(ctx, init->args.data[0]);
             for (int i = 0; vs && i < vs->taint_n; i++)
-                w35_taint_entry(pe, vs->taint[i]);
+                w35_taint_entry(pe, vs->taint[i], 0);
         } else if (strcmp(init->callee->name, "vec_concat") == 0 &&
                    init->args.len >= 2) {
             EnvEntry *c1 = w35_container(ctx, init->args.data[0]);
             EnvEntry *c2 = w35_container(ctx, init->args.data[1]);
             for (int i = 0; c1 && i < c1->taint_n; i++)
-                w35_taint_entry(pe, c1->taint[i]);
+                w35_taint_entry(pe, c1->taint[i], 0);
             for (int i = 0; c2 && i < c2->taint_n; i++)
-                w35_taint_entry(pe, c2->taint[i]);
+                w35_taint_entry(pe, c2->taint[i], 0);
+        } else if (strcmp(init->callee->name, "map_keys") == 0 && init->args.len >= 1) {
+            /* W3.9: map_keys връща КЛЮЧОВЕТЕ като елементи — резултатът
+             * наследява КЛЮЧОВОТО замърсяване на картата, не стойностното.
+             * Иначе обвинява фалшиво при чисти ключове + заемана стойност. */
+            EnvEntry *mk = w35_container(ctx, init->args.data[0]);
+            for (int i = 0; mk && i < mk->ktaint_n; i++)
+                w35_taint_entry(pe, mk->ktaint[i], 0);
         } else {
         /* W3.6: върнат замърсен контейнер — резюмето на callee казва от кой param
          * идва регионът; замърсяваме новата локална с региона на ТОЗИ аргумент.
@@ -1286,7 +1305,7 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
         }
         if (fr && fr->checked && fr->ret_taint_param >= 0 &&
             fr->ret_taint_param < init->args.len)
-            w35_taint_entry(pe, w36_value_region(ctx, init->args.data[fr->ret_taint_param]));
+            w35_taint_entry(pe, w36_value_region(ctx, init->args.data[fr->ret_taint_param]), 0);
         }
     }
 }

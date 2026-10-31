@@ -410,7 +410,8 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                         gfr->out_taint_param < n->args.len &&
                         gfr->out_taint_from < n->args.len)
                         mem3_taint_container(ctx, n->args.data[gfr->out_taint_param],
-                                             n->args.data[gfr->out_taint_from]);
+                                             n->args.data[gfr->out_taint_from],
+                                             gfr->out_taint_dim);
                     return result;
                 }
             }
@@ -474,7 +475,8 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                     fr->out_taint_param < n->args.len &&
                     fr->out_taint_from < n->args.len)
                     mem3_taint_container(ctx, n->args.data[fr->out_taint_param],
-                                         n->args.data[fr->out_taint_from]);
+                                         n->args.data[fr->out_taint_from],
+                                         fr->out_taint_dim);
             }
             return result;
         }
@@ -528,7 +530,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
              * вектор, увисва при free — векторът е в bump арената и надживява
              * региона. ASan: heap-use-after-free при print на vec_get след
              * world_free. Отбелязваме контейнера, не елемента. */
-            mem3_taint_container(ctx, n->args.data[0], n->args.data[xidx]);
+            mem3_taint_container(ctx, n->args.data[0], n->args.data[xidx], 0);
             return type_new(TYPE_VOID);
         }
         if (strcmp(name, "vec_get") == 0 || strcmp(name, "vec_get_str") == 0) {
@@ -686,8 +688,11 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                         type_str(vt), type_str(mt));
                 }
             }
-            /* W3.5: като vec_push — заемана стойност в карта увисва при free */
-            mem3_taint_container(ctx, n->args.data[0], n->args.data[2]);
+            /* W3.5/W3.9: заемана СТОЙНОСТ увисва при free — и ЗАЕМАН КЛЮЧ
+             * също (ключовете са указатели: e->sk = sk). Ключовете се следят
+             * отделно, защото map_keys връща точно тях. */
+            mem3_taint_container(ctx, n->args.data[0], n->args.data[1], 1);
+            mem3_taint_container(ctx, n->args.data[0], n->args.data[2], 0);
             return type_new(TYPE_VOID);
         }
         if (strcmp(name, "map_get") == 0 || strcmp(name, "map_has") == 0 ||
