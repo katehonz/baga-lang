@@ -71,6 +71,12 @@ wake-ът alokiraше `substr` извън turn rewind-а. Сега `cell2_free` 
 `mem_persist`; 10 s даваха **328 MB** RSS. Сега park копира `db`/`guc` само
 при реална промяна.
 
+## Кратки връзки (`pgbench -C`)
+
+`pgbench -n -C -c1 -t100` (100 нови връзки): RSS расте с ~11 MB при
+`BOILA_WORKERS=0` и ~16 MB при mux след P51/P52 (преди P52 ~18 MB).
+Остава per-connection persist/arena leak; keep-alive пътят е стабилен.
+
 ## Честни граници
 
 - Read-only point SELECT с 5k реда; не пише, не JOIN-ва, не сканира.
