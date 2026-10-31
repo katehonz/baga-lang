@@ -1250,6 +1250,21 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
          * идва регионът; замърсяваме новата локална с региона на ТОЗИ аргумент.
          * `let out = build(w, v); world_free(w)` вече не минава тихо. */
         FnRec *fr = find_fn_rec(ctx, init->callee->name);
+        if (!fr) {
+            /* W3.7: generic инстанция — callee е `stash__iN`, а резюмето е на
+             * базовата fn. Първо опитахме точното име, значи потребителска fn,
+             * която наистина завършва на __iN, не се засяга. */
+            const char *nm = init->callee->name;
+            const char *suf = nm ? strstr(nm, "__i") : NULL;
+            if (suf && suf > nm) {
+                char base[128];
+                size_t bl = (size_t)(suf - nm);
+                if (bl < sizeof base) {
+                    memcpy(base, nm, bl); base[bl] = 0;
+                    fr = find_fn_rec(ctx, base);
+                }
+            }
+        }
         if (fr && fr->checked && fr->ret_taint_param >= 0 &&
             fr->ret_taint_param < init->args.len)
             w35_taint_entry(pe, w36_value_region(ctx, init->args.data[fr->ret_taint_param]));

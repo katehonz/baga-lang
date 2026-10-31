@@ -386,6 +386,17 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                     type_merge_effects(result, gret);
                     if (ctx->cur_effects)
                         type_merge_effects(ctx->cur_effects, gret);
+                    /* W3.7: generic инстанция — същото замърсяване на out-param
+                     * контейнер като при non-generic извикване. Резюмето е
+                     * изчислено: generic_instantiate вика check_fn за инстанцията,
+                     * която изпълнява mem3_summarize_fn. */
+                    FnRec *gfr = find_fn_rec(ctx, gfn->fn_name);
+                    if (gfr && gfr->checked && gfr->out_taint_param >= 0 &&
+                        gfr->out_taint_from >= 0 &&
+                        gfr->out_taint_param < n->args.len &&
+                        gfr->out_taint_from < n->args.len)
+                        mem3_taint_container(ctx, n->args.data[gfr->out_taint_param],
+                                             n->args.data[gfr->out_taint_from]);
                     return result;
                 }
             }

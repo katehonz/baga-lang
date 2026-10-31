@@ -1529,6 +1529,37 @@ else
 	echo "FAIL: обикновеният низ трябваше да минава без грешка"
 	exit 1
 fi
+echo "=== W3.7 замърсяване и през generic функции ==="
+# Generic извикванията минават по отделен път (инстанциране) и не прилага out-param
+# връзката; резюмето пък се търсеше по `stash__iN`, което няма FnRec.
+printf 'fn stash<T>(out: Vec<T>, s: T) {\n    vec_push(out, s)\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    stash(out, wvec_get_str(w, v, 0))\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w37_out.baga
+RC=0
+run --check /tmp/baga_w37_out.baga > /tmp/baga_w37_out_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'out' държи заемана стойност" /tmp/baga_w37_out_out.txt; then
+	echo "OK: generic out-param замърсяване — инстанцията пренася връзката"
+else
+	echo "FAIL: generic out-param замърсяване трябваше да се хване"
+	cat /tmp/baga_w37_out_out.txt
+	exit 1
+fi
+printf 'fn build<T>(w: i64, v: i64) -> Vec<T> {\n    let out = vec_new()\n    vec_push(out, wvec_get_str(w, v, 0))\n    return out\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = build<str>(w, v)\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w37_ret.baga
+RC=0
+run --check /tmp/baga_w37_ret.baga > /tmp/baga_w37_ret_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'out' държи заемана стойност" /tmp/baga_w37_ret_out.txt; then
+	echo "OK: generic върнат замърсен контейнер — резюмето се намира по базово име"
+else
+	echo "FAIL: generic върнат контейнер трябваше да е грешка"
+	cat /tmp/baga_w37_ret_out.txt
+	exit 1
+fi
+# Generic с обикновен низ — няма регион, няма измислено обвинение.
+printf 'fn stash<T>(out: Vec<T>, s: T) {\n    vec_push(out, s)\n}\nfn main() {\n    let w = world_new()\n    let out: Vec<str> = vec_new()\n    stash(out, "обикновен низ")\n    world_free(w)\n    print(vec_get(out, 0))\n}\n' > /tmp/baga_w37_plain.baga
+if run /tmp/baga_w37_plain.baga 2>&1 | grep -qx "обикновен низ"; then
+	echo "OK: generic с обикновен низ — чисто (няма измислено обвинение)"
+else
+	echo "FAIL: generic с обикновен низ трябваше да минава"
+	exit 1
+fi
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

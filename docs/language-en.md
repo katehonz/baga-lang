@@ -1413,7 +1413,9 @@ invalidates nothing:
   of the argument it came from — transitively, across several fn layers. An i64
   world handle stored in a vector dangles after `world_free` just like a borrowed
   string. More than one "param-container ← source" relation in a body is not
-  summarized (a miss, never a fabricated accusation).
+  summarized (a miss, never a fabricated accusation). Generic functions propagate
+  the relation too (W3.7) — the instance carries it, and the summary is found by
+  base name (`stash__iN`).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 
