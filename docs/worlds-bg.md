@@ -1440,9 +1440,10 @@ runtime грешки (невалиден id, грешен kind, грешен в�
   `BAGA_RUNTIME_END`) и експортира `baga_lw_*` обвивки; `baga-llvm --emit-llvm`
   IR-ът се пуска с `lli -load lib/libbaga_par.so -load lib/libbaga_world_rt.so`.
   `mem_*`/`arena_*` си остават само C (LLVM runtime-ът е plain malloc).
-  `world_dump`/`wcache_get_bytes` връщат bytes, копирани в malloc (за да е
-  безопасен `drop(bytes)`); под `--rc` този malloc няма RC header, затова
-  release-ът е no-op (leak-safe, не UB) — C бекендът ги връща в bump арената.
+  `world_dump`/`wcache_get_bytes`/`wcache_get_str` връщат копия в malloc (за
+  да е безопасен `drop`); под `--rc` LLVM ползва `_rc` вариантите с истински
+  RC header, затова release-ът наистина освобождава. C бекендът ги връща в
+  bump арената.
 - **`world g { … }` вече е синтаксис** (W3.2), но само като изявление;
   изразна позиция (`print(world g { … })`) дава специална диагностика
   (W3.10), не обща parse грешка.

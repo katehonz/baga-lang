@@ -17,14 +17,15 @@
 - `if` като израз е добавен в LLVM (entry alloca + store по клони + load в
   merge). Без него `let wi = if c { world_new() } else { world_new() }` —
   region inference-ът от W3.2 — не можеше да се компилира в LLVM.
-- `world_dump`/`world_dump_compact`/`wcache_get_bytes` връщат bytes, копирани
-  в malloc (и освобождават bump копието), за да е безопасен `drop(bytes)` в
-  LLVM; под `--rc` този malloc няма RC header, затова release-ът е no-op
-  (leak-safe, не UB).
+- `world_dump`/`world_dump_compact`/`wcache_get_bytes`/`wcache_get_str`
+  връщат копия, освобождават bump оригинала и — под `--rc` — ползват `_rc`
+  вариантите с истински RC header, за да ги освободи `drop`/scope release
+  (без leak); без `--rc` са plain malloc и `drop` ги free-ва директно.
 - `tests/llvm_worlds.sh` (в `make test-llvm`): 6 world програми (wvec, wmap,
-  wrec, wcache, world блокове, канален fan-out) се пускат през C и LLVM и се
-  сравняват изход + exit код. `worlds_test` се пропуска честно — ползва
-  `mem_mark/rewind`, които си остават C-only.
+  wrec, wcache, world блокове, канален fan-out) се пускат през C и LLVM —
+  plain и `--rc` — и се сравняват изход + exit код. `examples/worlds.baga`
+  е минималният smoke в общия LLVM оракул. `worlds_test` се пропуска честно —
+  ползва `mem_mark/rewind`, които си остават C-only.
 - Docs: README (LLVM ред + roadmap), docs/worlds-bg.md §5/§6,
   language-bg/en, CHANGELOG.
 

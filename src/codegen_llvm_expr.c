@@ -69,8 +69,16 @@ static LLVMValueRef llv_world_rt_fn(const char *baga_name) {
     };
     for (int i = 0; i < (int)(sizeof wl / sizeof wl[0]); i++) {
         if (strcmp(wl[i].name, baga_name) != 0) continue;
+        /* Под --rc bytes/str от кеша/дампа идват с RC header (виж
+         * src/baga_world_rt.c), за да ги освободи baga_rc_release_*; без
+         * --rc са plain malloc и drop() ги free-ва директно. */
+        int rc_owned = lg.rc &&
+            (strcmp(baga_name, "world_dump") == 0 ||
+             strcmp(baga_name, "world_dump_compact") == 0 ||
+             strcmp(baga_name, "wcache_get_bytes") == 0 ||
+             strcmp(baga_name, "wcache_get_str") == 0);
         char sym[80];
-        snprintf(sym, sizeof sym, "baga_lw_%s", baga_name);
+        snprintf(sym, sizeof sym, "baga_lw_%s%s", baga_name, rc_owned ? "_rc" : "");
         LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, sym);
         if (fn) return fn;
         size_t np = strlen(wl[i].sig);

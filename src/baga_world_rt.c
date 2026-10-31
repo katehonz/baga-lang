@@ -16,7 +16,9 @@
 
 /* world_dump/world_dump_compact/wcache_get_bytes връщат bytes, алокирани в
  * thread-local bump арената на C runtime-а. LLVM `drop(bytes)` вика libc
- * free, затова копираме в malloc буфер и връщаме арената обратно. */
+ * free, затова копираме в malloc буфер и връщаме арената обратно.
+ * При `--rc` LLVM очаква RC header ({magic, pe, rc, an} на -32) и вика
+ * baga_rc_release_bytes; тогава ползва *_rc вариантите, за да няма leak. */
 static baga_bytes lw_bytes_dup(baga_bytes b, int release_src) {
     baga_bytes r;
     r.len = b.len > 0 ? b.len : 0;
@@ -29,6 +31,36 @@ static baga_bytes lw_bytes_dup(baga_bytes b, int release_src) {
     }
     if (release_src && b.data) baga_free(b.data, b.len > 0 ? b.len : 1);
     return r;
+}
+
+#define LW_RC_MAGIC 0xBA6A4D454D344848ULL
+#define LW_RC_HSIZE 32
+typedef struct { uint64_t magic, pe, rc, an; } lw_rc_hdr;
+
+static baga_bytes lw_bytes_dup_rc(baga_bytes b, int release_src) {
+    baga_bytes r;
+    r.len = b.len > 0 ? b.len : 0;
+    unsigned char *base = (unsigned char *)malloc((size_t)r.len + LW_RC_HSIZE);
+    if (!base) { fprintf(stderr, "baga: world runtime: oom\n"); exit(1); }
+    lw_rc_hdr *h = (lw_rc_hdr *)base;
+    h->magic = LW_RC_MAGIC; h->pe = 0; h->rc = 1; h->an = (uint64_t)r.len;
+    if (r.len > 0) memcpy(base + LW_RC_HSIZE, b.data, (size_t)r.len);
+    r.data = base + LW_RC_HSIZE;
+    if (release_src && b.data) baga_free(b.data, b.len > 0 ? b.len : 1);
+    return r;
+}
+
+static const char *lw_str_dup_rc(const char *s, int release_src) {
+    size_t n = s ? strlen(s) : 0;
+    char *base = (char *)malloc(n + 1 + LW_RC_HSIZE);
+    if (!base) { fprintf(stderr, "baga: world runtime: oom\n"); exit(1); }
+    lw_rc_hdr *h = (lw_rc_hdr *)base;
+    h->magic = LW_RC_MAGIC; h->pe = 2 | ((uint64_t)n << 2); h->rc = 1; h->an = (uint64_t)n;
+    char *out = base + LW_RC_HSIZE;
+    if (n > 0) memcpy(out, s, n);
+    out[n] = '\0';
+    if (release_src && s) baga_free((void *)s, (int64_t)n + 1);
+    return out;
 }
 
 LW_EXPORT int64_t baga_lw_world_new(void) { return baga_world_new(); }
@@ -44,6 +76,12 @@ LW_EXPORT baga_bytes baga_lw_world_dump_compact(int64_t w) {
     return lw_bytes_dup(baga_world_dump_compact(w), 1);
 }
 LW_EXPORT int64_t baga_lw_world_load(baga_bytes b) { return baga_world_load(b); }
+LW_EXPORT baga_bytes baga_lw_world_dump_rc(int64_t w) {
+    return lw_bytes_dup_rc(baga_world_dump(w), 1);
+}
+LW_EXPORT baga_bytes baga_lw_world_dump_compact_rc(int64_t w) {
+    return lw_bytes_dup_rc(baga_world_dump_compact(w), 1);
+}
 
 LW_EXPORT void baga_lw_world_link(int64_t o, int64_t t) { baga_world_link(o, t); }
 LW_EXPORT void baga_lw_world_unlink(int64_t o, int64_t t) { baga_world_unlink(o, t); }
@@ -126,11 +164,17 @@ LW_EXPORT void baga_lw_wcache_set_str(int64_t w, int64_t k, const char *s) {
 LW_EXPORT const char *baga_lw_wcache_get_str(int64_t w, int64_t k) {
     return baga_wcache_get_str(w, k);
 }
+LW_EXPORT const char *baga_lw_wcache_get_str_rc(int64_t w, int64_t k) {
+    return lw_str_dup_rc(baga_wcache_get_str(w, k), 1);
+}
 LW_EXPORT void baga_lw_wcache_set_bytes(int64_t w, int64_t k, baga_bytes b) {
     baga_wcache_set_bytes(w, k, b);
 }
 LW_EXPORT baga_bytes baga_lw_wcache_get_bytes(int64_t w, int64_t k) {
     return lw_bytes_dup(baga_wcache_get_bytes(w, k), 1);
+}
+LW_EXPORT baga_bytes baga_lw_wcache_get_bytes_rc(int64_t w, int64_t k) {
+    return lw_bytes_dup_rc(baga_wcache_get_bytes(w, k), 1);
 }
 
 LW_EXPORT void baga_lw_world_compact(int64_t w) { baga_world_compact(w); }

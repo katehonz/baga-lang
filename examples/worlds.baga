@@ -1,0 +1,21 @@
+// worlds.baga — минимален smoke за светове в ДВАТА бекенда.
+// Регионът се пълни, замразява, дампи, освобождава и зарежда отново:
+// офсетите са позиционни, затова данните оцеляват без fixup.
+fn main() {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push_str(w, v, "hello")
+    wvec_push_str(w, v, "world")
+    world_freeze(w)
+    print(wvec_get_str(w, v, 0))
+    print(wvec_get_str(w, v, 1))
+
+    let dump = world_dump(w)
+    world_free(w)
+
+    let w2 = world_load(dump)
+    let v2 = wvec_new(w2)
+    wvec_push_str(w2, v2, "reloaded")
+    print(wvec_get_str(w2, v2, 0))
+    world_free(w2)
+}
