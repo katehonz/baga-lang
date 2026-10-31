@@ -8,10 +8,13 @@ LLI=${LLI:-$(for c in lli lli-19 lli-14; do command -v "$c" 2>/dev/null && break
 [ -n "$LLI" ] || { echo "няма lli в PATH (apt install llvm-19)"; exit 1; }
 echo "(lli: $LLI)"
 PAR_SO=lib/libbaga_par.so
+WORLD_SO=lib/libbaga_world_rt.so
 if [ ! -f "$PAR_SO" ]; then
     mkdir -p lib
     gcc -O2 -fPIC -shared -o "$PAR_SO" src/baga_par_rt.c -pthread || exit 1
 fi
+LOAD_ARGS=(-load "$PAR_SO")
+[ -f "$WORLD_SO" ] && LOAD_ARGS+=(-load "$WORLD_SO")
 for f in examples/*.baga; do
     [ "$f" = "examples/spec_bad.baga" ] && continue     # очаквана compile грешка
     [ "$f" = "examples/vec_typed.baga" ] && continue    # очаквана compile грешка
@@ -27,7 +30,7 @@ for f in examples/*.baga; do
         continue
     fi
     # Load par runtime for !Par symbols; harmless for pure programs.
-    "$LLI" -load "$PAR_SO" /tmp/baga.ll > /tmp/baga_llvm_out.txt 2>&1; rc_l=$?
+    "$LLI" "${LOAD_ARGS[@]}" /tmp/baga.ll > /tmp/baga_llvm_out.txt 2>&1; rc_l=$?
     if [ $rc_c -ne $rc_l ] || ! diff -q /tmp/baga_c_out.txt /tmp/baga_llvm_out.txt > /dev/null; then
         echo "MISMATCH $f (exit C=$rc_c LLVM=$rc_l)"; FAIL=1
         diff -u /tmp/baga_c_out.txt /tmp/baga_llvm_out.txt | head -20

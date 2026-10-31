@@ -1512,12 +1512,16 @@ else
 	cat /tmp/baga_w36_handle_out.txt
 	exit 1
 fi
-# Две различни връзки → не резюмираме (пропуск, не измислено обвинение).
+# Две различни връзки → и двете се резюмират (W3.10; до W3.10 не резюмирахме
+# нищо при двусмислие). Тук проверяваме, че разширението не е счупило W3.6.
 printf 'fn two(out: Vec<str>, other: Vec<str>, s: str) {\n    vec_push(out, s)\n    vec_push(other, s)\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let out = vec_new()\n    let other = vec_new()\n    two(out, other, wvec_get_str(w, v, 0))\n    world_free(w)\n}\n' > /tmp/baga_w36_amb.baga
-if run --check /tmp/baga_w36_amb.baga > /tmp/baga_w36_amb_out.txt 2>&1; then
-	echo "OK: повече от една връзка — не резюмираме (M8: пропуск, не измислено)"
+RC=0
+run --check /tmp/baga_w36_amb.baga > /tmp/baga_w36_amb_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'out' държи" /tmp/baga_w36_amb_out.txt &&
+	grep -q "контейнерът 'other' държи" /tmp/baga_w36_amb_out.txt; then
+	echo "OK: две връзки — и двата контейнера се обвиняват (W3.10)"
 else
-	echo "FAIL: двусмисленото резюме не биваше да обвинява"
+	echo "FAIL: двете връзки не се резюмират"
 	cat /tmp/baga_w36_amb_out.txt
 	exit 1
 fi
@@ -1712,6 +1716,101 @@ else
 	cat /tmp/baga_w40_drop_out.txt
 	exit 1
 fi
+echo "=== W3.10 няколко taint-връзки в едно тяло + world блок в израз ==="
+# W3.6 резюмираше само една връзка „param-контейнер ← източник“ на тяло; при
+# втора различна връзка не резюмираше НИЩО. Сега всички различни връзки се
+# пазят (до W36_LINKS_MAX) и се прилагат при извикването.
+printf 'fn stash2(a: Vec<str>, b: Vec<str>, w: i64, v: i64) {
+    vec_push(a, wvec_get_str(w, v, 0))
+    vec_push(b, wvec_get_str(w, v, 0))
+}
+fn main() {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push_str(w, v, "hi")
+    let a = vec_new()
+    let b = vec_new()
+    stash2(a, b, w, v)
+    world_free(w)
+    print(vec_get_str(a, 0))
+}
+' > /tmp/baga_w310_multi1.baga
+RC=0
+run --check /tmp/baga_w310_multi1.baga > /tmp/baga_w310_multi1_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'a' държи" /tmp/baga_w310_multi1_out.txt &&
+	grep -q "контейнерът 'b' държи" /tmp/baga_w310_multi1_out.txt; then
+	echo "OK: две различни връзки в едно тяло — и двата контейнера са обвинени"
+else
+	echo "FAIL: втората taint-връзка не се резюмира"
+	cat /tmp/baga_w310_multi1_out.txt
+	exit 1
+fi
+# ТОЧНОСТТА: функция, която замърсява само 'a'. След drop(a) четенето на
+# чистия 'b' след free е легално (M8: никакво измислено обвинение).
+printf 'fn stash1(a: Vec<str>, w: i64, v: i64) {
+    vec_push(a, wvec_get_str(w, v, 0))
+}
+fn main() {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push_str(w, v, "hi")
+    let a = vec_new()
+    let b = vec_new()
+    vec_push(b, "clean")
+    stash1(a, w, v)
+    drop(a)
+    world_free(w)
+    print(vec_get_str(b, 0))
+}
+' > /tmp/baga_w310_prec.baga
+if run /tmp/baga_w310_prec.baga 2>&1 | grep -qx "clean"; then
+	echo "OK: само замърсеният контейнер е обвинен; чистият остава четим"
+else
+	echo "FAIL: multiple-link резюмето обвинява чист контейнер"
+	run /tmp/baga_w310_prec.baga 2>&1 | head -3
+	exit 1
+fi
+# world блок в изразна позиция — специална диагностика, не обща parse грешка.
+printf 'fn main() {
+    print(world g { 1 })
+}
+' > /tmp/baga_w310_expr.baga
+RC=0
+run --check /tmp/baga_w310_expr.baga > /tmp/baga_w310_expr_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "притежава свят и е изявление, не изразна стойност" /tmp/baga_w310_expr_out.txt; then
+	echo "OK: world блок в израз — ясна диагностика с насока"
+else
+	echo "FAIL: world блок в израз трябваше да даде специалната диагностика"
+	cat /tmp/baga_w310_expr_out.txt
+	exit 1
+fi
+printf 'fn main() {
+    world g {
+        let v = wvec_new(g)
+        wvec_push(g, v, 1)
+    }
+    print("ok")
+}
+' > /tmp/baga_w310_ok.baga
+if run /tmp/baga_w310_ok.baga 2>&1 | grep -qx "ok"; then
+	echo "OK: самостоятелният world блок продължава да работи"
+else
+	echo "FAIL: world блокът като изявление се счупи"
+	run /tmp/baga_w310_ok.baga 2>&1 | head -3
+	exit 1
+fi
+# Агрегат директно в wcache — по дизайн е грешка, но с насока към wrec (id).
+printf 'struct P { x: i64, y: i64 }\nfn main() {\n    let w = world_new()\n    wcache_set(w, 1, P { x: 1, y: 2 })\n    world_free(w)\n}\n' > /tmp/baga_w310_wcache_agg.baga
+RC=0
+run --check /tmp/baga_w310_wcache_agg.baga > /tmp/baga_w310_wcache_agg_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "сложи в wrec" /tmp/baga_w310_wcache_agg_out.txt; then
+	echo "OK: агрегат в wcache — ясна диагностика с насока към wrec"
+else
+	echo "FAIL: агрегатът в wcache трябваше да сочи към wrec"
+	cat /tmp/baga_w310_wcache_agg_out.txt
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

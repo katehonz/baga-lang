@@ -11,6 +11,85 @@ LLVMValueRef llv_emit_expr_llvm(Node *n);
 void llv_emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRef cont_bb);
 LLVMValueRef llv_emit_block_value_llvm(Node *block);
 
+/* World builtins → external C runtime (lib/libbaga_world_rt.so, built by
+ * `make llvm` from the C backend's own generated runtime). Signature chars:
+ * i = i64, s = str, b = bytes; ret 'v' = void. Огледало на builtins[] в
+ * checker_infer.c — при нов world builtin се добавя и тук. */
+static LLVMValueRef llv_world_rt_fn(const char *baga_name) {
+    static const struct { const char *name; char ret; const char *sig; } wl[] = {
+        {"world_new",          'i', ""},
+        {"world_alloc",        'i', "ii"},
+        {"world_freeze",       'i', "i"},
+        {"world_state",        'i', "i"},
+        {"world_free",         'v', "i"},
+        {"world_dump",         'b', "i"},
+        {"world_dump_compact", 'b', "i"},
+        {"world_load",         'i', "b"},
+        {"world_used",         'i', "i"},
+        {"world_link",         'v', "ii"},
+        {"world_unlink",       'v', "ii"},
+        {"world_links",        'i', "i"},
+        {"world_linked",       'i', "ii"},
+        {"world_compact",      'v', "i"},
+        {"wvec_new",           'i', "i"},
+        {"wvec_push",          'v', "iii"},
+        {"wvec_get",           'i', "iii"},
+        {"wvec_len",           'i', "ii"},
+        {"wvec_push_str",      'v', "iis"},
+        {"wvec_get_str",       's', "iii"},
+        {"wvec_push_bytes",    'v', "iib"},
+        {"wvec_get_bytes",     'b', "iii"},
+        {"wmap_new",           'i', "i"},
+        {"wmap_set",           'v', "iiii"},
+        {"wmap_get",           'i', "iii"},
+        {"wmap_has",           'i', "iii"},
+        {"wmap_del",           'v', "iii"},
+        {"wmap_len",           'i', "ii"},
+        {"wmap_set_str",       'v', "iiis"},
+        {"wmap_get_str",       's', "iii"},
+        {"wrec_new",           'i', "ii"},
+        {"wrec_len",           'i', "ii"},
+        {"wrec_has",           'i', "iii"},
+        {"wrec_set",           'v', "iiii"},
+        {"wrec_set_str",       'v', "iiis"},
+        {"wrec_set_bytes",     'v', "iiib"},
+        {"wrec_get",           'i', "iii"},
+        {"wrec_get_str",       's', "iii"},
+        {"wrec_get_bytes",     'b', "iii"},
+        {"wcache_set",         'v', "iii"},
+        {"wcache_get",         'i', "ii"},
+        {"wcache_has",         'i', "ii"},
+        {"wcache_del",         'v', "ii"},
+        {"wcache_clear",       'v', "i"},
+        {"wcache_len",         'i', "i"},
+        {"wcache_set_str",     'v', "iis"},
+        {"wcache_get_str",     's', "ii"},
+        {"wcache_set_bytes",   'v', "iib"},
+        {"wcache_get_bytes",   'b', "ii"},
+    };
+    for (int i = 0; i < (int)(sizeof wl / sizeof wl[0]); i++) {
+        if (strcmp(wl[i].name, baga_name) != 0) continue;
+        char sym[80];
+        snprintf(sym, sizeof sym, "baga_lw_%s", baga_name);
+        LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, sym);
+        if (fn) return fn;
+        size_t np = strlen(wl[i].sig);
+        LLVMTypeRef *pt = malloc(sizeof(LLVMTypeRef) * (np > 0 ? np : 1));
+        for (size_t k = 0; k < np; k++)
+            pt[k] = wl[i].sig[k] == 'i' ? lg.i64_ty
+                  : wl[i].sig[k] == 's' ? lg.ptr_ty
+                  : llv_baga_bytes_ty();
+        LLVMTypeRef rt = wl[i].ret == 'v' ? lg.void_ty
+                       : wl[i].ret == 'i' ? lg.i64_ty
+                       : wl[i].ret == 's' ? lg.ptr_ty
+                       : llv_baga_bytes_ty();
+        fn = LLVMAddFunction(lg.mod, sym, LLVMFunctionType(rt, pt, (unsigned)np, 0));
+        free(pt);
+        return fn;
+    }
+    return NULL;
+}
+
 /* ---- L5: fn стойности (closures) ----
  * Огледало на C бекенда: handle = i64 cell2(code, env); cell2 живее в par
  * runtime-а (libbaga_par.so). Именувана функция като стойност взима адреса
@@ -1162,6 +1241,23 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
             };
             LLVMValueRef fn = NULL;
             if (ef) fn = LLVMGetNamedFunction(lg.mod, ef->fn_name);
+            /* светове: external C runtime (baga_lw_*) — виж llv_world_rt_fn */
+            if (!ef) fn = llv_world_rt_fn(n->callee->name);
+            /* W2.2 паритет с C: world_free на гол ident нулира локала, за да е
+             * вторият free no-op, а не double free на malloc. Checker-ът хваща
+             * проследените локали; това е runtime seatbelt за непроследени
+             * handle-и (върнати от обвивка). */
+            if (!ef && fn && strcmp(n->callee->name, "world_free") == 0 &&
+                n->args.len == 1 && n->args.data[0]->kind == NODE_IDENT) {
+                LLVMValueRef a = llv_emit_expr_llvm(n->args.data[0]);
+                if (!a) llv_llvm_unsupported("world_free аргумент");
+                a = llv_coerce(a, lg.i64_ty);
+                llv_h_call(fn, &a, 1, "");
+                LLVMValueRef slot = llv_st_lookup(n->args.data[0]->name);
+                if (slot)
+                    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), slot);
+                return NULL;
+            }
             /* типизирани вектори: helper по елементния тип на вектора */
             if (!ef &&
                 (strcmp(n->callee->name, "vec_push") == 0 ||
@@ -1468,10 +1564,8 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
                         strcmp(n->callee->name, "mem_arena_bytes") == 0 ||
                         strcmp(n->callee->name, "mem_spare_bytes") == 0 ||
                         strcmp(n->callee->name, "mem_peak_bytes") == 0 ||
-                        strncmp(n->callee->name, "world_", 6) == 0 ||
-                        strncmp(n->callee->name, "wvec_", 5) == 0 ||
                         strcmp(n->callee->name, "mem_persist_end") == 0))
-                llv_llvm_unsupported("mem_mark/mem_rewind/mem_persist_*/mem_*_bytes/world_* — само C бекенда; вж. docs/language-en.md");
+                llv_llvm_unsupported("mem_mark/mem_rewind/mem_persist_*/mem_*_bytes — само C бекенда; вж. docs/language-en.md");
             if (!fn) {
                 char buf[256];
                 snprintf(buf, sizeof buf, "вградена функция '%s'", n->callee->name);
@@ -1547,7 +1641,40 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
             return v;
         }
 
-        case NODE_IF:       llv_llvm_unsupported("if като израз"); break;
+        case NODE_IF: {
+            /* if като израз (`let x = if c { a } else { b }`) — стойността
+             * на всеки клон се записва в entry alloca, merge блокът я чете.
+             * Клон, който завършва с return/raise, просто не стига до store. */
+            Type *rt = n->type;
+            LLVMTypeRef rty = rt ? llv_llvm_type_resolved(rt) : lg.i64_ty;
+            LLVMValueRef slot = llv_entry_alloca(rty, "ifv");
+            LLRcTmpSave tsv;
+            if (lg.rc) llv_lrc_tmp_begin(n->cond, 0, &tsv);
+            LLVMValueRef cond = llv_to_bool(llv_emit_expr_llvm(n->cond));
+            if (lg.rc) llv_lrc_tmp_end(&tsv);
+            LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
+            LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "if_then");
+            LLVMBasicBlockRef else_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "if_else");
+            LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "if_merge");
+            LLVMBuildCondBr(lg.builder, cond, then_bb, else_bb);
+
+            LLVMPositionBuilderAtEnd(lg.builder, then_bb);
+            LLVMValueRef tv = n->then_br ? llv_emit_block_value_llvm(n->then_br) : NULL;
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
+                if (tv) LLVMBuildStore(lg.builder, llv_coerce(tv, rty), slot);
+                LLVMBuildBr(lg.builder, merge_bb);
+            }
+
+            LLVMPositionBuilderAtEnd(lg.builder, else_bb);
+            LLVMValueRef ev = n->else_br ? llv_emit_block_value_llvm(n->else_br) : NULL;
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
+                if (ev) LLVMBuildStore(lg.builder, llv_coerce(ev, rty), slot);
+                LLVMBuildBr(lg.builder, merge_bb);
+            }
+
+            LLVMPositionBuilderAtEnd(lg.builder, merge_bb);
+            return LLVMBuildLoad2(lg.builder, rty, slot, "ifr");
+        }
         case NODE_INDEX:    llv_llvm_unsupported("индексиране"); break;
         case NODE_FIELD: {
             /* L5/L6: модул.функция като стойност → handle към wrapper-а */

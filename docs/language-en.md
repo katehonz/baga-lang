@@ -1196,7 +1196,8 @@ RC cannot handle — as a single transferable, freezable value:
 - Honest W0 limits: the protocol is keyed by variable name (aliases are
   not tracked — the MEM-1 contract); move is modeled only through
   `chan_send` (go-arguments are the next step); payloads are raw offsets —
-  typed relative containers land in W1; C backend only (like `mem_*`).
+  typed relative containers land in W1. Both backends: LLVM loads
+  `lib/libbaga_world_rt.so` (`make llvm`); `mem_*` stays C-only.
 
 #### W1: wvec — a typed, position-independent container inside a world
 
@@ -1395,10 +1396,12 @@ invalidates nothing:
   ownership out, like `return g`.
 - Traps around `world g { … }` (W3.4, with clear diagnostics): the block frees
   its world automatically — a manual `world_free(g)` inside is an error; the
-  block is a statement, not a value (`let x = world g { … }` is an error —
-  return the world with `return g` and a spec guarantee); a value leaving the
-  block is evaluated before the free, but a BORROWED value (string/bytes from
-  the region) cannot escape — copy it first (`concat(s, "")`).
+  block is a statement, not a value (`let x = world g { … }` and
+  `print(world g { … })` are errors with targeted diagnostics — return the
+  world with `return g` and a spec guarantee, or keep the block on its own
+  line); a value leaving the block is evaluated before the free, but a BORROWED
+  value (string/bytes from the region) cannot escape — copy it first
+  (`concat(s, "")`).
 - A borrowed value cannot outlive its world/arena through a **container** either
   (W3.5): `vec_push(out, wvec_get_str(w, v, 0))` + `world_free(w)` is a compile
   error — that element of `out` would be a dangling pointer. Before this it was a
@@ -1412,9 +1415,10 @@ invalidates nothing:
   caller's argument container, and a returned tainted container carries the region
   of the argument it came from — transitively, across several fn layers. An i64
   world handle stored in a vector dangles after `world_free` just like a borrowed
-  string. More than one "param-container ← source" relation in a body is not
-  summarized (a miss, never a fabricated accusation). Generic functions propagate
-  the relation too (W3.7) — the instance carries it, and the summary is found by
+  string. Up to eight distinct "param-container ← source" relations per body
+  are summarized and replayed at the call site (more than that = no summary;
+  a miss, never a fabricated accusation). Generic functions propagate the
+  relation too (W3.7) — the instance carries it, and the summary is found by
   base name (`stash__iN`).
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.

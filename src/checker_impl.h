@@ -23,6 +23,8 @@ typedef struct EnvEntry EnvEntry;
 /* W3.5: колко региона може да „замърсяват" един контейнер едновременно. Над
  * капацитета спираме да следим — пропусната грешка, никога измислена (M8). */
 #define W35_TAINT_MAX 4
+#define W36_LINKS_MAX 8   /* W3.6: различни „param-контейнер ← източник“ връзки в едно тяло */
+typedef struct { const char *out; const char *from; int rid; int dim; } W36Link;
 struct EnvEntry {
     char *name;
     Type *type;
@@ -67,12 +69,13 @@ typedef struct {
      * ret_arena_param — payload (arena_alloc); ret_handle_param — самия handle. */
     int ret_arena_param;
     int ret_handle_param;
-    /* W3.6: замърсяване на контейнер през fn граница — само една-единствена
-     * връзка; повече = не резюмираме (пропуск, не измислено обвинение). */
+    /* W3.6: замърсяване на контейнер през fn граница. Върнатият контейнер
+     * носи един източник (повече = -1); out-param връзките са няколко. */
     int ret_taint_param;   /* -1 или индекс на param, чийто регион замърсява ВЪРНАТИЯ контейнер */
-    int out_taint_param;   /* -1 или индекс на param-контейнер, който тялото замърсява */
-    int out_taint_from;    /* -1 или индекс на param, чиято стойност/регион замърсява out_taint_param */
-    int out_taint_dim;     /* W3.9: 0 = замърсяване на стойностите, 1 = на ключовете */
+    int n_out_taint;       /* брой различни out-param връзки (0 = няма) */
+    int out_taint_param[W36_LINKS_MAX];   /* param-контейнер, който тялото замърсява */
+    int out_taint_from[W36_LINKS_MAX];    /* param, чиято стойност/регион го замърсява */
+    int out_taint_dim[W36_LINKS_MAX];     /* W3.9: 0 = стойности, 1 = ключове */
     int checked;
     int checking;
 } FnRec;
@@ -136,14 +139,12 @@ typedef struct {
     int next_arena_id; /* MEM-3: монотонен id за arena_new (handle алиаси) */
     int arena_freed_ids[128]; /* MEM-3: arena_id-та, върху които имаше arena_free */
     int n_arena_freed;
-    /* W3.6: връзка „param-контейнер ← източник", записана по време на тялото на
-     * текущата функция; имената се резолват до индекси в mem3_summarize_fn.
+    /* W3.6: връзки „param-контейнер ← източник", записани по време на тялото
+     * на текущата функция; имената се резолват до индекси в mem3_summarize_fn.
      * check_fn ги snapshot-ва/нулира/възстановява, както drop_log масивите. */
-    const char *w36_out_name;
-    const char *w36_from_name;
-    int w36_from_rid;
-    int w36_from_dim;   /* W3.9: 0 = стойност, 1 = ключ */
-    int w36_ambiguous;
+    W36Link w36_links[W36_LINKS_MAX];
+    int w36_nlinks;
+    int w36_overflow;   /* повече от W36_LINKS_MAX → не резюмираме нищо */
     /* M21 generics: активна substitution (имена → конкретни типове) и
      * типовите параметри на текущо-декларираната fn (за TYPE_VAR) */
     VEC(char *) g_names;
@@ -220,6 +221,7 @@ void bind_type_params(CheckCtx *ctx, Node *tn, Type *at, char **tps, int np, Typ
 Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call);   /* 3714 */
 int generic_fn_value_bind(CheckCtx *ctx, Node *id, Type *annot);   /* 3774 */
 void mem3_ensure_fn(CheckCtx *ctx, Node *fn);   /* 3924 */
+void mem3_apply_out_taint(CheckCtx *ctx, FnRec *fr, Node *call);   /* W3.6: всички out-param връзки на callee */
 void check_fn(CheckCtx *ctx, Node *fn);   /* 3931 */
 const char *baga_note_import_alias(const char *canon_path, const char *alias);   /* 1152 */
 void checker_recheck_inst(Checker *chk, Node *fn, int k);   /* 4424 */

@@ -1,0 +1,5 @@
+// world_rt_stub — празна програма, от която `make llvm` изважда
+// генерирания C runtime (codegen_api.c) и го компилира в
+// lib/libbaga_world_rt.so за LLVM бекенда. Runtime-ът се emit-ва
+// безусловно, затова тялото не пипа нищо.
+fn main() { }

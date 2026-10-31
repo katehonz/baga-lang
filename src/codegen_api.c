@@ -2864,6 +2864,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return out;\n");
     fprintf(out, "}\n");
     fprintf(out, "\n");
+    /* Маркер за границата runtime → потребителски код. Makefile целта
+     * world-rt изрязва всичко преди него, за да построи
+     * lib/libbaga_world_rt.so от СЪЩИЯ runtime, който C бекендът вгражда
+     * (без втори, разминаващ се port). */
+    fprintf(out, "/* BAGA_RUNTIME_END */\n");
 
     /* plain enums (i64 tags) — no payload deps */
     for (int i = 0; i < program->items.len; i++) {

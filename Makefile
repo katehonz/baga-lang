@@ -18,7 +18,7 @@ SRCS := src/main.c src/lexer.c src/parser_core.c src/parser_decl.c src/codegen_u
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
-.PHONY: all clean test test-llvm test-llvm-rc llvm self par-rt sandak docker
+.PHONY: all clean test test-llvm test-llvm-rc llvm self par-rt world-rt sandak docker
 
 all: $(BIN)
 
@@ -41,6 +41,19 @@ $(PAR_SO): src/baga_par_rt.c
 	@mkdir -p lib
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $< -pthread
 
+# World runtime for LLVM/lli: изрязва СЪЩИЯ генериран C runtime (до маркера
+# BAGA_RUNTIME_END) и го компилира в .so с baga_lw_* обвивки. Така LLVM
+# световете имат байт-идентично поведение с C бекенда, без втори port.
+WORLD_RT_STUB := tools/world_rt_stub.baga
+WORLD_RT_INC  := lib/baga_world_rt_gen.inc
+WORLD_RT_SO   := lib/libbaga_world_rt.so
+world-rt: $(WORLD_RT_SO)
+$(WORLD_RT_INC): $(BIN) $(WORLD_RT_STUB)
+	@mkdir -p lib
+	./$(BIN) --emit-c $(WORLD_RT_STUB) | awk '/BAGA_RUNTIME_END/{exit} {print}' > $@
+$(WORLD_RT_SO): src/baga_world_rt.c $(WORLD_RT_INC)
+	$(CC) $(CFLAGS) -w -fPIC -shared -fvisibility=hidden -o $@ src/baga_world_rt.c -pthread -lm
+
 # LLVM build (optional). Авто-детекция: безсуффиксен бинарник, после най-новия
 # версиониран, накрая 14 (bookworm). Override: make llvm LLVM_CONFIG=llvm-config-19
 LLVM_CONFIG ?= $(shell for c in llvm-config llvm-config-19 llvm-config-14; do command -v $$c 2>/dev/null && break; done)
@@ -51,7 +64,7 @@ LLVM_SRCS := $(SRCS) src/codegen_llvm_util.c src/codegen_llvm_rc.c src/codegen_l
 LLVM_OBJS := $(LLVM_SRCS:.c=.llvm.o)
 LLVM_BIN := baga-llvm
 
-llvm: $(LLVM_BIN) $(PAR_SO)
+llvm: $(LLVM_BIN) $(PAR_SO) $(WORLD_RT_SO)
 
 $(LLVM_BIN): $(LLVM_OBJS)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LLVM_LDFLAGS)
@@ -60,10 +73,11 @@ src/%.llvm.o: src/%.c include/baga.h src/checker_impl.h src/verify_impl.h src/pa
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(BIN) $(LLVM_OBJS) $(LLVM_BIN) $(PAR_SO)
+	rm -f $(OBJS) $(BIN) $(LLVM_OBJS) $(LLVM_BIN) $(PAR_SO) $(WORLD_RT_SO) $(WORLD_RT_INC)
 
-test-llvm: $(BIN) $(LLVM_BIN) $(PAR_SO)
+test-llvm: $(BIN) $(LLVM_BIN) $(PAR_SO) $(WORLD_RT_SO)
 	@LLI="$(LLI)" ./tests/llvm_oracle.sh
+	@LLI="$(LLI)" ./tests/llvm_worlds.sh
 
 test-llvm-rc: $(BIN) $(LLVM_BIN) $(PAR_SO)
 	@LLI="$(LLI)" ./tests/llvm_rc.sh

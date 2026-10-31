@@ -770,23 +770,27 @@ static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
     /* W3.6: върнат замърсен контейнер (само един param-източник, както
      * ret_arena_param; повече = -1 и не пренасяме). */
     rec->ret_taint_param = mem3_ids_to_param(ctx, fn, tids, nt);
-    /* W3.6: тялото замърсява param-контейнер — имената, записани по време на
-     * тялото, стават индекси чак тук, докато param-ите са в scope. */
-    rec->out_taint_param = -1;
-    rec->out_taint_from = -1;
-    rec->out_taint_dim = 0;
-    if (!ctx->w36_ambiguous && ctx->w36_out_name) {
-        int out = w36_param_index(fn, ctx->w36_out_name);
-        int from = -1;
-        if (ctx->w36_from_name) from = w36_param_index(fn, ctx->w36_from_name);
-        if (from < 0 && ctx->w36_from_rid > 0) {
-            int ids[1] = { ctx->w36_from_rid };
-            from = mem3_ids_to_param(ctx, fn, ids, 1);
-        }
-        if (out >= 0 && from >= 0) {
-            rec->out_taint_param = out;
-            rec->out_taint_from = from;
-            rec->out_taint_dim = ctx->w36_from_dim;
+    /* W3.6: тялото замърсява param-контейнери — имената, записани по време на
+     * тялото, стават индекси чак тук, докато param-ите са в scope. Всички
+     * различни връзки се пазят; при преливане на капацитета не резюмираме
+     * нищо (M8: пропуск, не измислено обвинение). */
+    rec->n_out_taint = 0;
+    if (!ctx->w36_overflow) {
+        for (int i = 0; i < ctx->w36_nlinks; i++) {
+            W36Link *l = &ctx->w36_links[i];
+            int out = w36_param_index(fn, l->out);
+            int from = -1;
+            if (l->from) from = w36_param_index(fn, l->from);
+            if (from < 0 && l->rid > 0) {
+                int ids[1] = { l->rid };
+                from = mem3_ids_to_param(ctx, fn, ids, 1);
+            }
+            if (out >= 0 && from >= 0 && rec->n_out_taint < W36_LINKS_MAX) {
+                int k = rec->n_out_taint++;
+                rec->out_taint_param[k] = out;
+                rec->out_taint_from[k] = from;
+                rec->out_taint_dim[k] = l->dim;
+            }
         }
     }
 }
@@ -821,13 +825,12 @@ void check_fn(CheckCtx *ctx, Node *fn) {
     EnvEntry *saved_flog_arr[256];
     memcpy(saved_dlog_arr, ctx->drop_log, sizeof saved_dlog_arr);
     memcpy(saved_flog_arr, ctx->freeze_log, sizeof saved_flog_arr);
-    const char *saved_w36_out = ctx->w36_out_name;
-    const char *saved_w36_from = ctx->w36_from_name;
-    int saved_w36_rid = ctx->w36_from_rid;
-    int saved_w36_dim = ctx->w36_from_dim;
-    int saved_w36_amb = ctx->w36_ambiguous;
-    ctx->w36_out_name = NULL; ctx->w36_from_name = NULL;
-    ctx->w36_from_rid = 0; ctx->w36_from_dim = 0; ctx->w36_ambiguous = 0;
+    W36Link saved_w36_links[W36_LINKS_MAX];
+    memcpy(saved_w36_links, ctx->w36_links, sizeof saved_w36_links);
+    int saved_w36_nlinks = ctx->w36_nlinks;
+    int saved_w36_overflow = ctx->w36_overflow;
+    ctx->w36_nlinks = 0;
+    ctx->w36_overflow = 0;
 
     ctx->cur_fn = fn->fn_name;
     ctx->cur_ret = fn->ret_type ? resolve_type_node(ctx, fn->ret_type) : type_new(TYPE_VOID);
@@ -958,11 +961,9 @@ void check_fn(CheckCtx *ctx, Node *fn) {
     memcpy(ctx->drop_log, saved_dlog_arr, sizeof saved_dlog_arr);
     memcpy(ctx->freeze_log, saved_flog_arr, sizeof saved_flog_arr);
     ctx->n_arena_freed = saved_nfreed;
-    ctx->w36_out_name = saved_w36_out;
-    ctx->w36_from_name = saved_w36_from;
-    ctx->w36_from_rid = saved_w36_rid;
-    ctx->w36_from_dim = saved_w36_dim;
-    ctx->w36_ambiguous = saved_w36_amb;
+    memcpy(ctx->w36_links, saved_w36_links, sizeof saved_w36_links);
+    ctx->w36_nlinks = saved_w36_nlinks;
+    ctx->w36_overflow = saved_w36_overflow;
 }
 
 /* ============================================================

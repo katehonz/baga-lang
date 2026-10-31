@@ -251,7 +251,7 @@ the **spec-as-source, machine-checked** end of the spectrum.
 > Защо го правим и какъв е смисълът, в крайна сметка —
 > виж [docs/meaning-bg.md](docs/meaning-bg.md).
 
-## Worlds — machine-checked regions (W0…W2.14 + W3.1–W3.9)
+## Worlds — machine-checked regions (W0…W2.14 + W3.1–W3.10, C and LLVM)
 
 **Worlds** are owned memory regions with a freeze/move/share discipline — and
 the discipline is **machine-checked**, not prose: `--verify` refutes protocol
@@ -279,14 +279,15 @@ covered by a guarantee — `ensures: world_frozen(output)` / `world_owned(output
 — which the builder proves per return path and the caller registers as a handle,
 so the whole protocol applies to results, not just locals.
 
-Every stage (W0…W2.14 + W3.1–W3.9) is locked by oracle files
+Every stage (W0…W2.14 + W3.1–W3.10) is locked by oracle files
 (`examples/verify/worlds*.baga` — proven ensures + refuted protocols with
 counterexamples), ASan/TSan gates, and an honest limits section in the design
 doc. Full write-up (BG): **[docs/worlds-bg.md](docs/worlds-bg.md)** — model,
 bench numbers (dump compaction 2.6×; ~3 ns per in-cache container access,
 ~5.7 ns streaming, after W2.14 cut access cost 30–51% **without removing a
 single check**), the Verona/Pony/Cyclone/Rust comparison, and the open frontier
-(derived containers and multi-source taint relations).
+(wcache aggregates stay in `wrec`/region form by design; the remaining taint
+boundaries are documented in §5).
 
 A borrowed region value cannot outlive its world — not as a local (W2.2), not
 through a struct field, and since W3.5 not through a `Vec`/`Map` either:
@@ -378,13 +379,17 @@ it by oracles in `make test`.
 | Backend | Build | Run | Needs | Oracle |
 |---|---|---|---|---|
 | C transpiler (default) | `make` | `./baga file.baga` | `gcc`, `make` | — (reference) |
-| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli -load lib/libbaga_par.so` | LLVM 14–19 (auto-detect) | oracle (incl. `!Par`) |
+| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli -load lib/libbaga_par.so -load lib/libbaga_world_rt.so` | LLVM 14–19 (auto-detect) | oracle (incl. `!Par` and Worlds) |
 
 - **C transpiler** — emits C, compiles with `gcc`, runs. Full language coverage.
 - **LLVM** — emits LLVM IR directly from the AST (`src/codegen_llvm.c`). Full
   coverage; `tests/llvm_oracle.sh` diffs it against the C backend via `lli`.
-  Makefile-ът сам намира `llvm-config`/`lli` (безсуффиксни, 19 или 14);
-  override с `make llvm LLVM_CONFIG=llvm-config-14`.
+  Worlds use `lib/libbaga_world_rt.so`, built by `make llvm` from the C
+  backend's own generated runtime (same code, `baga_lw_*` exports), so
+  `world_*`/`wvec_*`/`wmap_*`/`wrec_*`/`wcache_*` behave byte-for-byte like the
+  C backend; `tests/llvm_worlds.sh` is the parity gate. Makefile-ът сам намира
+  `llvm-config`/`lli` (безсуффиксни, 19 или 14); override с
+  `make llvm LLVM_CONFIG=llvm-config-14`.
 
 ## Project Structure
 
@@ -463,7 +468,8 @@ baga/
 | 17 | LLVM parity for M20–M24 (payload runtime, generic fns, traits, generic structs) | ✅ |
 | 18 | RC memory model v1.0 (`--rc`, opt-in): RC1–RC5 — ownership, containers, struct/enum fields, owned fn results | ✅ |
 | 19 | **Worlds W0…W2.14**: machine-checked regions — ownership/freeze/move, region containers (`wvec`/`wmap`/`wrec`), dump/load/auto-compaction, `wcache` scratch values, capability links, channel fan-out with join accounting, two-sided world contracts, 30–51% cheaper container access | ✅ |
-| 20 | W3: `world g { … }` scoped world blocks + region inference + spec integration (`ensures: world_frozen(output)`) | ✅ (W3.1/W3.2 — match-инференцията остава) |
+| 20 | W3: `world g { … }` scoped blocks, region inference (if/match), return guarantees, taint through fn/derived containers/keys, multi-link summaries | ✅ W3.1–W3.10 |
+| 21 | Worlds on LLVM: `libbaga_world_rt.so` (same generated runtime), `if` expressions, parity gate | ✅ W4.0 |
 
 ### Static verification (`--verify`)
 

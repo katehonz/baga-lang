@@ -516,6 +516,27 @@ static Node *parse_interp_string(Parser *p, const char *s, SrcPos pos) {
 static Node *parse_primary(Parser *p) {
     SrcPos pos = cur(p)->pos;
 
+    /* W3.10: world блок в изразна позиция (print(world g { … }),
+     * f(1 + world g { … }), return world g { … }) — преди това това беше
+     * обща parse грешка. Блокът притежава свят и е ИЗЯВЛЕНИЕ; тук даваме
+     * точна причина и поглъщаме блока, за да няма каскада. */
+    if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "world") == 0 &&
+        p->pos + 2 < p->len && p->tokens[p->pos + 1].kind == TOK_IDENT &&
+        p->tokens[p->pos + 2].kind == TOK_LBRACE) {
+        const char *wn = p->tokens[p->pos + 1].text ? p->tokens[p->pos + 1].text : "g";
+        parser_error_at(p, pos,
+            "world %s { … } притежава свят и е изявление, не изразна стойност — "
+            "извади го на отделен ред; за резултат ползвай `world_new()`/"
+            "`world_load()` в `let`", wn);
+        advance(p);
+        free(expect_ident(p));
+        Node *sw = parse_block(p);
+        node_free(sw);
+        Node *bad = node_alloc(NODE_INT_LIT, pos);
+        bad->int_val = 0;
+        return bad;
+    }
+
     /* integer literal */
     if (check(p, TOK_INT_LIT)) {
         Token *t = advance(p);

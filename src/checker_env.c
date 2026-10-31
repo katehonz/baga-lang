@@ -300,8 +300,7 @@ void register_fn(CheckCtx *ctx, Node *item) {
         ctx->fns[ctx->n_fns].ret_arena_param = -1;
         ctx->fns[ctx->n_fns].ret_handle_param = -1;
         ctx->fns[ctx->n_fns].ret_taint_param = -1;
-        ctx->fns[ctx->n_fns].out_taint_param = -1;
-        ctx->fns[ctx->n_fns].out_taint_from = -1;
+        ctx->fns[ctx->n_fns].n_out_taint = 0;
         ctx->fns[ctx->n_fns].checked = 0;
         ctx->fns[ctx->n_fns].checking = 0;
         ctx->n_fns++;
@@ -814,19 +813,36 @@ void mem3_taint_container(CheckCtx *ctx, Node *container, Node *value, int key) 
     if (!ce || !ce->is_param) return;
     const char *from_name = (value && value->kind == NODE_IDENT) ? value->name : NULL;
     if (!from_name && rid <= 0) return;
-    if (!ctx->w36_out_name && !ctx->w36_ambiguous) {
-        ctx->w36_out_name = ce->name;
-        ctx->w36_from_name = from_name;
-        ctx->w36_from_rid = rid;
-        ctx->w36_from_dim = key;
-        return;
+    /* Различните връзки се пазят; повторение на същата не е двусмислие.
+     * Повече от W36_LINKS_MAX → не резюмираме нищо (пропуск, не измислено). */
+    for (int i = 0; i < ctx->w36_nlinks; i++) {
+        W36Link *l = &ctx->w36_links[i];
+        int same_from = (l->from == NULL && from_name == NULL) ||
+                        (l->from && from_name && strcmp(l->from, from_name) == 0);
+        if (strcmp(l->out, ce->name) == 0 && same_from &&
+            l->rid == rid && l->dim == key)
+            return;
     }
-    int same = ctx->w36_out_name && strcmp(ctx->w36_out_name, ce->name) == 0;
-    int same_from = (ctx->w36_from_name == NULL && from_name == NULL) ||
-                    (ctx->w36_from_name && from_name &&
-                     strcmp(ctx->w36_from_name, from_name) == 0);
-    if (!same || !same_from || ctx->w36_from_rid != rid || ctx->w36_from_dim != key)
-        ctx->w36_ambiguous = 1;   /* повече от една връзка — не резюмираме */
+    if (ctx->w36_nlinks >= W36_LINKS_MAX) { ctx->w36_overflow = 1; return; }
+    ctx->w36_links[ctx->w36_nlinks].out = ce->name;
+    ctx->w36_links[ctx->w36_nlinks].from = from_name;
+    ctx->w36_links[ctx->w36_nlinks].rid = rid;
+    ctx->w36_links[ctx->w36_nlinks].dim = key;
+    ctx->w36_nlinks++;
+}
+
+/* W3.6: прилага ВСИЧКИ out-param връзки на callee върху аргументите на
+ * извикването. Всяко mem3_taint_container тук може да запише нова връзка за
+ * обграждащата функция — транзитивно през няколко слоя. */
+void mem3_apply_out_taint(CheckCtx *ctx, FnRec *fr, Node *call) {
+    if (!ctx || !fr || !call || fr->n_out_taint <= 0) return;
+    for (int i = 0; i < fr->n_out_taint; i++) {
+        int op = fr->out_taint_param[i];
+        int fp = fr->out_taint_from[i];
+        if (op < 0 || fp < 0 || op >= call->args.len || fp >= call->args.len) continue;
+        mem3_taint_container(ctx, call->args.data[op], call->args.data[fp],
+                             fr->out_taint_dim[i]);
+    }
 }
 
 /* Регионът на стойност, прочетена от контейнер. При повече от един регион не

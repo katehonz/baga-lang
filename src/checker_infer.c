@@ -405,13 +405,8 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                      * изчислено: generic_instantiate вика check_fn за инстанцията,
                      * която изпълнява mem3_summarize_fn. */
                     FnRec *gfr = find_fn_rec(ctx, gfn->fn_name);
-                    if (gfr && gfr->checked && gfr->out_taint_param >= 0 &&
-                        gfr->out_taint_from >= 0 &&
-                        gfr->out_taint_param < n->args.len &&
-                        gfr->out_taint_from < n->args.len)
-                        mem3_taint_container(ctx, n->args.data[gfr->out_taint_param],
-                                             n->args.data[gfr->out_taint_from],
-                                             gfr->out_taint_dim);
+                    if (gfr && gfr->checked)
+                        mem3_apply_out_taint(ctx, gfr, n);
                     return result;
                 }
             }
@@ -470,13 +465,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                  * аргумента-контейнер тук, с региона на аргумента-източник.
                  * Иначе `stash(out, wvec_get_str(w, …)); world_free(w)`
                  * минаваше тихо (висящ указател в out след free). */
-                if (fr && fr->checked && fr->out_taint_param >= 0 &&
-                    fr->out_taint_from >= 0 &&
-                    fr->out_taint_param < n->args.len &&
-                    fr->out_taint_from < n->args.len)
-                    mem3_taint_container(ctx, n->args.data[fr->out_taint_param],
-                                         n->args.data[fr->out_taint_from],
-                                         fr->out_taint_dim);
+                if (fr && fr->checked) mem3_apply_out_taint(ctx, fr, n);
             }
             return result;
         }
@@ -1173,11 +1162,20 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
                     else if (wk == 'f') ok = at->kind == TYPE_F64;
                     else if (wk == 'b') ok = at->kind == TYPE_BYTES;
                     if (!ok) {
-                        check_error(ctx, n->pos,
-                            "'%s': аргумент #%d е от тип %s, но параметърът е %s",
-                            name, ai + 1, type_str(at),
-                            wk == 's' ? "str" : wk == 'i' ? "i64" :
-                            wk == 'f' ? "f64" : "bytes");
+                        /* Кешът е scratch: i64/str/bytes. Агрегат/контейнер
+                         * принадлежи на региона — съветът е wrec + id. */
+                        if (strcmp(name, "wcache_set") == 0 && ai == 2 &&
+                            (at->kind == TYPE_STRUCT || at->kind == TYPE_ENUM ||
+                             at->kind == TYPE_VEC || at->kind == TYPE_MAP))
+                            check_error(ctx, n->pos,
+                                "'wcache_set' пази i64/str/bytes (scratch стойности); "
+                                "агрегат/контейнер сложи в wrec в света и кеширай id-то му");
+                        else
+                            check_error(ctx, n->pos,
+                                "'%s': аргумент #%d е от тип %s, но параметърът е %s",
+                                name, ai + 1, type_str(at),
+                                wk == 's' ? "str" : wk == 'i' ? "i64" :
+                                wk == 'f' ? "f64" : "bytes");
                         return type_new(TYPE_ERROR);
                     }
                 }
