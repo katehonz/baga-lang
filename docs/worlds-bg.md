@@ -1,6 +1,6 @@
 # Светове (Worlds) — концепция, дизайн, статус
 
-Статус: **W0 … W2.14 + W3.1–W3.12 + W4.0/W4.1 имплементирани** (2026-10-31; v1.3.0 е W0…W2.5), зад
+Статус: **W0 … W2.14 + W3.1–W3.12 + W4.0–W4.2 имплементирани** (2026-10-31; v1.3.0 е W0…W2.5), зад
 `world_*`/`wvec_*`/`wmap_*`/`wrec_*`/`wcache_*` builtin-и в **C и LLVM бекенда**. Оркъли (разделени заради
 600-редовия gate): `examples/verify/worlds.baga` — ядро на региона
 (16 ensures + 10 протокола); `worlds_cap.baga` — споделяне и договори
@@ -1702,15 +1702,20 @@ FnRec пази до `W36_LINKS_MAX` (8) връзки „param-контейнер
 агрегат в wcache);
 1077 файла без промени.
 
+**W4.2** ✅ (2026-10-31) — пълният `worlds_test` в LLVM паритета:
+C-only `mem_arena_bytes` проверката е извадена в `tests/world_bump_test.baga`,
+затова `tests/llvm_worlds.sh` пуска 7 програми × plain/`--rc` (14 прогона) и
+покрива целия жизнен цикъл на света и в двата бекенда.
+
 **W4.1** ✅ (2026-10-31) — LLVM световете под `--rc` не текат: owned
 bytes/str от `world_dump`/`world_dump_compact`/`wcache_get_bytes`/
 `wcache_get_str` идват с истински RC header и `drop`/scope release ги
-освобождава. `tests/llvm_worlds.sh` пуска 6-те програми plain и `--rc`;
+освобождава. `tests/llvm_worlds.sh` пуска 7-те програми plain и `--rc`;
 `examples/worlds.baga` е smoke в общия LLVM оракул.
 
 **W4.0** ✅ (2026-10-31) — световете работят и в LLVM бекенда с паритет:
 `make llvm` строи `lib/libbaga_world_rt.so` от СЪЩИЯ C runtime, LLVM IR-ът
-вика `baga_lw_*`; `tests/llvm_worlds.sh` пуска 6 world програми през `lli` и
+вика `baga_lw_*`; `tests/llvm_worlds.sh` пуска 7 world програми през `lli` и
 сравнява изхода/exit кода с C бекенда. `if` като израз (phi/alloca) също е
 добавен в LLVM, за да работи `let wi = if c { world_new() } else { world_new() }`.
 Граници: `mem_*` остава C-only; `lli` изисква `-load` на двата .so.

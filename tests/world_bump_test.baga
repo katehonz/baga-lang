@@ -1,0 +1,24 @@
+// world_bump_test — C-only: светът е отделна malloc арена и не пипа
+// thread-local bump арената. LLVM бекендът не поддържа mem_arena_bytes
+// (MEM-4), затова тази проверка живее отделно от worlds_test.
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    // Измерването е около чисти world-операции (низ-операциите биха
+    // bump-нали между двете четения).
+    let before = mem_arena_bytes()
+    let w0 = world_new()
+    let a0 = world_alloc(w0, 64)
+    let after = mem_arena_bytes()
+    world_free(w0)
+    check("alloc_nonzero", a0 > 0)
+    check("world_outside_bump", after == before)
+    print("world_bump_test: all passed")
+}

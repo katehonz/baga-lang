@@ -16,15 +16,9 @@ fn check(name: str, ok: bool) {
 }
 
 fn main() {
-    // Светът е отделна malloc арена — не пипа thread-local bump арената.
-    // Измерването е около чисти world-операции (низ-операциите биха
-    // bump-нали между двете четения).
-    let before = mem_arena_bytes()
-    let w0 = world_new()
-    let a0 = world_alloc(w0, 64)
-    let after = mem_arena_bytes()
-    world_free(w0)
-    check("world_outside_bump", after == before)
+    // C-only проверката, че светът не пипа thread-local bump арената, е в
+    // tests/world_bump_test.baga — така този тест върви и през LLVM (където
+    // mem_arena_bytes е явна грешка).
 
     let w = world_new()
     check("new_mutable", world_state(w) == 0)

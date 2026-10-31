@@ -5,8 +5,8 @@
 # грешките и exit кодът трябва да съвпадат с ./baga. Всеки файл се пуска
 # и под --rc (owned bytes/str от кеша/дампа тогава носят RC header).
 #
-# worlds_test се пропуска: използва mem_mark/rewind, които LLVM бекендът
-# честно отказва (MEM-4 е само C). Останалите са чисти world програми.
+# C-only проверката за bump арената е отделно в tests/world_bump_test.baga,
+# затова пълният worlds_test върви и тук.
 cd "$(dirname "$0")/.."
 FAIL=0
 LLI=${LLI:-$(for c in lli lli-19 lli-14; do command -v "$c" 2>/dev/null && break; done)}
@@ -15,8 +15,9 @@ for so in lib/libbaga_world_rt.so lib/libbaga_par.so; do
     [ -f "$so" ] || { echo "FAIL: $so липсва — пусни make llvm"; exit 1; }
 done
 echo "(lli: $LLI; world runtime: lib/libbaga_world_rt.so)"
-FILES="tests/wvec_test.baga tests/wmap_test.baga tests/wrec_test.baga
-       tests/wcache_test.baga tests/world_block_test.baga tests/wchan_fanout_test.baga"
+FILES="tests/worlds_test.baga tests/wvec_test.baga tests/wmap_test.baga
+       tests/wrec_test.baga tests/wcache_test.baga tests/world_block_test.baga
+       tests/wchan_fanout_test.baga"
 for mode in "" "--rc"; do
     if [ -z "$mode" ]; then label=" (plain)"; else label=" (rc)"; fi
     for f in $FILES; do

@@ -22,8 +22,8 @@
   LLVM.
 - `tests/llvm_worlds.sh` (в `make test-llvm`): 6 world програми (wvec, wmap,
   wrec, wcache, world блокове, канален fan-out) се пускат през C и LLVM и се
-  сравняват изход + exit код. `worlds_test` се пропуска честно — ползва
-  `mem_mark/rewind`, които си остават C-only.
+  сравняват изход + exit код. `worlds_test` по това време се пропускаше —
+  ползваше `mem_mark/rewind` (W4.2 го включва, bump проверката е отделна).
 - Docs: README (LLVM ред + roadmap), docs/worlds-bg.md §5/§6,
   language-bg/en, CHANGELOG.
 
@@ -34,9 +34,19 @@
   без `--rc` остават plain malloc и `drop` ги free-ва директно. За str
   копието се запълва и кешът за дължина (`pe`), както при `baga_set_slen`.
 - `tests/llvm_worlds.sh` пуска всичките 6 world програми plain и `--rc`
-  (12 паритетни прогона). `examples/worlds.baga` е минималният smoke
-  (dump/load между бекендите) и влиза в общия LLVM оракул.
+  (12 паритетни прогона; W4.2 добавя и `worlds_test`).
+  `examples/worlds.baga` е минималният smoke (dump/load между бекендите) и
+  влиза в общия LLVM оракул.
 - Docs: worlds-bg §5/§6, CHANGELOG.
+
+### W4.2 — пълният worlds_test в LLVM паритета
+- Единствената C-only проверка в `tests/worlds_test.baga` беше
+  `mem_arena_bytes` (светът не пипа bump арената). Извадена е в
+  `tests/world_bump_test.baga`, който си остава C-only; `worlds_test` вече
+  няма `mem_*` и влиза в `tests/llvm_worlds.sh`.
+- Паритетът става 7 програми × plain/`--rc` = 14 прогона; `worlds_test`
+  покрива целия жизнен цикъл (alloc/freeze/free, връзки, dump/load), който
+  дотогава се проверяваше само от C бекенда.
 
 ### W3.12 — върнат Map носи и КЛЮЧОВОТО замърсяване
 - Резюмето на върнат контейнер пазеше само стойностното измерение
