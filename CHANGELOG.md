@@ -75,6 +75,17 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### P61 — scratch pool + persist map entries; C churn 60→38 KB/връзка
+- `pgw_reader` default в mux вече не алокира 8KB scratch (startup-ът
+  създава своя); scratch се пази per fd в mux map и се преизползва при
+  нови връзки (scratch pool). `pgw_reader_sc`/`pgw_reader_tls` приемат
+  готов scratch.
+- scratch map entry/buckets се вмъкват под `mem_persist`, за да не ги
+  реклеймва worker arena rewind; преди това `map_set` върху общия map
+  корумпираше при churn.
+- `pgbench -C` 100 връзки (C mux): ~60 → **37.6 KB/връзка** (3.76 MB).
+  LLVM boila gate и C boila тестовете остават зелени.
+
 ### W4.10 — LLVM boilaDB mux под товар (P60)
 - `boila_*_free` пускаше `pk_eq.pk_lo.pk_hi.b`, но в empty плановете те са
   ЕДИН shared `bytes` handle → double free при mux close (LLVM го хвана,
