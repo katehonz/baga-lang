@@ -79,10 +79,12 @@
 - Нов C/LLVM builtin `mem_persist_bytes()`: live persist malloc байтове
   (C: `malloc_usable_size`; LLVM: per-thread `live_p`). `tests/llvm_mem_test`
   проверява, че persist стойност вдига брояча.
-- Използван за диагностика на boilaDB `pgbench -C`: persist расте
-  ~75–150 KB/връзка; release/forget освобождават само ~4–6 KB, значи
-  leak-ът е в session startup (`psess`/`sc`/e_*), не в map box-а.
-  Следващ fix: освобождаване на per-session persist при close.
+- Diagnostic (boilaDB `pgbench -C`): първият startup прави еднократен
+  +135 KB; после `psess`/`park` добавят ~6.7 KB и release/forget връщат
+  почти същото. Големите скокове (100–700 KB) идват от plan/catalog
+  кеша под persist (нови shape/plan записи), не от session leak.
+  Следващ fix: по-стегнат plan cache cap/eviction вместо 4096 persist
+  записа.
 
 ### W4.15 — thread_id + sharded SQL броячи (P65)
 - Нов builtin `thread_id() -> i64` (C/LLVM); използва се за sharding.
