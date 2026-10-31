@@ -17,12 +17,12 @@ done
 echo "(lli: $LLI; world runtime: lib/libbaga_world_rt.so)"
 FILES="tests/worlds_test.baga tests/wvec_test.baga tests/wmap_test.baga
        tests/wrec_test.baga tests/wcache_test.baga tests/world_block_test.baga
-       tests/wchan_fanout_test.baga"
+       tests/wchan_fanout_test.baga tests/wmet_test.baga"
 for mode in "" "--rc"; do
     if [ -z "$mode" ]; then label=" (plain)"; else label=" (rc)"; fi
     for f in $FILES; do
-        ./baga $mode "$f" > /tmp/baga_worlds_c.out 2>&1; rc_c=$?
-        if ! ./baga-llvm --emit-llvm $mode "$f" > /tmp/baga_worlds.ll 2>/tmp/baga_worlds_err.txt; then
+        ./baga $mode -I app-product "$f" > /tmp/baga_worlds_c.out 2>&1; rc_c=$?
+        if ! ./baga-llvm -I app-product --emit-llvm $mode "$f" > /tmp/baga_worlds.ll 2>/tmp/baga_worlds_err.txt; then
             echo "FAIL  $f$label (LLVM emit)"; cat /tmp/baga_worlds_err.txt; FAIL=1; continue
         fi
         "$LLI" -load lib/libbaga_world_rt.so -load lib/libbaga_par.so /tmp/baga_worlds.ll \

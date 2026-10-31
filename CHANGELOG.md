@@ -39,6 +39,17 @@
   влиза в общия LLVM оракул.
 - Docs: worlds-bg §5/§6, CHANGELOG.
 
+### W2.17 — `wmet_*`: world-backed shared metrics
+- metbaga добавя `WMet`/`wmet_*`: имена, HELP, вид и стойности живеят в
+  `wcache` на (замразен) свят; `wmet_add_h` ползва атомарния `wcache_add`,
+  значи един shared registry е безопасен за много worker-и. `met_*`
+  остава request-local Vec API (без промяна).
+- cloudbaga мина на `wmet_*`; `/metrics` и `http_requests_total` са през
+  замразения свят. `tests/wmet_test.baga` покрива функционалността и
+  4×5000 конкурентни добавяния, чист под TSan; добавен е в LLVM
+  worlds паритета (plain + `--rc`).
+- `tests/met_test.baga` (старият Vec API) продължава да минава.
+
 ### Concurrency — TSan-clean mutex + boilaDB plan/catalog cache
 - `baga_Mutex.owner/locked` (double-lock детекцията) станаха `_Atomic` с
   acquire/release store-ове. TSan преди виждаше race във ВСЯКА заключена

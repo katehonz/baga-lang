@@ -1,0 +1,68 @@
+// wmet_test — world-backed Prometheus registry: functional + concurrent add.
+// met_* (Vec) остава за request-local; wmet_* е за shared/frozen registry.
+
+import "metbaga/met.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn adder(ctx: i64) -> i64 !Par {
+    let h = cell2_0(ctx)
+    let idx = cell2_1(ctx)
+    let mut i: i64 = 0
+    while i < 5000 {
+        wmet_add_h(h, idx, 1)
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !Par {
+    let m = wmet_new()
+    let c = wmet_counter(m, "http_requests_total", "HTTP requests")
+    let g = wmet_gauge(m, "workers", "Worker count")
+    wmet_inc(m, c)
+    wmet_inc(m, c)
+    wmet_set(m, g, 4)
+    check("counter", wmet_get(m, c) == 2)
+    check("gauge", wmet_get(m, g) == 4)
+    let c2 = wmet_counter(m, "http_requests_total", "HTTP requests")
+    check("idempotent", c2 == c)
+    check("len", wmet_len(m) == 2)
+    check("find", wmet_find(m, "workers") == g)
+    wmet_add(m, c, 3)
+    check("add", wmet_get(m, c) == 5)
+    wmet_add(m, c, 0 - 2)
+    check("counter_no_dec", wmet_get(m, c) == 5)
+
+    let body = wmet_render(m)
+    check("help", str_find(body, "# HELP http_requests_total") >= 0)
+    check("type", str_find(body, "# TYPE http_requests_total counter") >= 0)
+    check("value", str_find(body, "http_requests_total 5") >= 0)
+
+    // freeze → shared read + atomic wcache_add
+    wmet_freeze(m)
+    wmet_inc(m, c)
+    check("frozen_inc", wmet_get(m, c) == 6)
+    let ctx = cell2(m.h, c)
+    let a = go(adder, ctx)
+    let b = go(adder, ctx)
+    let d = go(adder, ctx)
+    let e = go(adder, ctx)
+    join(a)
+    join(b)
+    join(d)
+    join(e)
+    check("concurrent_add", wmet_get(m, c) == 20006)
+    check("render_after", str_find(wmet_render(m), "http_requests_total 20006") >= 0)
+
+    wmet_free(m)
+    print("wmet_test: all passed")
+    return 0
+}
