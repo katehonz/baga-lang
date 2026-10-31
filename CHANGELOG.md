@@ -77,6 +77,9 @@
 - Мигрирани flat channel cell-ове в app-product: fmrbaga, httpdbaga,
   oauthbaga, ormbaga, queuebaga, relbaga, rocksbaga и boilaDB repl.
   Raft/txn nested message дървета остават (free-ват само външния cell).
+- P50: HTTP mux park копира `db`/`guc` в persist само при промяна; преди
+  всяка заявка правеше нов `Map` + `substr`-ове (328 MB RSS за 10 s).
+  Сега 10 s @164k req/s държи ~2.7 MB.
 
 ### App — boilaDB mux wake (P47): 5 tps → 151k tps
 - `boila_mux_wake` пишеше wake байт с `tcp_write` върху `pipe2`. `tcp_write`

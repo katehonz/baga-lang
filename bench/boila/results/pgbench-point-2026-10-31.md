@@ -57,6 +57,20 @@ main poll-ът не получаваше wake и чакаше целия 200 ms 
 wake-ът alokiraше `substr` извън turn rewind-а. Сега `cell2_free` е builtin
 и горещите пътища го ползват.
 
+## HTTP mux (P50)
+
+`wrk -t4 -c16 -d10s http://127.0.0.1:6570/health`, `BOILA_WORKERS=4`:
+
+| | резултат |
+|---|---:|
+| throughput | **163 967 req/s** |
+| RSS преди | 2.3 MB |
+| RSS след 10 s | 2.7 MB |
+
+Преди P50 всяка HTTP заявка правеше нов GUC `Map` + `substr`-ове под
+`mem_persist`; 10 s даваха **328 MB** RSS. Сега park копира `db`/`guc` само
+при реална промяна.
+
 ## Честни граници
 
 - Read-only point SELECT с 5k реда; не пише, не JOIN-ва, не сканира.
