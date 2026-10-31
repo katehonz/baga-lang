@@ -36,7 +36,7 @@ Pure app-product стекът (20 теста) и световете минава
 работят и в LLVM (non-RC) върху allocation log в `libbaga_par.so`, а
 вложеният field assignment (`a.b.c = x`) също. След W4.6/W4.7 **boilaDB
 емитира и работи на LLVM**; `tests/llvm_boila.sh` пази C↔LLVM паритета.
-Rocksbaga/queuebaga още не са включени в LLVM gate-а.
+Rocksbaga и queuebaga също минават (W4.8) през `tests/llvm_storage.sh`.
 
 ## Оставащи кандидати (по приоритет)
 

@@ -75,6 +75,13 @@
   константа в LLVM, за да остане `str_repeat` RC-пътят същият.
 - `tests/llvm_mem_test.baga` е в общия LLVM оракул.
 
+### W4.8 — rocksbaga/queuebaga на LLVM
+- След mem_* и nested field assignment, storage/queue стекът също минава
+  през `lli`: lsm_test, lsm_engine_test, workers_test, lsm_recover_test,
+  lsm_filter_test и queue_test дават същия изход като C.
+- `tests/llvm_storage.sh` е gate в `make test-llvm`; skip-ва без
+  rocksbaga/queuebaga submodule.
+
 ### W4.7 — вложен field assignment + boilaDB на LLVM (P58b)
 - LLVM вече поддържа `a.b.c = x` (рекурсивен GEP от alloca-та на
   кореновия ident); преди беше „не-локален обект“.

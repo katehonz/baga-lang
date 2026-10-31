@@ -382,7 +382,7 @@ it by oracles in `make test`.
 | Backend | Build | Run | Needs | Oracle |
 |---|---|---|---|---|
 | C transpiler (default) | `make` | `./baga file.baga` | `gcc`, `make` | — (reference) |
-| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli -load lib/libbaga_par.so -load lib/libbaga_world_rt.so` | LLVM 14–19 (auto-detect) | oracle (incl. `!Par`, Worlds, mem_* non-RC, boilaDB) |
+| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli -load lib/libbaga_par.so -load lib/libbaga_world_rt.so` | LLVM 14–19 (auto-detect) | oracle (incl. `!Par`, Worlds, mem_* non-RC, boilaDB, storage/queue) |
 
 - **C transpiler** — emits C, compiles with `gcc`, runs. Full language coverage.
 - **LLVM** — emits LLVM IR directly from the AST (`src/codegen_llvm.c`). Full
