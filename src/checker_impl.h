@@ -73,6 +73,7 @@ typedef struct {
      * носи един източник (повече = -1); out-param връзките са няколко. */
     int n_ret_taint;       /* W3.11: колко param-а замърсяват ВЪРНАТИЯ контейнер */
     int ret_taint_param[W36_LINKS_MAX];   /* индекси на тези param-и */
+    int ret_taint_dim[W36_LINKS_MAX];     /* W3.12: 0 = стойности, 1 = ключове */
     int n_out_taint;       /* брой различни out-param връзки (0 = няма) */
     int out_taint_param[W36_LINKS_MAX];   /* param-контейнер, който тялото замърсява */
     int out_taint_from[W36_LINKS_MAX];    /* param, чиято стойност/регион го замърсява */

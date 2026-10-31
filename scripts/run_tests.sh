@@ -1846,6 +1846,30 @@ else
 	exit 1
 fi
 
+echo "=== W3.12 върнат Map носи и КЛЮЧОВОТО замърсяване ==="
+# ret_taint пазеше само стойностното измерение. За върната карта с заеман
+# ключ map_keys(r) на извикващия наследяваше празно ktaint и пропускаше
+# висящите ключове.
+printf 'fn build(w: i64, v: i64) -> Map<str, i64> {\n    let m = map_new()\n    map_set(m, wvec_get_str(w, v, 0), 1)\n    return m\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let r = build(w, v)\n    let ks = map_keys(r)\n    drop(r)\n    world_free(w)\n    print(vec_get(ks, 0))\n}\n' > /tmp/baga_w312_retkey.baga
+RC=0
+run --check /tmp/baga_w312_retkey.baga > /tmp/baga_w312_retkey_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "контейнерът 'ks' държи" /tmp/baga_w312_retkey_out.txt; then
+	echo "OK: върнат Map със заеман ключ — map_keys наследява ключовото замърсяване"
+else
+	echo "FAIL: ключовото измерение на върнатата карта се загуби"
+	cat /tmp/baga_w312_retkey_out.txt
+	exit 1
+fi
+# ТОЧНОСТТА: чисти ключове + заемана стойност — map_keys е чист (M8).
+printf 'fn build(w: i64, v: i64) -> Map<str, str> {\n    let m = map_new()\n    map_set(m, "clean", wvec_get_str(w, v, 0))\n    return m\n}\nfn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    wvec_push_str(w, v, "hi")\n    let r = build(w, v)\n    let ks = map_keys(r)\n    drop(r)\n    world_free(w)\n    print(vec_get(ks, 0))\n}\n' > /tmp/baga_w312_prec.baga
+if run /tmp/baga_w312_prec.baga 2>&1 | grep -qx "clean"; then
+	echo "OK: чисти ключове в върната карта — map_keys не се обвинява"
+else
+	echo "FAIL: ключовото измерение обвинява чисти ключове"
+	run /tmp/baga_w312_prec.baga 2>&1 | head -3
+	exit 1
+fi
+
 echo "=== W2.2/W2.3 sanitizer прогони (ASan + TSan върху region runtime-а) ==="
 # Компилира генерирания C със sanitizer-и: use-after-free при растеж на региона
 # и out-of-bounds при счупен офсет (ASan), data race в кеша на замразен свят и

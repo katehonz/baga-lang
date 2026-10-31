@@ -251,7 +251,7 @@ the **spec-as-source, machine-checked** end of the spectrum.
 > Защо го правим и какъв е смисълът, в крайна сметка —
 > виж [docs/meaning-bg.md](docs/meaning-bg.md).
 
-## Worlds — machine-checked regions (W0…W2.14 + W3.1–W3.11, C and LLVM)
+## Worlds — machine-checked regions (W0…W2.14 + W3.1–W3.12, C and LLVM)
 
 **Worlds** are owned memory regions with a freeze/move/share discipline — and
 the discipline is **machine-checked**, not prose: `--verify` refutes protocol
@@ -279,7 +279,7 @@ covered by a guarantee — `ensures: world_frozen(output)` / `world_owned(output
 — which the builder proves per return path and the caller registers as a handle,
 so the whole protocol applies to results, not just locals.
 
-Every stage (W0…W2.14 + W3.1–W3.11) is locked by oracle files
+Every stage (W0…W2.14 + W3.1–W3.12) is locked by oracle files
 (`examples/verify/worlds*.baga` — proven ensures + refuted protocols with
 counterexamples), ASan/TSan gates, and an honest limits section in the design
 doc. Full write-up (BG): **[docs/worlds-bg.md](docs/worlds-bg.md)** — model,
@@ -468,7 +468,7 @@ baga/
 | 17 | LLVM parity for M20–M24 (payload runtime, generic fns, traits, generic structs) | ✅ |
 | 18 | RC memory model v1.0 (`--rc`, opt-in): RC1–RC5 — ownership, containers, struct/enum fields, owned fn results | ✅ |
 | 19 | **Worlds W0…W2.14**: machine-checked regions — ownership/freeze/move, region containers (`wvec`/`wmap`/`wrec`), dump/load/auto-compaction, `wcache` scratch values, capability links, channel fan-out with join accounting, two-sided world contracts, 30–51% cheaper container access | ✅ |
-| 20 | W3: `world g { … }` scoped blocks, region inference (if/match), return guarantees, taint through fn/derived containers/keys, multi-link and multi-source return summaries | ✅ W3.1–W3.11 |
+| 20 | W3: `world g { … }` scoped blocks, region inference (if/match), return guarantees, taint through fn/derived containers/keys, multi-link, multi-source and key-dimension return summaries | ✅ W3.1–W3.12 |
 | 21 | Worlds on LLVM: `libbaga_world_rt.so` (same generated runtime), `if` expressions, parity gate | ✅ W4.0 |
 
 ### Static verification (`--verify`)

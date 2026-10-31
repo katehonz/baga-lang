@@ -1413,8 +1413,8 @@ invalidates nothing:
 - The same holds **across function boundaries** (W3.6): a function that stores a
   borrowed value into a container parameter (`vec_push(out, s)`) taints the
   caller's argument container, and a returned tainted container carries the
-  regions of ALL source arguments (up to eight) — transitively, across several
-  fn layers. An i64
+  regions of ALL source arguments (up to eight) in both dimensions (values and
+  keys) — transitively, across several fn layers. An i64
   world handle stored in a vector dangles after `world_free` just like a borrowed
   string. Up to eight distinct "param-container ← source" relations per body
   are summarized and replayed at the call site (more than that = no summary;

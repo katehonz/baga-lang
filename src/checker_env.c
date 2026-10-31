@@ -1338,7 +1338,8 @@ void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
                 int pi = fr->ret_taint_param[ti];
                 if (pi >= 0 && pi < init->args.len) {
                     int rid2 = w36_value_region(ctx, init->args.data[pi]);
-                    if (rid2 > 0) w35_taint_entry(pe, rid2, 0);
+                    if (rid2 > 0)
+                        w35_taint_entry(pe, rid2, fr->ret_taint_dim[ti]);
                 }
             }
         }

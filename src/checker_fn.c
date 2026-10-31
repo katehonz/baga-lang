@@ -670,15 +670,23 @@ int generic_fn_value_bind(CheckCtx *ctx, Node *id, Type *annot) {
 
 static void mem3_collect_rets(CheckCtx *ctx, Node *n,
                               int *rids, int *nr, int *hids, int *nh, int cap,
-                              int *tids, int *nt) {
+                              int *tids, int *tdims, int *nt) {
     if (!n || (*nr >= cap && *nh >= cap && *nt >= cap)) return;
     switch (n->kind) {
         case NODE_RETURN:
             if (n->ret_val) {
-                /* W3.6/W3.11: връща ли ЗАМЪРСЕН контейнер (не payload) и с
-                 * колко различни региона — всички се резюмират. */
-                *nt += mem3_container_taints(ctx, n->ret_val, 0,
-                                             tids + *nt, cap - *nt);
+                /* W3.6/W3.11/W3.12: връща ли ЗАМЪРСЕН контейнер (не payload)
+                 * и с колко различни региона в ДВЕТЕ измерения — всички се
+                 * резюмират (map_keys наследява ключовото). */
+                int room = cap - *nt;
+                int nv = mem3_container_taints(ctx, n->ret_val, 0,
+                                               tids + *nt, room);
+                for (int q = 0; q < nv; q++) tdims[*nt + q] = 0;
+                *nt += nv;
+                int nk = mem3_container_taints(ctx, n->ret_val, 1,
+                                               tids + *nt, cap - *nt);
+                for (int q = 0; q < nk; q++) tdims[*nt + q] = 1;
+                *nt += nk;
                 int r = region_of_expr(ctx, n->ret_val);
                 if (r > 0 && *nr < cap) rids[(*nr)++] = r;
                 int h = lookup_arena_id(ctx, n->ret_val);
@@ -691,31 +699,31 @@ static void mem3_collect_rets(CheckCtx *ctx, Node *n,
             return;
         case NODE_BLOCK:
             for (int i = 0; i < n->stmts.len; i++)
-                mem3_collect_rets(ctx, n->stmts.data[i], rids, nr, hids, nh, cap, tids, nt);
+                mem3_collect_rets(ctx, n->stmts.data[i], rids, nr, hids, nh, cap, tids, tdims, nt);
             return;
         case NODE_IF:
-            mem3_collect_rets(ctx, n->then_br, rids, nr, hids, nh, cap, tids, nt);
-            mem3_collect_rets(ctx, n->else_br, rids, nr, hids, nh, cap, tids, nt);
+            mem3_collect_rets(ctx, n->then_br, rids, nr, hids, nh, cap, tids, tdims, nt);
+            mem3_collect_rets(ctx, n->else_br, rids, nr, hids, nh, cap, tids, tdims, nt);
             return;
         case NODE_WHILE:
-            mem3_collect_rets(ctx, n->while_body, rids, nr, hids, nh, cap, tids, nt);
+            mem3_collect_rets(ctx, n->while_body, rids, nr, hids, nh, cap, tids, tdims, nt);
             return;
         case NODE_FOR:
-            mem3_collect_rets(ctx, n->for_body, rids, nr, hids, nh, cap, tids, nt);
+            mem3_collect_rets(ctx, n->for_body, rids, nr, hids, nh, cap, tids, tdims, nt);
             return;
         case NODE_MATCH:
             for (int i = 0; i < n->match_arms.len; i++)
-                mem3_collect_rets(ctx, n->match_arms.data[i]->arm_body, rids, nr, hids, nh, cap, tids, nt);
+                mem3_collect_rets(ctx, n->match_arms.data[i]->arm_body, rids, nr, hids, nh, cap, tids, tdims, nt);
             return;
         case NODE_CATCH:
-            mem3_collect_rets(ctx, n->catch_expr, rids, nr, hids, nh, cap, tids, nt);
-            mem3_collect_rets(ctx, n->catch_handler, rids, nr, hids, nh, cap, tids, nt);
+            mem3_collect_rets(ctx, n->catch_expr, rids, nr, hids, nh, cap, tids, tdims, nt);
+            mem3_collect_rets(ctx, n->catch_handler, rids, nr, hids, nh, cap, tids, tdims, nt);
             return;
         case NODE_EXPR_STMT:
-            mem3_collect_rets(ctx, n->expr, rids, nr, hids, nh, cap, tids, nt);
+            mem3_collect_rets(ctx, n->expr, rids, nr, hids, nh, cap, tids, tdims, nt);
             return;
         case NODE_LET:
-            mem3_collect_rets(ctx, n->let_init, rids, nr, hids, nh, cap, tids, nt);
+            mem3_collect_rets(ctx, n->let_init, rids, nr, hids, nh, cap, tids, tdims, nt);
             return;
         default:
             return;
@@ -740,8 +748,8 @@ static int mem3_ids_to_param(CheckCtx *ctx, Node *fn, int *ids, int nids) {
 
 /* W3.11: като mem3_ids_to_param, но пази ВСИЧКИ различни param-и.
  * Регион, който не принадлежи на param (локален свят), се пропуска. */
-static int mem3_ids_to_params(CheckCtx *ctx, Node *fn, int *ids, int nids,
-                              int *out, int cap) {
+static int mem3_ids_to_params(CheckCtx *ctx, Node *fn, int *ids, int *dims,
+                              int nids, int *out, int *out_dims, int cap) {
     int n = 0;
     for (int k = 0; k < nids; k++) {
         int pi = -1;
@@ -752,8 +760,9 @@ static int mem3_ids_to_params(CheckCtx *ctx, Node *fn, int *ids, int nids,
         }
         if (pi < 0) continue;
         int dup = 0;
-        for (int j = 0; j < n; j++) if (out[j] == pi) { dup = 1; break; }
-        if (!dup && n < cap) out[n++] = pi;
+        for (int j = 0; j < n; j++)
+            if (out[j] == pi && out_dims[j] == dims[k]) { dup = 1; break; }
+        if (!dup && n < cap) { out[n] = pi; out_dims[n] = dims[k]; n++; }
     }
     return n;
 }
@@ -768,14 +777,20 @@ static int w36_param_index(Node *fn, const char *name) {
 
 static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
     if (!rec || !fn || !fn->fn_body) return;
-    int rids[32], hids[32], tids[32];
+    int rids[32], hids[32], tids[32], tdims[32];
     int nr = 0, nh = 0, nt = 0;
-    mem3_collect_rets(ctx, fn->fn_body, rids, &nr, hids, &nh, 32, tids, &nt);
+    mem3_collect_rets(ctx, fn->fn_body, rids, &nr, hids, &nh, 32, tids, tdims, &nt);
     if (fn->fn_body->stmts.len > 0) {
         Node *last = fn->fn_body->stmts.data[fn->fn_body->stmts.len - 1];
         if (last->kind == NODE_EXPR_STMT && last->expr) {
-            nt += mem3_container_taints(ctx, last->expr, 0,
-                                        tids + nt, 32 - nt);   /* W3.6/W3.11 */
+            int nv = mem3_container_taints(ctx, last->expr, 0,
+                                           tids + nt, 32 - nt);
+            for (int q = 0; q < nv; q++) tdims[nt + q] = 0;
+            nt += nv;
+            int nk = mem3_container_taints(ctx, last->expr, 1,
+                                           tids + nt, 32 - nt);
+            for (int q = 0; q < nk; q++) tdims[nt + q] = 1;
+            nt += nk;
             int r = region_of_expr(ctx, last->expr);
             if (r > 0 && nr < 32) rids[nr++] = r;
             int h = lookup_arena_id(ctx, last->expr);
@@ -790,8 +805,9 @@ static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
     rec->ret_handle_param = mem3_ids_to_param(ctx, fn, hids, nh);
     /* W3.6/W3.11: върнат замърсен контейнер — всички param-източници (до
      * W36_LINKS_MAX); при повече региони от един и същ param се дедупликира. */
-    rec->n_ret_taint = mem3_ids_to_params(ctx, fn, tids, nt,
-                                          rec->ret_taint_param, W36_LINKS_MAX);
+    rec->n_ret_taint = mem3_ids_to_params(ctx, fn, tids, tdims, nt,
+                                          rec->ret_taint_param,
+                                          rec->ret_taint_dim, W36_LINKS_MAX);
     /* W3.6: тялото замърсява param-контейнери — имената, записани по време на
      * тялото, стават индекси чак тук, докато param-ите са в scope. Всички
      * различни връзки се пазят; при преливане на капацитета не резюмираме
