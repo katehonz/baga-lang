@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Между Rust и чистия C? Не съвсем — и това не е най-интересното за Бага — Baga</title>
+<meta name="description" content="Хората, които за пръв път видят Бага, почти винаги казват едно и също: „това е нещо между Rust и чист C&quot;. Разбирам откъде идва. Синтаксисът изглежда съвременен като Rust, а под капака има C bootstrap, транспилиране към C и нула…">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/blog/mezhdu-rust-i-c-bg.html">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Между Rust и чистия C? Не съвсем — и това не е най-интересното за Бага — Baga">
+<meta property="og:description" content="Хората, които за пръв път видят Бага, почти винаги казват едно и също: „това е нещо между Rust и чист C&quot;. Разбирам откъде идва. Синтаксисът изглежда съвременен като Rust, а под капака има C bootstrap, транспилиране към C и нула…">
+<meta property="og:url" content="https://baga-lang.top/blog/mezhdu-rust-i-c-bg.html">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Към съдържанието</a>
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/" aria-label="Baga">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+    </a>
+    <nav class="nav-links" aria-label="Navigation">
+      <a href="/#idea">Идея</a><a href="/#worlds">Светове</a><a href="/#verify">Верификатор</a><a href="/blog/" aria-current="page">Блог</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="lang" aria-label="Language">
+        <a href="/" aria-current="page">BG</a>
+        <a href="/en/">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="main" class="article-wrap">
+  <div class="container">
+    <div class="article-head">
+      <div class="kicker"><b>Блог</b> публикация</div>
+      <div class="meta">
+        <span>06.09.2026</span>
+        <span class="lang-badge">BG</span>
+        <span>5 мин</span>
+      </div>
+      <h1>Между Rust и чистия C? Не съвсем — и това не е най-интересното за Бага</h1>
+    </div>
+    <div class="article-layout">
+      <article class="article">
+        <p>Хората, които за пръв път видят <a href="https://github.com/katehonz/baga-lang/blob/main/blog/predstavyane-baga-bg.md">Бага</a>, почти винаги казват едно и също: <em>„това е нещо между Rust и чист C"</em>. Разбирам откъде идва. Синтаксисът изглежда съвременен като Rust, а под капака има C bootstrap, транспилиране към C и нула зависимости — като чист C. Но сравнението е хем вярно на повърхността, хем подвеждащо точно там, където езикът е най-интересен. Нека разгледам честно и двете половини.</p>
+<blockquote>
+<p><em>„Между Rust и C" описва ергономията и паметта. Но залогът на Бага е другаде — и той не е „между" нищо.</em></p>
+</blockquote>
+<h2 id="_1">Къде сравнението е вярно</h2>
+<p>Първо, честно към критиците: в няколко оси Бага наистина седи между двата полюса.</p>
+<p><strong>Ергономията е рустоподобна.</strong> <code>fn</code>, <code>let</code>/<code>let mut</code>, <code>match</code>, структури, изброими типове, <code>Vec&lt;T&gt;</code>, интерполация на низове — всичко това е модерно и удобно, без да е тежко. Пишеш и виждаш изразителен език, не асемблер с шевове. В това отношение Бага е далеч по-близо до Rust, отколкото до C.</p>
+<p><strong>Инструментариумът е чист C.</strong> Основният компилатор е C bootstrap с <strong>нула зависимости</strong> — само <code>gcc</code> и <code>make</code>. Изходът е C. Самокомпилира се до неподвижна точка (<code>baga2 == baga3</code>, байт по байт). Това е дисциплината и простотата на C — нещо, което Rust умишлено захвърли в полза на LLVM-монолит и borrow checker.</p>
+<p><strong>Паметта е… по средата, но не както си мислите.</strong> Тук е първата пукнатина в сравнението. Rust няма еквивалент в Бага — <strong>няма borrow checker</strong>. Няма да се борите с компилатора за времена на живот. Но има opt-in <strong>RC модел на паметта</strong> (<code>--rc</code>): собственост, контейнери, полета в структури и енуми, върнати резултати. Тоест Бага не е „безопасен като Rust по подразбиране", а „прост като C по подразбиране, с предпазен колан, ако го поискаш". Това не е полусфера между двата свята — това е съзнателен избор да не повтаряш най-голямата цена на Rust.</p>
+<p>Дотук — да, „между Rust и C" работи като груба карта. Но картата свършва точно там, където започва истинският залог.</p>
+<h2 id="_2">Къде сравнението пропуска целия смисъл</h2>
+<p>Rust зададе въпроса на 2015-а: <strong>„как да предотвратим segfault-ове?"</strong> Бага задава друг въпрос — този на 2026-а: <strong>„как да се доверим на код, който не сме писали?"</strong></p>
+<p>Това не е разлика в градус. Това е разлика в ос.</p>
+<p><strong>Rust няма нищо, което да отговаря на спецификациите на Бага.</strong> В Бага спецификацията е езикова конструкция и компилаторът <strong>доказва или оборва</strong> имплементацията спрямо нея — статично, преди да се изпълни ред:</p>
+<pre><code class="language-baga">spec fact {
+    input: n: i64
+    output: i64
+    requires: n &gt;= 0
+    ensures: output &gt;= 1
+    decreases: n
+}
+
+fn fact(n: i64) -&gt; i64 {
+    if n &lt;= 0 { return 1 }
+    let r = fact(n - 1)   // индукционна хипотеза: r &gt;= 1
+    return n * r
+}
+</code></pre>
+<pre><code class="language-bash">$ ./baga --verify fact.baga
+verify fact:
+  ensures #1 (output &gt;= 1): ДОКАЗАНО
+  (терминация: доказана чрез decreases — пълна коректност)
+</code></pre>
+<p>Rust ще ви провери типовете и паметта. Няма да ви каже — с <strong>контрапример</strong>, ако сгрешите — че функцията ви връща нещо извън договореното. Това не е върху оста Rust↔C. Това е територия на Dafny, Whiley, Liquid Haskell — но с малък, проверим двигател (елиминация на Фурие–Моцкин + символно изпълнение + правила на Хоар) вместо черна кутия със SMT солвер.</p>
+<p><strong>Rust няма ефектна система.</strong> В Бага <code>str !IO !Net</code> е <strong>различен тип</strong> от <code>str</code>. Необработен ефект е грешка по време на компилация, не изключение по време на изпълнение:</p>
+<pre><code class="language-baga">fn read_file(path: str) -&gt; str !IO !NotFound {
+    let handle = open(path)?
+    read(handle)?
+}
+
+fn main() {
+    let content = read_file(&quot;data.txt&quot;)
+        catch !NotFound =&gt; &quot;empty&quot;
+        catch !IO =&gt; &quot;error&quot;
+    print(content)
+}
+</code></pre>
+<p>Това е Plotkin &amp; Power (2003), направено практично — територията на Koka и Unison. Rust няма нищо подобно; <code>Result&lt;T, E&gt;</code> е библиотечен шаблон, не измерение на типа.</p>
+<p><strong>Rust не извлича доказателства.</strong> <code>--proofs</code> вади четим текст — <code>theorem fact_terminates</code>, <code>theorem fact_pure</code> — от самия код. Това е <strong>обратното</strong> на Coq: Coq извлича програми от доказателства, Бага извлича доказателствени скици от програми.</p>
+<p>Ето защо „между Rust и чист C" е подвеждащо. То описва <strong>ергономията</strong> и <strong>паметта</strong>, но мълчи за трите стълба, заради които езикът съществува. Все едно да опишете Lisp като „синтаксис със скоби" — вярно, но пропускате въпроса, който Lisp задава.</p>
+<h2 id="_3">Какво е Бага всъщност?</h2>
+<p>Ако трябва да го сложа на картата честно, бих казал така:</p>
+<ul>
+<li><strong>Като C</strong> — по дух на простота и по инструментариум (zero-dep bootstrap, транспилиране към C, самокомпилация до неподвижна точка).</li>
+<li><strong>Като Rust</strong> — по ергономия и по амбиция за коректност (но без borrow checker; вместо него — opt-in RC).</li>
+<li><strong>Като Koka/Dafny/Whiley</strong> — по ефектната система и статичната верификация, но с малък, одитируем верификатор, който казва НЕИЗВЕСТНО вместо да гадае.</li>
+</ul>
+<p>Иначе казано: <strong>синтаксисът е между Rust и C, но тезата е отвъд и двете.</strong> Тезата е, че в ерата на AI пишещия код дефицитният ресурс вече не е безопасността на паметта (Rust я спечели през 2015-а) и не е суровата скорост (C я има от 1972-а) — дефицитният ресурс е <strong>доверието</strong>. Доверие в код, който не си писал ти, а е излъчил агент. Ако Rust е отговорът на „кой ще пази паметта", Бага се опитва да бъде отговорът на „кой ще пази смисъла".</p>
+<h2 id="_4">Моето мнение — без захар</h2>
+<p>Понеже ме питате честно, ето го честно.</p>
+<p><strong>Най-силното нещо в Бага не е езикът сам по себе си, а вертикалът.</strong> Език не се доказва с тези — доказва се като компилаторът компилира сам себе си до неподвижна точка, базата данни (<code>boilaDB</code>) говори протокола на PostgreSQL с истински <code>psql</code>, а най-отгоре стои счетоводна програма (<code>bagabuch</code>), която издава фактури с ДДС по ред и генерира SAF-T за НАП. Този вертикал — <a href="https://github.com/katehonz/baga-lang/blob/main/blog/ekosistema-baga-bg.md">от самокомпилатора до първата фактура</a> — е рядък, и той е истинският тест на езика, не демотата.</p>
+<p><strong>Най-интересната идея е „спецификацията като присъда, не като коментар".</strong> Microsoft вече промотира Spec-Driven Development като <em>процес</em>. Бага прави по-силния ход: спецификацията е <em>езикова конструкция</em>, а съответствието е <em>присъда по време на компилация</em>. Това е единствената посока, в която AI-нативното инженерство може да не завърши с „LLM съди LLM".</p>
+<p><strong>Честните слабости.</strong> Това е работен прототип, не производствен език. Фрагментът на верификатора е умишлено малък — общата нелинейна аритметика (полиноми от по-висока степен, деление с променливи) е оставащото стълбище. Ефектите са само по време на компилация. Няма borrow checker — което е и освобождение, и празнина за тези, които търсят Rust-гаранции по подразбиране. И най-вече: език без общност е граматика; Бага е все още на етапа, в който трябва да убеди първата кохорта, че залогът е реален, а не още една рекомбинация на стари идеи.</p>
+<p><strong>Присъдата ми.</strong> „Между Rust и чист C" е удобно свиване, но несправедливо. То поставя Бага на ос, която той съзнателно не играе — ос на памет и ергономия — и скрива оста, която го прави различен: доверието в код от AI. Ако през 2026-а искате просто още един системен език, Бага няма да ви спечели. Ако искате да видите какво става, когато компилаторът спре да бъде проверяващ типове и стане <strong>съдия, който доказва</strong> — тогава си струва да следите точно този език, а не етикета, който му лепват.</p>
+<hr />
+<p><em>Нищо не е ново. Линейната логика е от 1987-а — отне ѝ 30 години да стане Rust. Ефектните системи са от 2003-а. Може би сега им е времето — а въпросът вече не е „какво е ново", а „какво още не е слепено заедно".</em></p>
+<p>⚔️</p>
+      </article>
+      <aside><div class="toc"><div class="toc-label">Съдържание</div>
+<ul>
+<li><a href="#_1">Къде сравнението е вярно</a></li>
+<li><a href="#_2">Къде сравнението пропуска целия смисъл</a></li>
+<li><a href="#_3">Какво е Бага всъщност?</a></li>
+<li><a href="#_4">Моето мнение — без захар</a></li>
+</ul>
+</div></aside>
+    </div>
+    <div class="article-nav">
+      <a href="/blog/">← Всички публикации</a>
+      <a href="https://github.com/katehonz/baga-lang/blob/main/blog/mezhdu-rust-i-c-bg.md" target="_blank" rel="noopener">Източник в GitHub ↗</a>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/" aria-label="Baga">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+          Бага
+        </a>
+        <p>Системен език с български корени. Памет с протокол, ефекти в типа, доказателства с контрапримери.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+      <div class="foot-col">
+        <h4>Език</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+      </div>
+      <div class="foot-col">
+        <h4>Код</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+      <div class="foot-col">
+        <h4>Още</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span class="lang" aria-label="Language">
+          <a href="/" aria-current="page">BG</a>
+          <a href="/en/">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

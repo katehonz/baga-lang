@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Бага — езикът, в който компилаторът е съдията — Baga</title>
+<meta name="description" content="Бага е език за програмиране за системен и продуктов код в ерата на изкуствения интелект. Основната му идея е проста: пишете нормални програми, а компилаторът държи ефектите, спецификациите и доказателствените скици видими, така…">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/blog/predstavyane-baga-bg.html">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Бага — езикът, в който компилаторът е съдията — Baga">
+<meta property="og:description" content="Бага е език за програмиране за системен и продуктов код в ерата на изкуствения интелект. Основната му идея е проста: пишете нормални програми, а компилаторът държи ефектите, спецификациите и доказателствените скици видими, така…">
+<meta property="og:url" content="https://baga-lang.top/blog/predstavyane-baga-bg.html">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Към съдържанието</a>
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/" aria-label="Baga">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+    </a>
+    <nav class="nav-links" aria-label="Navigation">
+      <a href="/#idea">Идея</a><a href="/#worlds">Светове</a><a href="/#verify">Верификатор</a><a href="/blog/" aria-current="page">Блог</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="lang" aria-label="Language">
+        <a href="/" aria-current="page">BG</a>
+        <a href="/en/">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="main" class="article-wrap">
+  <div class="container">
+    <div class="article-head">
+      <div class="kicker"><b>Блог</b> публикация</div>
+      <div class="meta">
+        <span>21.09.2026</span>
+        <span class="lang-badge">BG</span>
+        <span>6 мин</span>
+      </div>
+      <h1>Бага — езикът, в който компилаторът е съдията</h1>
+    </div>
+    <div class="article-layout">
+      <article class="article">
+        <p><strong>Бага</strong> (⚔️) е език за програмиране за системен и продуктов код в ерата на изкуствения интелект. Основната му идея е проста: пишете нормални програми, а компилаторът държи <strong>ефектите, спецификациите и доказателствените скици</strong> видими, така че човек (или агент) да може да се довери на резултата.</p>
+<blockquote>
+<p><em>„Въпросът не е „какво е ново". Въпросът е „какво още не е слепено заедно"."</em></p>
+</blockquote>
+<p>Името идва от българската дума „бага" — воин, който се бие сам. Езикът тръгва от едно наблюдение: нищо в програмирането не е ново, но правилната рекомбинация в правилния момент може да бъде. Rust е линейна логика (1987) + регионно управление на паметта (1994) + Cyclone (2001). Haskell е практична теория на категориите. Въпросът за Бага беше: <strong>какво още не е слепено?</strong></p>
+<p>Отговорът: език, проектиран за работния процес, в който <strong>AI пише имплементацията, а компилаторът е съдията</strong> — съдия, който може да <em>доказва</em>, а не само да проверява типове.</p>
+<h2 id="_1">Трите стълба</h2>
+<h3 id="1">1. Спецификациите са граждани от първи ред — и се налагат статично</h3>
+<p>Човекът пише спецификацията. AI пише имплементацията. Компилаторът <strong>доказва или оборва имплементацията спрямо спецификацията, статично, преди каквото и да е да се изпълни</strong>:</p>
+<pre><code class="language-baga">spec sum_to {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n &gt;= 0
+    ensures:
+        0 &lt;= output
+    decreases:
+        n
+}
+
+fn sum_to(n: i64) -&gt; i64 {
+    if n &lt; 1 { return 0 }
+    let r = sum_to(n - 1)
+    return n + r
+}
+</code></pre>
+<pre><code class="language-bash">$ ./baga --verify term_dec.baga
+</code></pre>
+<pre><code>verify sum_to:
+  ensures #1 (0 &lt;= output): ДОКАЗАНО
+  (терминация: доказана чрез decreases — пълна коректност)
+</code></pre>
+<p>И когато AI сгреши, не получава предупреждение — получава <strong>оборване с конкретен контрапример</strong>:</p>
+<pre><code>verify bad_abs:
+  ensures #1 (output &gt;= 0): ОБРОЧЕНО
+    контрапример: x = -1
+</code></pre>
+<p>Това не е Design by Contract (Eiffel, 1986) с проверки по време на изпълнение. Не е и черна кутия със SMT солвер: верификаторът е малък, проверим двигател (елиминация на Фурие–Моцкин над рационалните числа + символно изпълнение + правила на Хоар), който е <strong>коректен по конструкция</strong>. Единственият път до ДОКАЗАНО е да се покаже, че отрицанието на задължението е неизпълнимо дори над рационалните числа, което предполага неизпълнимост над целите. Всичко извън фрагмента честно се отчита като НЕИЗВЕСТНО — никога фалшиво доказано. Всеки контрапример се пре-проверява с директно изчисление и минава през <strong>врата за заключителност</strong>: входовете трябва да нарушават договора за <em>всяка</em> стойност на вътрешните абстрактни променливи — иначе отговорът е НЕИЗВЕСТНО, а не фалшива тревога.</p>
+<p>Витрината: <strong>факториел, напълно доказан</strong> — рекурсивна, нелинейна функция, с терминация, без нито един SMT солвер:</p>
+<pre><code class="language-baga">spec fact {
+    input: n: i64
+    output: i64
+    requires: n &gt;= 0
+    ensures: output &gt;= 1
+    decreases: n
+}
+
+fn fact(n: i64) -&gt; i64 {
+    if n &lt;= 0 { return 1 }
+    let r = fact(n - 1)   // индукционна хипотеза: r &gt;= 1
+    return n * r          // n &gt;= 1, r &gt;= 1 ⇒ n * r &gt;= 1
+}
+</code></pre>
+<p>И понеже потребителят е AI агент, съдията има машинен интерфейс:</p>
+<pre><code class="language-bash">$ ./baga --verify --json bad_abs.baga
+</code></pre>
+<pre><code class="language-json">{&quot;functions&quot;: [{&quot;name&quot;: &quot;bad_abs&quot;, &quot;ensures&quot;: [{&quot;text&quot;: &quot;output &gt;= 0&quot;,
+  &quot;result&quot;: &quot;refuted&quot;, &quot;counterexample&quot;: [{&quot;name&quot;: &quot;x&quot;, &quot;value&quot;: -1}]}], ...}]}
+</code></pre>
+<p>Примката се затваря сама: агентът излъчва код → <code>baga --verify --json</code> → оборено с контрапример → агентът поправя → ДОКАЗАНО. Без LLM да съди LLM.</p>
+<h3 id="2">2. Грешките са измерения на типа, не изключения</h3>
+<pre><code class="language-baga">fn read_file(path: str) -&gt; str !IO !NotFound {
+    let handle = open(path)?      // !IO, !NotFound се разпространяват
+    let content = read(handle)?   // !IO, !Permission се разпространяват
+    content
+}
+
+fn main() {
+    let content = read_file(&quot;data.txt&quot;)
+        catch !NotFound =&gt; &quot;empty&quot;
+        catch !IO =&gt; &quot;error&quot;
+    print(content)
+}
+</code></pre>
+<p><code>str !IO !NotFound</code> е <strong>различен тип</strong> от <code>str</code>. Ефектите се композират автоматично при извикване на функции. Необработените ефекти са <strong>грешки по време на компилация</strong>:</p>
+<pre><code>error: unhandled effect !IO in 'main' — declare it in the return type or catch it
+</code></pre>
+<p>Това е ефектна система (Плоткин и Пауър, 2003) с явен полиморфизъм на ефекти и извод на ефекти. Koka го прави академично. Бага го прави практически. Операторът <code>?</code> разпространява ефекти, <code>catch !E =&gt; handler</code> премахва ефект от множеството, а множествата от ефекти образуват полурешетка под обединение.</p>
+<h3 id="3">3. Компилаторът извлича доказателства от кода ви</h3>
+<pre><code class="language-bash">$ ./baga --proofs examples/faktorial.baga
+</code></pre>
+<pre><code>proofs for факториел:
+  theorem факториел_signature:
+    ∀ n: i64. факториел(n) → i64
+
+  theorem факториел_terminates:
+    ∀ n: i64. terminates(факториел(n))
+    evidence: base case with early return, 2 return paths
+
+  theorem факториел_pure:
+    факториел is pure (no declared effects)
+</code></pre>
+<p>Не Coq. Не Lean. <strong>Четим текст</strong>, който човек (или AI) може да провери — а теоремите за договорите са подкрепени от статичния верификатор, а не са просто извлечени пожелания. Това е <strong>обратното</strong> на извличането на доказателства в Coq: Coq извлича програми от доказателства, а Бага извлича доказателствени скици от програми.</p>
+<h2 id="_2">Защо сега?</h2>
+<p>Всяка голяма част от AI-инструментариума за код днес има една и съща форма: LLM генерира код, а след това нещо проверява дали кодът съответства на намерението. Това „нещо" обикновено е:</p>
+<ul>
+<li>тестове (непълни по конструкция — извадка от входното пространство),</li>
+<li>друг LLM (LLM съди LLM — кръгова логика),</li>
+<li>човек (тясното място, което се опитвахме да премахнем).</li>
+</ul>
+<p>Rust отговори на въпроса „как да предотвратим сегфолтове". Добър отговор. Но въпросът през 2026 г. не е „как да предотвратим сегфолтове", а <strong>„как да се доверим на код, който не сме писали"</strong>. Индустрията вече се е съгласила с диагнозата: Microsoft официално промотира <strong>Spec-Driven Development (SDD)</strong> като основа на AI-нативното инженерство — спецификацията като <em>споделен източник на истина</em> за хора и AI. Разликата е в нивото: SDD атакува загубата на намерение на ниво <strong>процес</strong> (документ + стъпка Validate), а Бага прави по-силния ход — спецификацията е <strong>езикова конструкция</strong>, а съответствието е <strong>присъда по време на компилация</strong>. В спектъра spec-first → spec-anchored → spec-as-source, Бага е далечният край: <em>spec-as-source</em>.</p>
+<h2 id="_3">Самият език</h2>
+<pre><code class="language-baga">// Да, кирилските идентификатори работят. Езикът е идентичност.
+fn факториел(n: i64) -&gt; i64 {
+    if n &lt;= 1 { return 1 }
+    n * факториел(n - 1)
+}
+
+fn main() {
+    for i in 0..15 {
+        print(факториел(i))
+    }
+}
+</code></pre>
+<p>Характеристики: <code>fn</code>, <code>let</code>/<code>let mut</code>, <code>if</code>/<code>else</code>, <code>while</code> (с инварианти на цикъла), <code>for..in</code>, <code>match</code>, структури, изброими типове, <code>str</code>, <code>i64</code>, <code>f64</code>, <code>bool</code>, <code>bytes</code>, <code>Vec</code>, интерполация на низове, ефекти (<code>!IO</code>, <code>?</code>, <code>catch</code>), спецификации с <code>requires</code>/<code>ensures</code>/<code>decreases</code>, извличане на доказателства, FFI (<code>extern fn</code>), импортиране на пакети.</p>
+<h2 id="_4">Компилира сам себе си</h2>
+<pre><code>C bootstrap → compiler.baga → C → gcc → baga2
+baga2       → compiler.baga → C → gcc → baga3
+baga2 == baga3 ✓   (неподвижна точка)
+</code></pre>
+<p>Самокомпилиращият се компилатор е <strong>~3200 реда Бага</strong>. C bootstrap-ът е ~10 хиляди реда C с <strong>нула зависимости</strong> (само gcc и make). Има и LLVM IR бекенд (C API на LLVM 14). Доверието е вградено, а не се надява:</p>
+<ul>
+<li><strong>Самокомпилация до неподвижна точка</strong> — самокомпилаторът се възпроизвежда байт по байт (<code>make self</code>).</li>
+<li><strong>Оракул на бекенда</strong> — изходът на LLVM бекенда се сравнява с този на C бекенда на всеки пример (<code>lli-14</code>).</li>
+<li><strong>Оракул на верификатора</strong> — <code>--test-specs</code> тества със свойства всеки договор, който статичният верификатор нарича ДОКАЗАНО; те трябва да съвпадат.</li>
+<li>Всичко това е една команда (<code>make test</code>, <code>make self</code>) и е свързано с CI.</li>
+</ul>
+<h2 id="_5">Криптография в чист Бага и цяла екосистема</h2>
+<p>Криптографията е <strong>имплементирана в Бага</strong>, а не свързана с OpenSSL по време на изпълнение: SHA-1/256, HMAC, AES, GCM, HKDF, bn, X25519, P-256/ECDSA, RSA, DER, X.509; TLS 1.3 клиент и <code>https://</code> върху чист TLS; JWT (HS256/RS256/ES256) в <code>app-product/jwtbaga</code>.</p>
+<p>Екосистемата не е от демота, а от <strong>пакети за използване</strong>, строени с пакетния мениджър <strong>sandak</strong> (<code>sandak.toml</code> на пакет): httpdbaga (HTTP/1.1 + HTTP/2 + HPACK), pgbaga (PostgreSQL wire клиент), boilaDB (мултимодална SQL база данни), ormbaga (ORM в стил ActiveRecord + миграции), fmrbaga (уеб фреймуърк), rocksbaga (издръжлив LSM KV сторидж), raftbaga (3-възлов Raft консенсус), txnbaga (2PC + MVCC), imgbaga (растерни изображения) и още десетки.</p>
+<h2 id="_6">Бърз старт</h2>
+<pre><code class="language-bash">git submodule update --init --recursive
+make
+./baga examples/zdravei.baga
+# Здравей, багатуре. Боят започва.
+</code></pre>
+<p>Или в браузъра: <code>python3 playground/serve.py</code> → http://localhost:8080</p>
+<p>Основният компилатор е с нула зависимости — само <code>gcc</code> и <code>make</code>. LLVM бекендът е по избор.</p>
+<h2 id="_7">Честен статус</h2>
+<p>Това е <strong>работен прототип</strong>, не производствен език — но основното твърдение е реално и се проверява за пет минути:</p>
+<pre><code class="language-bash">make &amp;&amp; ./baga --verify examples/verify/fact_full.baga
+</code></pre>
+<p>Фрагментът на верификатора е умишлено малък и казва НЕИЗВЕСТНО, вместо да гадае; общата нелинейна аритметика (полиноми от по-висока степен, деление с променливи) е оставащото стълбище. Ефектите са само по време на компилация (изтриват се при генериране на код). Езикът се документира на български и английски, лицензът е MIT, а изходният код е на <a href="https://github.com/katehonz/baga-lang">GitHub</a>.</p>
+<hr />
+<p><em>Нищо не е ново. Но нищо не е навременно. Линейната логика е от 1987 г. — отне ѝ 30 години да стане Rust. Ефектните системи са от 2003 г. Може би сега им е времето.</em></p>
+<p>⚔️</p>
+      </article>
+      <aside><div class="toc"><div class="toc-label">Съдържание</div>
+<ul>
+<li><a href="#_1">Трите стълба</a><ul>
+<li><a href="#1">1. Спецификациите са граждани от първи ред — и се налагат статично</a></li>
+<li><a href="#2">2. Грешките са измерения на типа, не изключения</a></li>
+<li><a href="#3">3. Компилаторът извлича доказателства от кода ви</a></li>
+</ul>
+</li>
+<li><a href="#_2">Защо сега?</a></li>
+<li><a href="#_3">Самият език</a></li>
+<li><a href="#_4">Компилира сам себе си</a></li>
+<li><a href="#_5">Криптография в чист Бага и цяла екосистема</a></li>
+<li><a href="#_6">Бърз старт</a></li>
+<li><a href="#_7">Честен статус</a></li>
+</ul>
+</div></aside>
+    </div>
+    <div class="article-nav">
+      <a href="/blog/">← Всички публикации</a>
+      <a href="https://github.com/katehonz/baga-lang/blob/main/blog/predstavyane-baga-bg.md" target="_blank" rel="noopener">Източник в GitHub ↗</a>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/" aria-label="Baga">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+          Бага
+        </a>
+        <p>Системен език с български корени. Памет с протокол, ефекти в типа, доказателства с контрапримери.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+      <div class="foot-col">
+        <h4>Език</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+      </div>
+      <div class="foot-col">
+        <h4>Код</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+      <div class="foot-col">
+        <h4>Още</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span class="lang" aria-label="Language">
+          <a href="/" aria-current="page">BG</a>
+          <a href="/en/">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

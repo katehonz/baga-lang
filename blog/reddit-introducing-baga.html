@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>I built a programming language where the compiler statically proves AI-written code against specs — with counterexamples. Errors are type dimensions. It compiles itself. — Baga</title>
+<meta name="description" content="Baga (Бага, Bulgarian for &quot;a warrior who fights alone&quot;) is a programming language I&#x27;ve been building that started from a simple observation: nothing in programming is new, but the right recombination at the right time can be.">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/blog/reddit-introducing-baga.html">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="article">
+<meta property="og:title" content="I built a programming language where the compiler statically proves AI-written code against specs — with counterexamples. Errors are type dimensions. It compiles itself. — Baga">
+<meta property="og:description" content="Baga (Бага, Bulgarian for &quot;a warrior who fights alone&quot;) is a programming language I&#x27;ve been building that started from a simple observation: nothing in programming is new, but the right recombination at the right time can be.">
+<meta property="og:url" content="https://baga-lang.top/blog/reddit-introducing-baga.html">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/en/" aria-label="Baga">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+    </a>
+    <nav class="nav-links" aria-label="Navigation">
+      <a href="/en/#idea">Idea</a><a href="/en/#worlds">Worlds</a><a href="/en/#verify">Verifier</a><a href="/blog/" aria-current="page">Blog</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="lang" aria-label="Language">
+        <a href="/">BG</a>
+        <a href="/en/" aria-current="page">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="main" class="article-wrap">
+  <div class="container">
+    <div class="article-head">
+      <div class="kicker"><b>Blog</b> post</div>
+      <div class="meta">
+        <span>Sep 21, 2026</span>
+        <span class="lang-badge">EN</span>
+        <span>6 min</span>
+      </div>
+      <h1>I built a programming language where the compiler statically proves AI-written code against specs — with counterexamples. Errors are type dimensions. It compiles itself.</h1>
+    </div>
+    <div class="article-layout">
+      <article class="article">
+        <p><strong>Baga</strong> (Бага, Bulgarian for "a warrior who fights alone") is a programming language I've been building that started from a simple observation: <em>nothing in programming is new, but the right recombination at the right time can be.</em></p>
+<p>Rust is linear logic (1987) + region-based memory management (1994) + Cyclone (2001). Haskell is category theory (1950s) made practical. Every language is a recombination. So I asked: <strong>what hasn't been glued together yet?</strong></p>
+<p>The answer, I think: a language designed for the workflow where <strong>AI writes the implementation and the compiler is the judge</strong> — with the judge actually able to <em>prove</em> things, not just type-check them.</p>
+<h2 id="the-three-pillars">The Three Pillars</h2>
+<h3 id="1-specs-are-first-class-citizens-and-statically-enforced">1. Specs are first-class citizens — and statically enforced</h3>
+<pre><code class="language-baga">spec sum_to {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n &gt;= 0
+    ensures:
+        0 &lt;= output
+    decreases:
+        n
+}
+
+fn sum_to(n: i64) -&gt; i64 {
+    if n &lt; 1 { return 0 }
+    let r = sum_to(n - 1)
+    return n + r
+}
+</code></pre>
+<p>The human writes the spec. AI writes the implementation. The compiler <strong>proves or refutes the implementation against the spec, statically, before anything runs</strong>:</p>
+<pre><code>$ ./baga --verify term_dec.baga
+verify sum_to:
+  ensures #1 (0 &lt;= output): ДОКАЗАНО          # PROVEN
+  (терминация: доказана чрез decreases — пълна коректност)
+  извикване (requires на 'sum_to' при извикване): ДОКАЗАНО
+  извикване (терминация: decreases намалява ...): ДОКАЗАНО
+</code></pre>
+<p>(The compiler speaks Bulgarian. ДОКАЗАНО = PROVEN, ОБРОЧЕНО = REFUTED, контрапример = counterexample. Language is identity.)</p>
+<p>And when the AI gets it wrong, it doesn't get a warning — it gets a <strong>refutation with a concrete counterexample</strong>:</p>
+<pre><code>verify bad_abs:
+  ensures #1 (output &gt;= 0): ОБРОЧЕНО
+    контрапример: x = -1
+</code></pre>
+<p>This isn't Design by Contract (Eiffel, 1986) with runtime checks. It's not an SMT black box either: the verifier is a small, auditable engine (Fourier–Motzkin elimination over the rationals + symbolic execution + Hoare rules) that is <strong>sound by construction</strong> — the only path to PROVEN is showing the negated obligation is unsatisfiable even over the rationals, which implies unsatisfiable over the integers. Anything outside the fragment is honestly reported UNKNOWN, never falsely proven. Every reported counterexample is re-checked by direct evaluation.</p>
+<p>What it covers today: linear arithmetic (integer-exact — strict integer inequalities are tightened, so <code>n &gt; 0 ⇒ n &gt;= 1</code> proves), <code>while</code> loops with invariants, array bounds safety, element invariants (<code>v[*] &gt;= 0</code>), a <code>sorted(v)</code> relational axiom, <strong>recursion via assume–guarantee</strong> (partial correctness), <strong>full correctness via <code>decreases</code></strong>, and <strong>products of linear forms</strong> (<code>x*x &gt;= 0</code> always; <code>fa &gt;= 1 ∧ fb &gt;= 1 ⇒ fa*fb &gt;= 1</code>).</p>
+<p>And every refutation passes a <strong>conclusiveness gate</strong>: the reported inputs must violate the contract for <em>every</em> value of the verifier's internal abstract variables — otherwise the answer is UNKNOWN, never a false alarm.</p>
+<p>The flagship: <strong>factorial, fully proven</strong> — a recursive, non-linear function, with termination, no SMT solver anywhere:</p>
+<pre><code class="language-baga">spec fact {
+    input: n: i64
+    output: i64
+    requires: n &gt;= 0
+    ensures: output &gt;= 1
+    decreases: n
+}
+
+fn fact(n: i64) -&gt; i64 {
+    if n &lt;= 0 { return 1 }
+    let r = fact(n - 1)   // induction hypothesis: r &gt;= 1
+    return n * r          // n &gt;= 1, r &gt;= 1 ⇒ n * r &gt;= 1
+}
+</code></pre>
+<pre><code>verify fact:
+  ensures #1 (output &gt;= 1): ДОКАЗАНО
+  (терминация: доказана чрез decreases — пълна коректност)
+  извикване (requires на 'fact' при извикване): ДОКАЗАНО
+  извикване (терминация: decreases намалява ...): ДОКАЗАНО
+</code></pre>
+<p>And because the consumer is an AI agent, the judge has a machine API:</p>
+<pre><code>$ ./baga --verify --json bad_abs.baga
+{&quot;functions&quot;: [{&quot;name&quot;: &quot;bad_abs&quot;, &quot;ensures&quot;: [{&quot;text&quot;: &quot;output &gt;= 0&quot;,
+  &quot;result&quot;: &quot;refuted&quot;, &quot;counterexample&quot;: [{&quot;name&quot;: &quot;x&quot;, &quot;value&quot;: -1}]}], ...}]}
+</code></pre>
+<p>The loop writes itself: agent emits code → <code>baga --verify --json</code> → refuted with counterexample → agent fixes → PROVEN. No LLM judging LLM.</p>
+<h3 id="2-errors-are-type-dimensions-not-exceptions">2. Errors are type dimensions, not exceptions</h3>
+<pre><code class="language-baga">fn read_file(path: str) -&gt; str !IO !NotFound {
+    let handle = open(path)?      // !IO, !NotFound propagate
+    let content = read(handle)?   // !IO, !Permission propagate
+    content
+}
+
+fn main() {
+    let content = read_file(&quot;data.txt&quot;)
+        catch !NotFound =&gt; &quot;empty&quot;
+        catch !IO =&gt; &quot;error&quot;
+    print(content)
+}
+</code></pre>
+<p><code>String !IO !NotFound</code> is a <strong>different type</strong> from <code>String</code>. Effects compose automatically when you call functions. Unhandled effects are <strong>compile-time errors</strong>:</p>
+<pre><code>error: unhandled effect !IO in 'main' — declare it in the return type or catch it
+</code></pre>
+<p>This is an effect system (Plotkin &amp; Power, 2003) with explicit effect polymorphism and effect inference. Koka does this academically. Baga does it practically. The <code>?</code> operator propagates effects. <code>catch !E =&gt; handler</code> removes an effect from the set. Effect sets form a join-semilattice under union.</p>
+<h3 id="3-the-compiler-extracts-proofs-from-your-code">3. The compiler extracts proofs from your code</h3>
+<pre><code>proofs for sum_to:
+  theorem sum_to_signature:
+    ∀ n: i64. sum_to(n) → i64
+
+  theorem sum_to_terminates:
+    ∀ n: i64. terminates(sum_to(n))
+    evidence: base case with early return, 2 return paths
+
+  theorem sum_to_pure:
+    sum_to is pure (no declared effects)
+
+  theorem sum_to_ensures_1:
+    requires: n &gt;= 0
+    ensures: 0 &lt;= output
+    status: ДОКАЗАНО (статично, Fourier–Motzkin)
+</code></pre>
+<p>Not Coq. Not Lean. <strong>Readable text</strong> that a human (or AI) can verify — and the contract theorems are backed by the static verifier, not just extracted wishes. This is the <strong>reverse</strong> of Coq's proof extraction. Coq extracts programs from proofs. Baga extracts proof sketches from programs.</p>
+<h2 id="why-now">Why now?</h2>
+<table>
+<thead>
+<tr>
+<th>Before</th>
+<th>Now</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Human writes code</td>
+<td>AI writes code, human verifies</td>
+</tr>
+<tr>
+<td>Errors are runtime surprises</td>
+<td>Errors must be visible in the type</td>
+</tr>
+<tr>
+<td>Proofs are for mathematicians</td>
+<td>Proofs must be automatic and readable</td>
+</tr>
+</tbody>
+</table>
+<p>Rust answered "how do we prevent segfaults." Good answer. But the question in 2026 isn't "how do we prevent segfaults." The question is <strong>"how do we trust code we didn't write?"</strong></p>
+<h2 id="the-language">The language</h2>
+<pre><code class="language-baga">// Yes, Cyrillic identifiers work. Because language is identity.
+fn факториел(n: i64) -&gt; i64 {
+    if n &lt;= 1 { return 1 }
+    n * факториел(n - 1)
+}
+
+fn main() {
+    for i in 0..15 {
+        print(факториел(i))
+    }
+}
+</code></pre>
+<p>Features: <code>fn</code>, <code>let</code>/<code>let mut</code>, <code>if</code>/<code>else</code>, <code>while</code> (with loop invariants), <code>for..in</code>, <code>match</code>, structs, enums, <code>str</code>, <code>i64</code>, <code>f64</code>, <code>bool</code>, <code>bytes</code>, <code>Vec</code>, string interpolation, effects (<code>!IO</code>, <code>?</code>, <code>catch</code>), specs with <code>requires</code>/<code>ensures</code>/<code>decreases</code>, proof extraction, FFI (<code>extern fn</code>), imports. Ships with working HTTP and JWT (HS256) libraries written in Baga.</p>
+<h2 id="it-compiles-itself">It compiles itself</h2>
+<pre><code>C bootstrap → compiler.baga → C → gcc → baga2
+baga2       → compiler.baga → C → gcc → baga3
+baga2 == baga3 ✓   (fixed point)
+</code></pre>
+<p>The self-hosted compiler is <strong>~3200 lines of Baga</strong>. The C bootstrap is ~10k lines of C with <strong>zero dependencies</strong> (just gcc and make). There's also an LLVM IR backend (LLVM 14 C API).</p>
+<p>Trust is engineered in, not hoped for:
+- <strong>Self-hosting fixed point</strong> — the self-compiler reproduces itself byte-for-byte (<code>make self</code>).
+- <strong>Backend oracle</strong> — the LLVM backend's output is diffed against the C backend's on every example (<code>lli-14</code>, 21/21).
+- <strong>Verifier oracle</strong> — <code>--test-specs</code> property-tests every contract the static verifier calls PROVEN; they must agree.
+- All of the above is one command (<code>make test</code>, <code>make self</code>) and is wired into CI (<code>.github/workflows</code>, GitHub Actions).</p>
+<h2 id="current-state">Current state</h2>
+<p>This is a <strong>working prototype</strong>, not a production language — but the core claim is real and testable in five minutes: <code>make &amp;&amp; ./baga --verify examples/verify/fact_full.baga</code>. The verifier's fragment is deliberately small and it says UNKNOWN rather than guessing; general non-linear arithmetic (polynomials of higher degree, division by variables) is the remaining staircase. Effects are compile-time only (erased in codegen).</p>
+<h2 id="links">Links</h2>
+<ul>
+<li>Source: <a href="https://github.com/katehonz/baga-lang">github.com/katehonz/baga-lang</a></li>
+<li>Docs: theory (type theory, effect systems, proof theory), language reference, and compiler architecture — in English and Bulgarian</li>
+<li>License: MIT</li>
+</ul>
+<h2 id="whats-next">What's next</h2>
+<ul>
+<li>General non-linear contracts (higher-degree polynomials)</li>
+<li>A REPL</li>
+<li>Editor support beyond the VS Code syntax highlighting that ships in the repo</li>
+</ul>
+<hr />
+<p><em>Nothing is new. But nothing is timely. Linear logic is from 1987. It took 30 years to become Rust. Effect systems are from 2003. Maybe now is the time.</em></p>
+<p>🐆</p>
+      </article>
+      <aside><div class="toc"><div class="toc-label">Contents</div>
+<ul>
+<li><a href="#the-three-pillars">The Three Pillars</a><ul>
+<li><a href="#1-specs-are-first-class-citizens-and-statically-enforced">1. Specs are first-class citizens — and statically enforced</a></li>
+<li><a href="#2-errors-are-type-dimensions-not-exceptions">2. Errors are type dimensions, not exceptions</a></li>
+<li><a href="#3-the-compiler-extracts-proofs-from-your-code">3. The compiler extracts proofs from your code</a></li>
+</ul>
+</li>
+<li><a href="#why-now">Why now?</a></li>
+<li><a href="#the-language">The language</a></li>
+<li><a href="#it-compiles-itself">It compiles itself</a></li>
+<li><a href="#current-state">Current state</a></li>
+<li><a href="#links">Links</a></li>
+<li><a href="#whats-next">What's next</a></li>
+</ul>
+</div></aside>
+    </div>
+    <div class="article-nav">
+      <a href="/blog/">← All posts</a>
+      <a href="https://github.com/katehonz/baga-lang/blob/main/blog/reddit-introducing-baga.md" target="_blank" rel="noopener">Source on GitHub ↗</a>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/en/" aria-label="Baga">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+          Бага
+        </a>
+        <p>A systems language with Bulgarian roots. Memory with a protocol, effects in the type, proofs with counterexamples.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+      <div class="foot-col">
+        <h4>Language</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+      </div>
+      <div class="foot-col">
+        <h4>Code</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+      <div class="foot-col">
+        <h4>More</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span class="lang" aria-label="Language">
+          <a href="/">BG</a>
+          <a href="/en/" aria-current="page">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(800px 460px at 82% -10%, rgba(233, 180, 76, .22), transparent 62%),
+      radial-gradient(600px 500px at -8% 110%, rgba(111, 214, 198, .08), transparent 60%),
+      #07080a;
+    color: #ece6d9;
+    font-family: 'Manrope', system-ui, sans-serif;
+    position: relative;
+  }
+  body::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px);
+    background-size: 64px 64px;
+    mask-image: radial-gradient(900px 600px at 55% 20%, #000, transparent 80%);
+  }
+  .wrap { position: relative; z-index: 1; display: grid; grid-template-columns: 1.08fr .92fr; gap: 44px; padding: 54px 58px; height: 100%; align-content: center; }
+  .brand { display: flex; align-items: center; gap: 13px; font-family: 'Unbounded', sans-serif; font-weight: 600; font-size: 25px; letter-spacing: -.03em; }
+  .brand svg { width: 42px; height: 42px; }
+  .brand .ver { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; color: #e9b44c; border: 1px solid rgba(233,180,76,.3); border-radius: 999px; padding: 5px 8px; letter-spacing: .05em; }
+  .eyebrow { margin-top: 26px; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: #d9b166; }
+  h1 { margin: 16px 0 0; font-size: 58px; line-height: 1.03; letter-spacing: -.04em; font-weight: 800; max-width: 600px; }
+  h1 .gold { background: linear-gradient(100deg, #f6d998, #e9b44c 50%, #cf912f); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { margin-top: 22px; max-width: 540px; color: #aaa496; font-size: 18px; line-height: 1.55; }
+  .sub b { color: #ece6d9; font-weight: 700; }
+  .chips { display: flex; gap: 9px; margin-top: 26px; flex-wrap: wrap; }
+  .chip { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .04em; color: #c9c3b4; border: 1px solid rgba(236,230,217,.17); border-radius: 999px; padding: 7px 11px; }
+  .chip b { color: #e9b44c; font-weight: 600; }
+  .card { align-self: center; border: 1px solid rgba(233,180,76,.22); border-radius: 16px; background: linear-gradient(180deg, rgba(19,23,29,.97), rgba(9,12,15,.99)); box-shadow: 0 40px 80px -30px rgba(0,0,0,.9); overflow: hidden; transform: rotate(-.6deg); }
+  .bar { display: flex; align-items: center; gap: 7px; padding: 11px 15px; border-bottom: 1px solid rgba(236,230,217,.09); font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: #757268; }
+  .dots { display: flex; gap: 5px; margin-right: 4px; }
+  .dots i { width: 8px; height: 8px; border-radius: 50%; background: #343a44; }
+  .dots i:first-child { background: #6a4a33; } .dots i:nth-child(2) { background: #6a5c33; } .dots i:nth-child(3) { background: #33566a; }
+  pre { margin: 0; padding: 15px 17px; font-family: 'JetBrains Mono', monospace; font-size: 12.7px; line-height: 1.62; color: #ded7c9; }
+  .kw { color: #e9b44c; } .ty { color: #7fd8ca; } .st { color: #a9d18a; } .nu { color: #e3c07c; }
+  .term { border-top: 1px solid rgba(236,230,217,.09); background: #07090b; padding: 14px 17px 16px; font-family: 'JetBrains Mono', monospace; font-size: 12.2px; line-height: 1.72; color: #aaa496; }
+  .prompt { color: #e9b44c; margin-right: 7px; }
+  .ok { color: #8fce6b; font-weight: 600; } .bad { color: #e2685c; font-weight: 600; }
+  .counter { display: inline-block; margin-top: 4px; border: 1px solid rgba(226,104,92,.28); background: rgba(226,104,92,.09); color: #efaaa2; border-radius: 5px; padding: 1px 7px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <div class="brand">
+      <svg viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+      <span class="ver">v1.4.0</span>
+    </div>
+    <div class="eyebrow">Системен език · C + LLVM · self-hosted</div>
+    <h1>Паметта е дисциплина.<br><span class="gold">Компилаторът е съдия.</span></h1>
+    <p class="sub">Светове с <b>проверена памет</b>, ефекти в типа и верификатор, който връща <b>конкретен контрапример</b>.</p>
+    <div class="chips">
+      <span class="chip"><b>138/138</b> verify gates</span>
+      <span class="chip"><b>52</b> PARITY</span>
+      <span class="chip">MIT · open source</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="bar"><span class="dots"><i></i><i></i><i></i></span> abs_val.baga</div>
+<pre><span class="kw">spec</span> abs_val {
+    input:
+        x: <span class="ty">i64</span>
+    output: <span class="ty">i64</span>
+    ensures:
+        output &gt;= <span class="nu">0</span>
+}
+
+<span class="kw">fn</span> abs_val(x: <span class="ty">i64</span>) -&gt; <span class="ty">i64</span> {
+    <span class="kw">if</span> x &lt; <span class="nu">0</span> {
+        <span class="kw">return</span> <span class="nu">0</span> - x
+    }
+    <span class="kw">return</span> x
+}</pre>
+    <div class="term">
+      <div><span class="prompt">$</span>./baga --verify abs_val.baga</div>
+      <div>verify abs_val:</div>
+      <div>&nbsp;&nbsp;ensures #1 (output &gt;= 0): <span class="ok">ДОКАЗАНО</span></div>
+      <div>&nbsp;&nbsp;аритметика (преливане: (0 - x)): <span class="bad">ОБРОЧЕНО</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="counter">контрапример: x = -9223372036854775808</span></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

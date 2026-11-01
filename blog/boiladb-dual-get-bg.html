@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>O(1) вместо full-shard scan: как boilaDB стигна нивото на PostgreSQL — Baga</title>
+<meta name="description" content="boilaDB — мултимодалната SQL база данни на Бага — започна една сесия за перформанс с 2.9k транзакции в секунда и сървър, който умираше от OOM под натоварване. Завърши я с 109k tps и резултат на нивото (а на места и над)…">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/blog/boiladb-dual-get-bg.html">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="article">
+<meta property="og:title" content="O(1) вместо full-shard scan: как boilaDB стигна нивото на PostgreSQL — Baga">
+<meta property="og:description" content="boilaDB — мултимодалната SQL база данни на Бага — започна една сесия за перформанс с 2.9k транзакции в секунда и сървър, който умираше от OOM под натоварване. Завърши я с 109k tps и резултат на нивото (а на места и над)…">
+<meta property="og:url" content="https://baga-lang.top/blog/boiladb-dual-get-bg.html">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Към съдържанието</a>
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/" aria-label="Baga">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+    </a>
+    <nav class="nav-links" aria-label="Navigation">
+      <a href="/#idea">Идея</a><a href="/#worlds">Светове</a><a href="/#verify">Верификатор</a><a href="/blog/" aria-current="page">Блог</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="lang" aria-label="Language">
+        <a href="/" aria-current="page">BG</a>
+        <a href="/en/">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="main" class="article-wrap">
+  <div class="container">
+    <div class="article-head">
+      <div class="kicker"><b>Блог</b> публикация</div>
+      <div class="meta">
+        <span>26.08.2026</span>
+        <span class="lang-badge">BG</span>
+        <span>5 мин</span>
+      </div>
+      <h1>O(1) вместо full-shard scan: как boilaDB стигна нивото на PostgreSQL</h1>
+    </div>
+    <div class="article-layout">
+      <article class="article">
+        <p><strong>boilaDB</strong> — мултимодалната SQL база данни на <a href="https://github.com/katehonz/baga-lang/blob/main/blog/predstavyane-baga-bg.md">Бага</a> — започна една сесия за перформанс с 2.9k транзакции в секунда и сървър, който умираше от OOM под натоварване. Завърши я с <strong>109k tps</strong> и резултат на нивото (а на места и над) PostgreSQL на същия хост. Това е историята на десет фази профилиране, няколко фалшиви стени и един-единствен коренен проблем: всяка point заявка правеше пълен scan на шарда.</p>
+<blockquote>
+<p><em>„С тази архитектура резултатът е добър. Ако беше монолит, можехме и да бием PostgreSQL — но на нас архитектурата-кит ни устройва: тя тества езика."</em></p>
+</blockquote>
+<h2 id="8">От „хангва при 8 клиента" до първата стена</h2>
+<p>Отправната точка беше честен списък (<code>gaps.md</code>): pgbench point SELECT с 4 worker-а — c=1: 2.9k tps, c=8: 7.3k, c=16: <strong>ханг</strong>. PostgreSQL на същия хост: 15k / 49k / 72k / 93k.</p>
+<p>Първите фази бяха инфраструктурни разчиствания:</p>
+<ul>
+<li><strong>P31/P32 connection mux</strong> — keep-alive вече не „пинва" по една връзка на worker; idle fds седят в <code>poll</code>.</li>
+<li><strong>P33 poll batching</strong> — <code>poll_wait</code> правеше 8 syscall-а <em>на fd</em> (memfd poke storm): ~150 syscall-а на итерация при c=16 → ~11.</li>
+<li><strong>P33b per-turn rewind</strong> — без него worker arena-тата растяха ~60 KB/заявка и сървърът умираше с SIGKILL за секунди. Това беше и показателен урок: shared state в arena памет с per-turn rewind изисква дисциплината „всичко споделено — в persist региона", която си проправихме с два segfault-а.</li>
+<li><strong>P35 catalog кеш</strong> — всяка заявка четеше и декодираше схемата на таблицата наново (3 point GET-а + decode).</li>
+<li><strong>P41 shape cache</strong> — заявки с вариращ литерал (<code>WHERE aid = 12345</code>) hit-ват план кеша чрез нормализиран ключ; заместването е в частно by-value копие на плана (без lock, без race).</li>
+</ul>
+<p>Всичко това беше реална работа — и всяка фаза измерено <em>неутрална</em> за tps. Платото стоеше здраво на ~12k. Профилът показваше „смърт от хиляди порязвания": <code>baga_map_put</code> ~50% от трафика, <code>bytes_slice</code> ~20%, vec операции ~12% — без единен доминиращ сайт.</p>
+<h2 id="150">Истинската стена: 150 микросекунди на четене</h2>
+<p>Пробивът дойде от тривиален in-process експеримент: същата заявка, изпълнена директно върху сториджа, без wire, без threads:</p>
+<pre><code>txn_get (същият ключ):     1.3 µs
+txn_get (случайни ключове): 154 µs   ← 118× по-бавно
+</code></pre>
+<p>Storage-ът беше невинен за ~30 µs на заявка — той <em>беше</em> стената. Веригата: <code>boila_kv_get_asof</code> за versioned data CF резолвваше „най-нова версия" чрез <code>lsm_scan_prefix_all_kb</code> — <strong>live fold над целия shard</strong> (~2500 записа) на <em>всяка</em> point заявка. MVCC версиите живеят като <code>base + inverted_lsn</code> суфикс, а никой не беше написал индекс към тях.</p>
+<h2 id="materialized-newest-pointer">Фиксът: materialized newest pointer</h2>
+<p>Вместо да строим seek-машинерия в LSM-а, избрахме класическия трик — пишем указателя при писане:</p>
+<ol>
+<li><strong>Dual-write.</strong> Всеки <code>boila_put</code> пише и base ключа със същия <code>[lsn][row]</code> запис. Base винаги сочи най-новата версия. Delete вече триеше и base — половината от дизайна си беше там.</li>
+<li><strong>GC keep rule.</strong> Първата версия на фикса мистериозно „не работеше": compaction-ът <em>търкаше</em> base ключовете като legacy редове отпреди версиите. Новото правило: base се пази, ако стойността му съвпада с най-новата версия; иначе е legacy и се трие.</li>
+<li><strong>Dual маркер.</strong> Бази, създадени след фикса, носят <code>p43|dual</code> ключ в sys CF-а. При <code>dual=1</code> base miss означава „няма такъв ред" — без никакъв scan. Това беше критично: pgbench -S генерира aid до 100k при 10k seed-нати реда — <strong>90% от заявките са miss</strong>, и всяка плащаше пълен scan.</li>
+<li><strong>Стари бази</strong> (без маркер) ползват стария scan fallback — коректността е запазена, цената е 2× storage за data CF при нови бази.</li>
+</ol>
+<p>Ефектът: random point get 154 µs → <strong>1.3 µs</strong>.</p>
+<h2 id="_1">Числата</h2>
+<p>pgbench point SELECT, 4 workers, 10k реда, един и същ хост, една и съща методика:</p>
+<table>
+<thead>
+<tr>
+<th>клиенти</th>
+<th>сутринта</th>
+<th>вечерта</th>
+<th>PostgreSQL*</th>
+<th>съотношение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>c=1</td>
+<td>2 897</td>
+<td><strong>15 218</strong></td>
+<td>~15k</td>
+<td>~1.0×</td>
+</tr>
+<tr>
+<td>c=4</td>
+<td>7 052</td>
+<td><strong>51 616</strong></td>
+<td>~49k</td>
+<td><strong>~1.05×</strong></td>
+</tr>
+<tr>
+<td>c=8</td>
+<td>7 313</td>
+<td><strong>89 097</strong></td>
+<td>~72k</td>
+<td><strong>~1.24×</strong></td>
+</tr>
+<tr>
+<td>c=16</td>
+<td>4 816</td>
+<td><strong>109 092</strong></td>
+<td>~93k</td>
+<td><strong>~1.17×</strong></td>
+</tr>
+</tbody>
+</table>
+<p>*PostgreSQL числата са от замер на същия хост същия ден със същата pgbench конфигурация.</p>
+<p><code>SELECT 1</code> flood (чист serving път, без SQL): <strong>93.7k tps</strong> — т.е. wire/mux/pool слоят не са следващата стена.</p>
+<h2 id="_2">Защо не монолит</h2>
+<p>Естественият въпрос: защо спираме на „ниво postgres", а не продължаваме до „по-бърз от postgres"?</p>
+<p>Защото boilaDB нарочно <strong>не е монолит</strong>. Тя е кит от слоеве, всеки от който е самостоятелен продукт на Бага: <code>rocksbaga</code> (LSM KV), SQL слой (lexer/parser/exec), pgwire протокол, HTTP API, MVCC транзакции. Границите между тях са публични интерфейси, а не вътрешни оптимизации. PostgreSQL е един отлично подтегнат монолит със свои executor, buffer manager и planner, завързани тясно. Монолитът винаги ще изстиска още 20–30%.</p>
+<p>Но целта на boilaDB не е да е „още една база данни". Целта ѝ е да е <strong>стрес тест на езика Бага</strong>: ако SQL слой, MVCC, LSM и wire протокол могат да се напишат като чисти, отделни пакети на езика — и да държат postgres-ско натоварване — значи езикът издържа реалния свят. Кит-архитектурата е <em>по-трудния</em> път — всяка граница плаща данък — и точно затова е по-полезният тест.</p>
+<p>Какво показа този тест за езика:</p>
+<ul>
+<li><strong>Ефектите работят.</strong> <code>!IO</code>/<code>!Time</code>/<code>!Par</code> веригите от pgwire до LSM са видими в типовете; fail-loud промените (zombie listen, fsync данък) се четат от сигнатурите.</li>
+<li><strong>Паметта изисква дисциплина.</strong> Arena + persist регион + per-turn rewind е правилният модел за сървъри — но езикът ни накара да я извоюваме с два segfault-а (worker arena в shared maps). Това е кандидатът за следваща runtime фаза.</li>
+<li><strong>Компилираният Baga е бърз достатъчно</strong> — bottleneck-ът беше алгоритмичен (scan вместо probe), не езиков. Когато той падна, езиковите слоеве издържаха 93k tps на serving и 1.3 µs на point get.</li>
+</ul>
+<h2 id="_3">Честни остатъци</h2>
+<ul>
+<li><strong>2× storage за data CF</strong> при нови бази — цената на dual pointer-а.</li>
+<li><strong>RSS slope ~10 KB/заявка</strong> — за production часове натоварване трябва следваща паметова фаза (mutate-in-place park, allocator работа).</li>
+<li><strong>Extended protocol и snapshot (as-of) четения</strong> ползват все още стария път — те са следващата граница на същата идея (seek вместо scan).</li>
+<li>Бенчмаркът е point SELECT с 10k реда; OLTP микс с писане и по-големи datasets са отделен ден.</li>
+</ul>
+<p>Целият път е в историята на комитите P31–P43 и в <code>gaps.md</code> — честният списък на всичко, което не работеше, защо, и какво още не работи.</p>
+<hr />
+<p><em>boilaDB е част от <a href="https://github.com/katehonz/baga-lang/blob/main/blog/ekosistema-baga-bg.md">екосистемата на Бага</a>: език, в който AI пише имплементацията, а компилаторът е съдията. Хранилищата: <a href="https://github.com/bagalang">baga</a>, <a href="https://github.com/bagalang/boilaDB">boilaDB</a>, <a href="https://github.com/bagalang/rocksbaga">rocksbaga</a>.</em></p>
+      </article>
+      <aside><div class="toc"><div class="toc-label">Съдържание</div>
+<ul>
+<li><a href="#8">От „хангва при 8 клиента" до първата стена</a></li>
+<li><a href="#150">Истинската стена: 150 микросекунди на четене</a></li>
+<li><a href="#materialized-newest-pointer">Фиксът: materialized newest pointer</a></li>
+<li><a href="#_1">Числата</a></li>
+<li><a href="#_2">Защо не монолит</a></li>
+<li><a href="#_3">Честни остатъци</a></li>
+</ul>
+</div></aside>
+    </div>
+    <div class="article-nav">
+      <a href="/blog/">← Всички публикации</a>
+      <a href="https://github.com/katehonz/baga-lang/blob/main/blog/boiladb-dual-get-bg.md" target="_blank" rel="noopener">Източник в GitHub ↗</a>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/" aria-label="Baga">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+          Бага
+        </a>
+        <p>Системен език с български корени. Памет с протокол, ефекти в типа, доказателства с контрапримери.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+      <div class="foot-col">
+        <h4>Език</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+      </div>
+      <div class="foot-col">
+        <h4>Код</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+      <div class="foot-col">
+        <h4>Още</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span class="lang" aria-label="Language">
+          <a href="/" aria-current="page">BG</a>
+          <a href="/en/">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

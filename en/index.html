@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baga — a language where the compiler is the judge</title>
+<meta name="description" content="Baga is a systems language with Bulgarian roots: worlds with machine-checked memory, effects as type dimensions, and a verifier that proves a contract or returns a concrete counterexample.">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/en/">
+<link rel="alternate" hreflang="bg" href="https://baga-lang.top/">
+<link rel="alternate" hreflang="en" href="https://baga-lang.top/en/">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Baga — a language where the compiler is the judge">
+<meta property="og:description" content="Worlds with checked memory, effects in the type, and a verifier with counterexamples. C and LLVM backends, self-hosted.">
+<meta property="og:url" content="https://baga-lang.top/en/">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/en/" aria-label="Baga — home">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+      <span class="ver">v1.4.0</span>
+    </a>
+
+    <nav class="nav-links" aria-label="Main navigation">
+      <a href="#idea">Idea</a>
+      <a href="#worlds">Worlds</a>
+      <a href="#verify">Verifier</a>
+      <a href="#numbers">Numbers</a>
+      <a href="#ecosystem">Ecosystem</a>
+      <a href="#start">Start</a>
+    </nav>
+
+    <div class="nav-actions">
+      <span class="lang" aria-label="Page language">
+        <a href="/">BG</a>
+        <a href="/en/" aria-current="page">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub repository">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="dot"></span> BAGA v1.4.0 · C + LLVM · self-hosted</div>
+        <h1>Memory is a discipline.<br><span class="gold">The compiler is the judge.</span></h1>
+        <p class="lead">
+          <strong>Baga</strong> is a systems language with Bulgarian roots. Worlds give an entire data
+          graph one lifecycle — ownership, freeze, move, free. Effects live in the type. And
+          <code>--verify</code> either proves the contract or returns a <strong>concrete counterexample</strong>.
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#start">
+            Start in 10 minutes
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            GitHub
+          </a>
+        </div>
+        <div class="hero-meta">
+          <span>MIT license</span>
+          <span>Linux</span>
+          <span>200+ tests</span>
+          <span>no external dependencies</span>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="orbit" aria-hidden="true">
+          <svg viewBox="0 0 600 600">
+            <circle class="ring" cx="300" cy="300" r="252"/>
+            <circle class="ring ring-2" cx="300" cy="300" r="196"/>
+            <circle class="node" cx="300" cy="48" r="3.2"/>
+            <circle class="node node-teal" cx="489" cy="404" r="2.8"/>
+            <circle class="node" cx="111" cy="404" r="2.4"/>
+          </svg>
+        </div>
+
+        <div class="editor">
+          <div class="editor-bar">
+            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="editor-file">abs_val.baga</span>
+            <span class="editor-badge">real output</span>
+          </div>
+<pre class="code" data-hl="baga">spec abs_val {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output &gt;= 0
+}
+
+fn abs_val(x: i64) -&gt; i64 {
+    if x &lt; 0 {
+        return 0 - x
+    }
+    return x
+}</pre>
+          <div class="term">
+            <div class="cmd"><span class="prompt">$</span>./baga --verify abs_val.baga</div>
+            <div>verify abs_val:</div>
+            <div>&nbsp;&nbsp;ensures #1 (output &gt;= 0): <span class="ok">ДОКАЗАНО</span></div>
+            <div>&nbsp;&nbsp;аритметика (преливане: (0 - x)): <span class="bad">ОБРОЧЕНО</span></div>
+            <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="counter">контрапример: x = -9223372036854775808</span></div>
+          </div>
+        </div>
+
+        <div class="hero-note">fragment of real <code>--verify</code> output · baga 1.4.0 · verdicts in Bulgarian</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="stats">
+    <div class="container stats-grid">
+      <div class="stat"><strong>138/138</strong><span>verify gates in CI</span></div>
+      <div class="stat"><strong>52</strong><span>self-hosting PARITY</span></div>
+      <div class="stat"><strong class="small">C + LLVM</strong><span>two backends, one oracle</span></div>
+      <div class="stat"><strong class="small">baga2 == baga3</strong><span>self-host fixed point</span></div>
+      <div class="stat"><strong>MIT</strong><span>open source, no dependencies</span></div>
+    </div>
+  </div>
+
+  <section class="section" id="idea">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>01</b> The language</div>
+        <h2>The claim is part of the code. The check belongs to the compiler.</h2>
+        <p>
+          Baga does not bolt verification on as an external tool. <code>spec</code>, effects and
+          regions are in the language, and the compiler refuses a program that contradicts them.
+        </p>
+      </div>
+
+      <div class="grid-3">
+        <article class="card reveal">
+          <div class="num">01 / SPEC</div>
+          <h3>The contract is code</h3>
+          <p><code>spec</code> states the input, output, <code>requires</code>, <code>ensures</code>
+            and <code>decreases</code>. The verifier proves it, refutes it with a counterexample, or
+            says “cannot decide” — never “looks fine”.</p>
+        </article>
+        <article class="card reveal">
+          <div class="num">02 / EFFECTS</div>
+          <h3>Effects are in the type</h3>
+          <p><code>str !IO !NotFound</code> is a different type from <code>str</code>. <code>?</code>
+            propagates effects, <code>catch</code> handles them. A missing effect does not compile.</p>
+        </article>
+        <article class="card reveal">
+          <div class="num">03 / MEMORY</div>
+          <h3>Memory has a protocol</h3>
+          <p>Worlds are regions with ownership, freeze and move. The compiler catches dangling
+            pointers before they become a production incident.</p>
+        </article>
+      </div>
+
+      <div data-tabs style="margin-top:28px">
+        <div class="tabs" role="tablist" aria-label="Language examples">
+          <button class="tab" role="tab" id="tab-effects" aria-controls="panel-effects" aria-selected="true">effects.baga</button>
+          <button class="tab" role="tab" id="tab-fib" aria-controls="panel-fib" aria-selected="false" tabindex="-1">fibonacci.baga</button>
+          <button class="tab" role="tab" id="tab-repl" aria-controls="panel-repl" aria-selected="false" tabindex="-1">REPL</button>
+        </div>
+
+        <div class="tab-panel" id="panel-effects" role="tabpanel" aria-labelledby="tab-effects">
+          <div class="code-shell">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              examples/effects.baga
+              <button class="copy-btn" type="button">copy</button>
+            </div>
+            <div class="code-body">
+<pre class="code" data-hl="baga">// Декларираме ефекти в return типа
+fn прочети_файл(път: str) -&gt; str !IO !NotFound {
+    return "съдържание"
+}
+
+fn обработи(път: str) -&gt; str !IO !NotFound {
+    // ? propagate-ва ефектите нагоре
+    let данни = прочети_файл(път)?
+    return данни
+}
+
+fn main() {
+    // catch обработва ВСЯКО измерение
+    let резултат = прочети_файл("данни.txt")
+        catch !NotFound =&gt; "празно"
+        catch !IO =&gt; "грешка"
+    print(резултат)
+}</pre>
+              <div class="term">
+                <div class="cmd"><span class="prompt">$</span>./baga -I . -I app-product examples/effects.baga</div>
+                <div>съдържание</div>
+                <div class="term-notes">
+                  <div>the effect is in the signature, not in a comment</div>
+                  <div><span class="tok-eff">?</span> does not hide an effect — it propagates it</div>
+                  <div><span class="tok-kw">catch</span> <span class="tok-eff">!NotFound</span> handles only that dimension</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-fib" role="tabpanel" aria-labelledby="tab-fib" hidden>
+          <div class="code-shell">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              fib.baga
+              <button class="copy-btn" type="button">copy</button>
+            </div>
+            <div class="code-body">
+<pre class="code" data-hl="baga">fn фибоначи(n: i64) -&gt; i64 {
+    let mut a: i64 = 0
+    let mut b: i64 = 1
+    let mut i: i64 = 0
+    while i &lt; n {
+        let temp = b
+        b = a + b
+        a = temp
+        i = i + 1
+    }
+    return a
+}
+
+fn main() {
+    for i in 0..6 {
+        print(фибоначи(i))
+    }
+}</pre>
+              <div class="term">
+                <div class="cmd"><span class="prompt">$</span>./baga -I . -I app-product fib.baga</div>
+                <div>0</div>
+                <div>1</div>
+                <div>1</div>
+                <div>2</div>
+                <div>3</div>
+                <div>5</div>
+                <div class="term-notes">
+                  <div><code>for i in 0..6</code> is a half-open range (0…5)</div>
+                  <div><code>let</code> is immutable; <code>let mut</code> is mutable</div>
+                  <div>the last expression is the function’s value</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-repl" role="tabpanel" aria-labelledby="tab-repl" hidden>
+          <div class="code-shell">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              make repl
+              <button class="copy-btn" type="button">copy</button>
+            </div>
+            <div class="repl" style="border:0;border-radius:0">
+              <div><span class="rprompt">бага&gt;</span> <span class="rin">fn inc(x: i64) -&gt; i64 {</span></div>
+              <div><span class="rdim">…     return x + 1</span></div>
+              <div><span class="rdim">… }</span></div>
+              <div><span class="rdim">(записано)</span></div>
+              <div><span class="rprompt">бага&gt;</span> <span class="rin">inc(41)</span></div>
+              <div><span class="rout">42</span></div>
+              <div><span class="rprompt">бага&gt;</span> <span class="rin">let x = 5</span></div>
+              <div><span class="rprompt">бага&gt;</span> <span class="rin">x * 2</span></div>
+              <div><span class="rout">10</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="worlds">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>02</b> Memory</div>
+        <h2>An entire data graph — one value.</h2>
+        <p>
+          Plan caches, snapshots, documents, statistics: structures that are born, frozen, shared
+          and destroyed together. Worlds turn that lifecycle into one value with a checked protocol —
+          on both the C and the LLVM backend.
+        </p>
+      </div>
+
+      <div class="split">
+        <div class="reveal">
+          <div class="flow">
+            <div class="node mutable">mutable<small>owner</small></div>
+            <div class="flow-arrow"><span class="line"></span><span class="arrow-glyph">→</span><small>world_freeze</small></div>
+            <div class="node frozen">frozen<small>N readers</small></div>
+            <div class="flow-arrow"><span class="line"></span><span class="arrow-glyph">→</span><small>chan_send</small></div>
+            <div class="node moved">moved<small>another thread</small></div>
+          </div>
+          <div class="flow-free"><code>world_free(w)</code> — frees the whole chain at once; any access afterwards is REFUTED.</div>
+
+          <ul class="points">
+            <li><b>The protocol is a conclusion, not a convention.</b> use-after-free, mutate-after-freeze,
+              use-after-move and double-free are refuted with a concrete counterexample.</li>
+            <li><b>A frozen world is a shared read-only capability.</b> N readers, no copying;
+              <code>chan_send</code> moves it to another thread.</li>
+            <li><b>dump/load without fixups.</b> Roots and schema live inside the region and offsets are
+              positional. Compact dump: 1.60 MB instead of 4.19 MB for the same world.</li>
+            <li><b>A seatbelt against dangling pointers.</b> A borrowed value escaping into a
+              <code>Vec</code>/<code>Map</code> is a compile error — across function boundaries, generics,
+              <code>vec_slice</code>/<code>vec_concat</code> and <code>map_keys</code>.</li>
+          </ul>
+
+          <div class="metrics">
+            <div class="metric"><b>~3 ns</b><span>cached access</span></div>
+            <div class="metric"><b>~5.7 ns</b><span>streaming access</span></div>
+            <div class="metric"><b>~0.5 ns</b><span>plain Vec, no checks</span></div>
+          </div>
+          <p class="note">W2.14, same machine. Regions are not free: the tax is a few nanoseconds per access
+            and is documented in <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">docs/worlds-bg.md</a> §4–5.</p>
+        </div>
+
+        <div class="reveal">
+          <div class="code-shell">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              examples/worlds.baga
+              <button class="copy-btn" type="button">copy</button>
+            </div>
+            <div class="code-body single">
+<pre class="code" data-hl="baga">// Регионът се пълни, замразява, дампи, освобождава
+// и зарежда отново: офсетите са позиционни.
+fn main() {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push_str(w, v, "hello")
+    wvec_push_str(w, v, "world")
+    world_freeze(w)
+    print(wvec_get_str(w, v, 0))
+    print(wvec_get_str(w, v, 1))
+
+    let dump = world_dump(w)
+    world_free(w)
+
+    let w2 = world_load(dump)
+    let v2 = wvec_new(w2)
+    wvec_push_str(w2, v2, "reloaded")
+    print(wvec_get_str(w2, v2, 0))
+    world_free(w2)
+}</pre>
+              <div class="term">
+                <div class="cmd"><span class="prompt">$</span>./baga -I . -I app-product examples/worlds.baga</div>
+                <div>hello</div>
+                <div>world</div>
+                <div>reloaded</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="diag">
+            <div class="diag-file">escape.baga · --check · real diagnostic (Bulgarian)</div>
+            контейнерът 'out' държи заемана стойност или ключ от света 'w', който се освобождава тук —
+            след free елементите му са висящи указатели; копирай стойността преди free
+            (concat(s, "") за низ) или освободи контейнера първо (drop(out))
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="verify">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>03</b> Proof</div>
+        <h2>Three possible answers. None of them is “trust me”.</h2>
+        <p>
+          The verifier is small and deliberately honest: outside the proven fragment it says
+          <strong>CANNOT DECIDE</strong>. That is the difference between proof and hope.
+        </p>
+      </div>
+
+      <div class="verdicts">
+        <div class="verdict ok"><b>PROVEN</b><p>The claim holds for every input in the fragment. Termination is proven with <code>decreases</code>.</p></div>
+        <div class="verdict bad"><b>REFUTED</b><p>There is an input where the claim is false. The verifier returns a concrete counterexample, not an accusation.</p></div>
+        <div class="verdict unk"><b>CANNOT DECIDE</b><p>Outside the proven fragment. An honest “I don’t know” beats a false “proven”.</p></div>
+      </div>
+
+      <div class="proof-panel reveal">
+        <div class="proof-side">
+          <div class="proof-label">abs_val.baga</div>
+<pre class="code" data-hl="baga">spec abs_val {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output &gt;= 0
+}
+
+fn abs_val(x: i64) -&gt; i64 {
+    if x &lt; 0 {
+        return 0 - x
+    }
+    return x
+}</pre>
+        </div>
+        <div class="proof-side">
+          <div class="proof-label">real output · ./baga --verify abs_val.baga</div>
+          <div class="term">
+            <div>verify abs_val:</div>
+            <div>&nbsp;&nbsp;ensures #1 (output &gt;= 0): <span class="ok">ДОКАЗАНО</span></div>
+            <div>&nbsp;&nbsp;аритметика (преливане: (0 - x)): <span class="bad">ОБРОЧЕНО</span></div>
+            <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="counter">контрапример: x = -9223372036854775808</span></div>
+            <div class="dim">&nbsp;&nbsp;(аритметика: 0/1 операции доказано безопасни — вердиктите за ensures са в идеализирания ℤ модел)</div>
+            <div class="dim">&nbsp;&nbsp;ефект !Overflow: прелива при x = -9223372036854775808, а !Overflow не е деклариран</div>
+          </div>
+        </div>
+      </div>
+      <p class="proof-caption reveal">
+        The contract is proven for all <code>x</code>. But <code>0 - x</code> overflows at
+        <code>INT64_MIN</code> — and the verifier does not hide it: that is a separate verdict with a
+        concrete counterexample. <a href="https://github.com/katehonz/baga-lang/blob/main/docs/thesis-open-problems.md" target="_blank" rel="noopener">M31 induction</a>
+        and <a href="https://github.com/katehonz/baga-lang/blob/main/docs/cdcl-audit-2026-10-31.md" target="_blank" rel="noopener">M32 CDCL</a>
+        run in CI alongside 138/138 gates; <code>--json</code> exposes the same verdicts to agents.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="numbers">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>04</b> Measured</div>
+        <h2>The numbers come with the command that produced them.</h2>
+        <p>
+          <strong>rocksbaga</strong> — a durable LSM KV engine written in pure Baga — against official
+          RocksDB: same keys, values and operation count, on a real disk. This is a speed bar under a
+          specific harness, not feature parity.
+        </p>
+      </div>
+
+      <div class="bench-grid">
+        <div class="panel reveal">
+          <div class="panel-head">
+            <h3>rocksbaga vs RocksDB</h3>
+            <span>2026-11-01 · btrfs/NVMe · N=5000</span>
+          </div>
+          <table class="bench-table">
+            <thead>
+              <tr><th>Mode</th><th>Operation</th><th>rocksbaga</th><th>RocksDB</th><th>% of RocksDB</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="mode" rowspan="3">durable</td><td>PUT</td><td>762 ops/s</td><td>612 ops/s</td><td><span class="pct">124%</span></td></tr>
+              <tr><td>GET_SEQ</td><td>555k ops/s</td><td>437k ops/s</td><td><span class="pct">127%</span></td></tr>
+              <tr><td>GET_RND</td><td>555k ops/s</td><td>486k ops/s</td><td><span class="pct">114%</span></td></tr>
+              <tr><td class="mode" rowspan="3">batch</td><td>PUT</td><td>116k ops/s</td><td>140k ops/s</td><td><span class="pct low">82%</span></td></tr>
+              <tr><td>GET_SEQ</td><td>714k ops/s</td><td>501k ops/s</td><td><span class="pct">142%</span></td></tr>
+              <tr><td>GET_RND</td><td>714k ops/s</td><td>483k ops/s</td><td><span class="pct">148%</span></td></tr>
+            </tbody>
+          </table>
+          <p class="note">Durable: fsync on every PUT. Batch: bulk load. One writer, pure engine, no RESP/TCP.
+            Batch PUT was 82% in this run — numbers move; the command and raw artifacts are in the
+            <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">scorecard</a>.</p>
+        </div>
+
+        <div class="panel reveal">
+          <div class="panel-head">
+            <h3>Worlds in production</h3>
+          </div>
+          <ul class="stack-list">
+            <li><b>boilaDB</b> — SQL/HTTP/PG statistics in a frozen world; the hot path takes no global mutex.</li>
+            <li><b>fmrbaga · metbaga · cloudbaga</b> — <code>/metrics</code> gauges in a frozen world via <code>WMet</code>.</li>
+            <li><b>queuebaga</b> — read-through <code>wcache</code> for terminal statuses; the disk stays source of truth.</li>
+            <li><b>Not everything needs a world</b> — <code>rocksbaga</code>, <code>raftbaga</code> and <code>txnbaga</code> keep state under their own synchronisation; the map explains why.</li>
+          </ul>
+          <p class="note"><a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">docs/app-worlds-bg.md</a> — the map of where worlds help and where they do not.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="ecosystem">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>05</b> Stack</div>
+        <h2>The language is tested by its own ecosystem.</h2>
+        <p>
+          Every package is a real product, not a demo: built with <strong>sandak</strong>, run in CI,
+          and exercising the language — IO, concurrency, memory.
+        </p>
+      </div>
+
+      <div class="eco-grid">
+        <a class="eco reveal" href="https://github.com/bagalang/boilaDB" target="_blank" rel="noopener">
+          <span class="eco-tag">SQL</span><span class="eco-name">boilaDB</span>
+          <span class="eco-role">Multimodal database: BoilaSQL, PG wire, HTTP.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/rocksbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">Storage</span><span class="eco-name">rocksbaga</span>
+          <span class="eco-role">LSM KV: WAL, memtable, SST, bloom sidecar, RESP.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/fmrbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">Web</span><span class="eco-name">fmrbaga</span>
+          <span class="eco-role">Router, JSON, workers, metrics.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/httpdbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">HTTP</span><span class="eco-name">httpdbaga</span>
+          <span class="eco-role">HTTP/1.1 + HTTP/2 + HPACK.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/jwtbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">Crypto</span><span class="eco-name">jwtbaga</span>
+          <span class="eco-role">JWT HS256/RS256/ES256, PEM keys.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/ormbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">ORM</span><span class="eco-name">ormbaga</span>
+          <span class="eco-role">ActiveRecord + migrations on Postgres or boilaDB.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/raftbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">Consensus</span><span class="eco-name">raftbaga</span>
+          <span class="eco-role">3-node Raft over channels.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/katehonz/baga-lang/tree/main/std" target="_blank" rel="noopener">
+          <span class="eco-tag">Std</span><span class="eco-name">std</span>
+          <span class="eco-role">Pure-Baga crypto: AES-GCM, X25519, P-256, RSA, TLS 1.3.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/bagabuch" target="_blank" rel="noopener">
+          <span class="eco-tag">App</span><span class="eco-name">bagabuch</span>
+          <span class="eco-role">Accounting: invoices, VAT, SAF-T, bank statements.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">
+          <span class="eco-tag">Tools</span><span class="eco-name">sandak</span>
+          <span class="eco-role">Package manager and build for the ecosystem.</span><span class="eco-arrow">↗</span>
+        </a>
+      </div>
+      <p class="eco-note">Dozens more packages under <code>app-product/</code> — the full list is in the
+        <a href="https://github.com/katehonz/baga-lang#application-ecosystem-app-product--apps" target="_blank" rel="noopener">README</a>.</p>
+    </div>
+  </section>
+
+  <section class="section" id="start">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>06</b> Start</div>
+        <h2>From clone to the first counterexample.</h2>
+        <p>
+          No external libraries: a C compiler and make are enough. The LLVM backend is optional;
+          <code>make self</code> checks that the compiler compiles itself to a fixed point.
+        </p>
+      </div>
+
+      <div class="start-grid">
+        <div class="reveal">
+          <div class="code-shell install">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              terminal
+              <button class="copy-btn" type="button">copy</button>
+            </div>
+<pre class="code"><span class="tok-com"># clone and build</span>
+git clone https://github.com/katehonz/baga-lang.git
+cd baga-lang
+make &amp;&amp; make sandak
+
+<span class="tok-com"># first program</span>
+./baga -I . -I app-product examples/zdravei.baga
+<span class="tok-str"># Здравей, багатуре. Боят започва.</span>
+
+<span class="tok-com"># interactive shell</span>
+make repl
+
+<span class="tok-com"># the first counterexample</span>
+./baga -I . -I app-product --verify examples/verify/abs_val.baga</pre>
+          </div>
+          <div class="doc-chips">
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">GETTING STARTED</a>
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language</a>
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/docs/thesis-open-problems.md" target="_blank" rel="noopener">Open problems</a>
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+          </div>
+
+          <div class="status">
+            <b>Honest status:</b> Baga is a working prototype, not a production language. The verifier
+            says “CANNOT DECIDE” outside the proven fragment, general non-linear arithmetic remains open,
+            and the benchmarks are micro-bars, not feature parity.
+            <a href="https://github.com/katehonz/baga-lang/blob/main/docs/thesis-open-problems.md" target="_blank" rel="noopener">The open problems are public</a>.
+          </div>
+        </div>
+
+        <div class="reveal">
+          <div class="repl">
+            <div><span class="rprompt">бага&gt;</span> <span class="rin">fn inc(x: i64) -&gt; i64 {</span></div>
+            <div><span class="rdim">…     return x + 1</span></div>
+            <div><span class="rdim">… }</span></div>
+            <div><span class="rdim">(записано)</span></div>
+            <div><span class="rprompt">бага&gt;</span> <span class="rin">inc(41)</span></div>
+            <div><span class="rout">42</span></div>
+            <div><span class="rprompt">бага&gt;</span> <span class="rin">let x = 5</span></div>
+            <div><span class="rprompt">бага&gt;</span> <span class="rin">x * 2</span></div>
+            <div><span class="rout">10</span></div>
+          </div>
+          <p class="repl-note">Declarations and <code>let</code> bindings persist between lines; an
+            expression prints itself. The model is compile-and-run, not an interpreter.</p>
+          <div class="hero-cta" style="margin-top:20px">
+            <a class="btn btn-primary" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">
+              Open on GitHub
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6"/></svg>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="blog">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>07</b> Blog</div>
+        <h2>What has not been glued together yet.</h2>
+      </div>
+      <div class="blog-grid">
+        <a class="post reveal" href="/blog/worlds-and-storage-2026-11.html">
+          <span class="meta"><span>01.11.2026</span><span class="lang-badge">EN</span></span>
+          <h3>Baga in November 2026: worlds, a REPL, and storage in the RocksDB class</h3>
+          <p>Worlds as checked memory, an honest head-to-head with RocksDB, a REPL, and where the verifier stands.</p>
+          <span class="more">Read →</span>
+        </a>
+        <a class="post reveal" href="/blog/svetove-i-storazh-2026-11-bg.html">
+          <span class="meta"><span>01.11.2026</span><span class="lang-badge">BG</span></span>
+          <h3>Бага през ноември 2026: светове, REPL и сторидж в класа на RocksDB</h3>
+          <p>Worlds, RocksDB numbers and the REPL — the Bulgarian version of the November update.</p>
+          <span class="more">Read →</span>
+        </a>
+        <a class="post reveal" href="/blog/predstavyane-baga-bg.html">
+          <span class="meta"><span>21.09.2026</span><span class="lang-badge">BG</span></span>
+          <h3>Бага — езикът, в който компилаторът е съдията</h3>
+          <p>The founding essay: why specifications should be code, and what a counterexample means.</p>
+          <span class="more">Read →</span>
+        </a>
+      </div>
+      <div class="blog-all"><a href="/blog/">All posts →</a></div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/en/" aria-label="Baga — home">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+            <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+            <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+            <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+            <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+            <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+          </svg>
+          Бага
+        </a>
+        <p>A systems language with Bulgarian roots. Memory with a protocol, effects in the type, proofs with counterexamples.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+
+      <div class="foot-col">
+        <h4>Language</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/thesis.md" target="_blank" rel="noopener">Thesis</a>
+      </div>
+
+      <div class="foot-col">
+        <h4>Code</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/playground/README.md" target="_blank" rel="noopener">Playground (local)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+
+      <div class="foot-col">
+        <h4>More</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span>Made with checks, not promises.</span>
+        <span class="lang" aria-label="Language">
+          <a href="/">BG</a>
+          <a href="/en/" aria-current="page">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

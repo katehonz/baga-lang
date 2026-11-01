@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>От фактурата до файла за НАП: bagabuch — Baga</title>
+<meta name="description" content="bagabuch е счетоводна програма за българския пазар, написана върху екосистемата на Бага. Не е демо върху чужда база и чужд фреймуърк. Backend-ът е Baga + fmrbaga, парите са bagadecimal (низ в JSON, никога f64), датите са ISO…">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/blog/bagabuch-schetovodstvo-bg.html">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="article">
+<meta property="og:title" content="От фактурата до файла за НАП: bagabuch — Baga">
+<meta property="og:description" content="bagabuch е счетоводна програма за българския пазар, написана върху екосистемата на Бага. Не е демо върху чужда база и чужд фреймуърк. Backend-ът е Baga + fmrbaga, парите са bagadecimal (низ в JSON, никога f64), датите са ISO…">
+<meta property="og:url" content="https://baga-lang.top/blog/bagabuch-schetovodstvo-bg.html">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Към съдържанието</a>
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/" aria-label="Baga">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+    </a>
+    <nav class="nav-links" aria-label="Navigation">
+      <a href="/#idea">Идея</a><a href="/#worlds">Светове</a><a href="/#verify">Верификатор</a><a href="/blog/" aria-current="page">Блог</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="lang" aria-label="Language">
+        <a href="/" aria-current="page">BG</a>
+        <a href="/en/">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="main" class="article-wrap">
+  <div class="container">
+    <div class="article-head">
+      <div class="kicker"><b>Блог</b> публикация</div>
+      <div class="meta">
+        <span>05.09.2026</span>
+        <span class="lang-badge">BG</span>
+        <span>5 мин</span>
+      </div>
+      <h1>От фактурата до файла за НАП: bagabuch</h1>
+    </div>
+    <div class="article-layout">
+      <article class="article">
+        <p><strong>bagabuch</strong> е счетоводна програма за българския пазар, написана върху <a href="https://github.com/katehonz/baga-lang/blob/main/blog/ekosistema-baga-bg.md">екосистемата на Бага</a>. Не е демо върху чужда база и чужд фреймуърк. Backend-ът е Baga + fmrbaga, парите са <code>bagadecimal</code> (низ в JSON, никога <code>f64</code>), датите са ISO, XML-ът за НАП е <code>xmlbaga</code> + <code>zipbaga</code>, печатът е <code>reportbaga</code>. Базата е <a href="https://github.com/katehonz/baga-lang/blob/main/blog/boiladb-dual-get-bg.md">boilaDB</a> на порт 6575, говореща PostgreSQL v3 wire. Три процеса, три порта, нищо вградено.</p>
+<blockquote>
+<p><em>„Счетоводството не е витрина за езика. То е тест: ако фактурата не стигне до дневника, до ДДС клетката и до файла за НАП — вертикалът е лъжа."</em></p>
+</blockquote>
+<p>2026 година. България е в еврозоната. Базовата валута е евро. Курсовете идват от ЕЦБ. ДДС дневникът трябва да излезе в Windows-1251, защото порталът на НАП още чете така. SAF-T иска улица, номер на сграда и регион, не един дълъг адрес. Това не са „бъдещи фази". Това е работният ден.</p>
+<h2 id="_1">Какво прави програмата</h2>
+<p>Цикълът е познат на всеки счетоводител и нарочно е тесен: документ → запис → справка → декларация.</p>
+<p><strong>Фирма и номенклатури.</strong> Реквизити, ДДС регистрация и период, управител, счетоводител, IBAN. Сметкоплан по НСС, със търсачка към номенклатурата на НАП (<code>NRA_Nom_Accounts</code>) — при нова фирма се зарежда от каталога, не се пише на ръка. Контрагент от VIES: име и суров адрес от Европейската комисия; ако фирмата има Mistral ключ, адресът се цепи към SAF-T полета (улица, сграда, град, код, регион). Стоки и услуги с продажна цена, себестойност, складов флаг и сметки 304 / 702.</p>
+<p><strong>Фактури.</strong> Типове по ППДДС — фактура, кредитно, дебитно, протокол, проформа. Автоматичен номер от кочан. Данъчно събитие. ДДС по ред: 20 %, 9 %, 0 %, освободени, вътреобщностни. Печат оригинал/копие (PDF, DOCX, ODT). UBL експорт. Осчетоводяването е еднократно, в транзакция; втори пост връща 409.</p>
+<pre><code>изходяща:  Дт 411  /  Кт 702 + Кт 4532
+           при стока: Дт 702 / Кт 304 по себестойност (WAC / FIFO / LIFO)
+входяща:   Дт 304 или 602 + Дт 4531  /  Кт 401
+</code></pre>
+<p>Проформата не влиза в дневниците. Затворен счетоводен месец спира поста — чернова още може да се пази.</p>
+<p><strong>Дневник и справки.</strong> Записи от пост и ръчни. Дебит = кредит. Оборотна ведомост, главна книга, хронологичен журнал със FIFO сдвояване, справка по контрагент. Експортът е същият път като печата на фактурата: HTML таблица → reportbaga → PDF / Excel / ODS. В Excel сумите са числа, не текст — българският Excel ги показва със запетая.</p>
+<p><strong>ДДС за НАП.</strong> Не отделна таблица „ДДС журнал". Истината е дневникът плюс ставките и основанията по редовете на фактурата. Екранът <code>/vat</code> има дневници покупки и продажби, клетки ППДДС 01-01…01-82, дължим / за възстановяване. Файловете DEKLAR, POKUPKI, PRODAGBI се пишат в Windows-1251 и се пакетират в ZIP — точно това, което порталът очаква.</p>
+<p><strong>SAF-T BG.</strong> Месечен, on-demand или годишен XML. Номенклатурите на НАП (движения, режими, плащания, фактури, данъци, мерки, области, сметки) са каталог в кода, не CRUD таблица: подаването иска точно тези кодове.</p>
+<h2 id="_2">Склад, обекти, производство</h2>
+<p>Фирмата има търговски обекти (<code>OFFICE</code>, <code>STORE</code>, <code>WAREHOUSE</code>, <code>BRANCH</code>) — една номенклатура, не втора таблица „складове". Наличността по обект живее в партидите. Фирменият тотал е върху продукта.</p>
+<p>Вътрешният приемо-предавателен протокол мести стоки и ДМА между обекти <strong>без</strong> запис в дневника. Дт 304 / Кт 304 с „друг обект" надува оборотната ведомост без покупка и без продажба. Количеството се мести; оборотът стои.</p>
+<p>Производството е нарочно тънко. Рецепта: изходен артикул + материали + фира. Поръчка: копира редовете, скалира количествата. Потвърждението в една транзакция изписва материалите (WAC / FIFO / LIFO), заприходява готовата продукция по материалната себестойност и прави записа:</p>
+<pre><code>Дт 611 / Кт 302   (материали в производство)
+Дт 303 / Кт 611   (готова продукция)
+</code></pre>
+<p>Ако 611 / 302 / 303 липсват в сметкоплана, има запас към 601 / 304. Завършената поръчка не се трие. Затворен месец спира и това потвърждение. Няма работни центрове, технологични операции и QC — това е друг продукт. Тук производството е складов и счетоводен факт, вързан към вече съществуващите <code>inv_issue</code> / <code>inv_receive</code>.</p>
+<p>SAF-T каталогът вече държи кодовете 70 (запаси към производство) и 20 (продукция от производство). XML по обект още не се пълни от поръчката — куката е там.</p>
+<h2 id="_3">Банки, дивиденти, ДМА</h2>
+<p>Банкови сметки с IBAN, счетоводна и буферна сметка. Извлечения: OBB XML, ISO camt.053, PostBank XML, MT-940, CSV. Преглед с дубликати преди импорт, после осчетоводяване или разнасяне от буфера.</p>
+<p>Дивиденти към действителните собственици от настройките на фирмата. Дялът се снима (име, ЕГН, процент) в момента на протокола, за да не се размести историята, ако после някой смени собственика. Данък 5 % по ЗДДФЛ. Остатъкът след закръгляне отива при последния. Плащане — само след одобрение.</p>
+<p>ДМА с категории по ЗКПО, счетоводна и данъчна амортизация, преоценка, преместване по обект, консервация, снемане. Начални салда по НСС клас — не са обороти, не влизат в дневника. Периодите заключват месеца.</p>
+<h2 id="_4">Сканиране без да се изнася фактурата извън ЕС</h2>
+<p>Фактурата е финансова информация. Американски или китайски облак за OCR не е опция, дори да е евтин. Mistral е европейски оператор. Ключът е по фирма. OCR 4.1 чете PDF/снимка, Small сглобява JSON, резултатът е <strong>чернова фактура с редове</strong>, не запис по сметки. Името от документа на доставчика („Кабел Cu 3x2.5") се свързва веднъж с нашия артикул; следващият скан помни. VIES си остава без ключ; ключът цепи адреса.</p>
+<h2 id="_5">Правилото, което държи вертикала</h2>
+<p>bagabuch <strong>не</strong> копира fmrbaga, boilaDB, ormbaga. При компилация — path-зависимости в <code>sandak.toml</code>. При работа — HTTP и PostgreSQL wire през портове. Когато счетоводството удари бъг в числови низове с водещи нули или в multi-column UPDATE, поправката отива в общия пакет. Програмата е клиент на екосистемата и свидетел срещу нея.</p>
+<p>Целият стек е една команда:</p>
+<pre><code class="language-bash">./scripts/dev.sh        # boilaDB :6575 → backend :8080 → frontend :3000
+# http://localhost:3000  — вход demo (скелетът още не проверява парола)
+</code></pre>
+<p>Интерфейсът е Next.js, светла/тъмна тема, български по подразбиране, английски втори. Парите през целия стек са низове. Датите в базата са <code>YYYY-MM-DD</code>; на екрана и на печата — <code>dd.mm.yyyy</code>.</p>
+<h2 id="_6">Честен статус</h2>
+<p>Това е <strong>работен прототип</strong>, който вече върти основния цикъл — не пълна счетоводна къща. Входът е скелет (<code>sub</code> в JWT, паролата не се проверява). Правата по роля се пишат в таблица, но още не се налагат върху API. Мултитенантът е „активна фирма“; фактурите и дневникът още нямат <code>company_id</code> (банките, дивидентите и производството вече имат). Няма баланс и ОПР, няма Controlisy XML, няма сторно на потвърден протокол. ДДС вече не е „една ставка 20 %".</p>
+<p>Посоката се проверява за пет минути: <code>make</code> в монорепото, <code>./scripts/dev.sh</code> в bagabuch — фактура от формата до дневника, до клетката в ППДДС, до ZIP-а за НАП. Ако трябва — рецепта, поръчка, изписване, 611.</p>
+<p>Документацията на продукта е в <code>app-product/bagabuch/docs/</code> — текущо състояние на кода, не пътна карта. <code>PLAN.md</code> е старата чернова от референцията.</p>
+<hr />
+<p><em>bagabuch е най-горният етаж на <a href="https://github.com/katehonz/baga-lang/blob/main/blog/ekosistema-baga-bg.md">екосистемата на Бага</a>: език, в който AI пише имплементацията, а компилаторът е съдията. Хранилища: <a href="https://github.com/bagalang">baga</a>, <a href="https://github.com/bagalang/bagabuch">bagabuch</a>, <a href="https://github.com/bagalang/boilaDB">boilaDB</a>.</em></p>
+<p>⚔️</p>
+      </article>
+      <aside><div class="toc"><div class="toc-label">Съдържание</div>
+<ul>
+<li><a href="#_1">Какво прави програмата</a></li>
+<li><a href="#_2">Склад, обекти, производство</a></li>
+<li><a href="#_3">Банки, дивиденти, ДМА</a></li>
+<li><a href="#_4">Сканиране без да се изнася фактурата извън ЕС</a></li>
+<li><a href="#_5">Правилото, което държи вертикала</a></li>
+<li><a href="#_6">Честен статус</a></li>
+</ul>
+</div></aside>
+    </div>
+    <div class="article-nav">
+      <a href="/blog/">← Всички публикации</a>
+      <a href="https://github.com/katehonz/baga-lang/blob/main/blog/bagabuch-schetovodstvo-bg.md" target="_blank" rel="noopener">Източник в GitHub ↗</a>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/" aria-label="Baga">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+          Бага
+        </a>
+        <p>Системен език с български корени. Памет с протокол, ефекти в типа, доказателства с контрапримери.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+      <div class="foot-col">
+        <h4>Език</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+      </div>
+      <div class="foot-col">
+        <h4>Код</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+      <div class="foot-col">
+        <h4>Още</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span class="lang" aria-label="Language">
+          <a href="/" aria-current="page">BG</a>
+          <a href="/en/">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

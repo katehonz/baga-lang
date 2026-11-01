@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Microsoft just validated the spec-first thesis for AI coding. Baga is what it looks like when the spec is a language construct and the compiler enforces compliance — statically, with counterexamples. — Baga</title>
+<meta name="description" content="A follow-up to my earlier post about Baga — the language where the compiler statically proves AI-written code against specs. This one is about why the timing stopped being a matter of opinion.">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/blog/reddit-02-ai-compliance-language.html">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Microsoft just validated the spec-first thesis for AI coding. Baga is what it looks like when the spec is a language construct and the compiler enforces compliance — statically, with counterexamples. — Baga">
+<meta property="og:description" content="A follow-up to my earlier post about Baga — the language where the compiler statically proves AI-written code against specs. This one is about why the timing stopped being a matter of opinion.">
+<meta property="og:url" content="https://baga-lang.top/blog/reddit-02-ai-compliance-language.html">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/en/" aria-label="Baga">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+    </a>
+    <nav class="nav-links" aria-label="Navigation">
+      <a href="/en/#idea">Idea</a><a href="/en/#worlds">Worlds</a><a href="/en/#verify">Verifier</a><a href="/blog/" aria-current="page">Blog</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="lang" aria-label="Language">
+        <a href="/">BG</a>
+        <a href="/en/" aria-current="page">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="main" class="article-wrap">
+  <div class="container">
+    <div class="article-head">
+      <div class="kicker"><b>Blog</b> post</div>
+      <div class="meta">
+        <span>Sep 21, 2026</span>
+        <span class="lang-badge">EN</span>
+        <span>5 min</span>
+      </div>
+      <h1>Microsoft just validated the spec-first thesis for AI coding. Baga is what it looks like when the spec is a language construct and the compiler enforces compliance — statically, with counterexamples.</h1>
+    </div>
+    <div class="article-layout">
+      <article class="article">
+        <p>A follow-up to <a href="https://github.com/katehonz/baga-lang">my earlier post about Baga</a> — the language where the compiler statically proves AI-written code against specs. This one is about why the timing stopped being a matter of opinion.</p>
+<h2 id="the-industry-converged-on-the-diagnosis">The industry converged on the diagnosis</h2>
+<p>Microsoft now officially promotes <strong>Spec-Driven Development (SDD)</strong> as <em>the foundation of AI-native engineering</em>. The argument, from <a href="https://developer.microsoft.com/blog/spec-driven-development-ai-native-engineering/">Apoorv Gupta, Principal Software Engineer at Microsoft</a>:</p>
+<ul>
+<li>The core problem of AI-native development is the <strong>loss of intent</strong> — between needs, requirements, architecture, implementation, and validation.</li>
+<li>The fix is to make the specification the <strong>shared source of truth</strong> for humans and AI: "align first" instead of "prompt first, fix later."</li>
+<li>Around this, Microsoft ships <strong>GitHub Spec Kit</strong> (open source): Constitution → Specify → Clarify → Plan → Tasks → Implement → Validate.</li>
+</ul>
+<p>When a principal engineer at Microsoft writes the same thing that is pillar #1 of your language, the thesis no longer needs defending. It needs executing.</p>
+<h2 id="but-sdd-and-baga-solve-the-problem-at-different-levels">But SDD and Baga solve the problem at different levels</h2>
+<p>SDD attacks the intent-loss problem at the level of <strong>process and AI tooling</strong>: the spec is a <em>document</em>, and conformance is checked by tests and human review in a Validate step. That fixes the workflow around the agents.</p>
+<p>Baga makes the stronger move: the spec is a <strong>language construct</strong>, and conformance is a <strong>compile-time judgement</strong>.</p>
+<pre><code class="language-baga">spec sum_to {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n &gt;= 0
+    ensures:
+        0 &lt;= output
+    decreases:
+        n
+}
+</code></pre>
+<p>The human writes this. The AI writes the implementation. The compiler <strong>proves or refutes it, statically, before anything runs</strong>:</p>
+<pre><code>verify sum_to:
+  ensures #1 (0 &lt;= output): ДОКАЗАНО          # PROVEN
+  (терминация: доказана чрез decreases — пълна коректност)
+</code></pre>
+<p>And when the AI gets it wrong, it doesn't get a failing test or a code-review comment three hours later. It gets a <strong>refutation with a concrete counterexample, at compile time</strong>:</p>
+<pre><code>verify bad_abs:
+  ensures #1 (output &gt;= 0): ОБРОЧЕНО           # REFUTED
+    контрапример: x = -1
+</code></pre>
+<p>In the SDD spectrum — <strong>spec-first → spec-anchored → spec-as-source</strong> — Baga is the far end: <em>spec-as-source</em>. The specification is the thing the code is judged against, mechanically.</p>
+<h2 id="the-compliance-technology">The compliance technology</h2>
+<p>That word — compliance — is the point. Every AI-coding stack today has the same shape: an LLM generates code, and then something checks whether the code complies with what was intended. The "something" is usually:</p>
+<ul>
+<li>tests (incomplete by construction — they sample the input space),</li>
+<li>another LLM (an LLM judging an LLM — circular),</li>
+<li>a human (the bottleneck we were trying to remove).</li>
+</ul>
+<p>Baga's answer is a small, auditable verifier: Fourier–Motzkin elimination over the rationals + symbolic execution + Hoare rules, <strong>sound by construction</strong>. The only path to PROVEN is showing the negated obligation is unsatisfiable even over the rationals, which implies unsatisfiable over the integers. Anything outside the fragment is honestly reported UNKNOWN, never falsely proven. Every reported counterexample is re-checked by direct evaluation, and passes a <strong>conclusiveness gate</strong>: the reported inputs must violate the contract for <em>every</em> value of the verifier's internal abstract variables — otherwise the answer is UNKNOWN, not a false alarm.</p>
+<p>And because the consumer is an agent, the judge has a machine API:</p>
+<pre><code>$ ./baga --verify --json bad_abs.baga
+{&quot;functions&quot;: [{&quot;name&quot;: &quot;bad_abs&quot;, &quot;ensures&quot;: [{&quot;text&quot;: &quot;output &gt;= 0&quot;,
+  &quot;result&quot;: &quot;refuted&quot;, &quot;counterexample&quot;: [{&quot;name&quot;: &quot;x&quot;, &quot;value&quot;: -1}]}], ...}]}
+</code></pre>
+<p>The compliance loop writes itself: agent emits code → <code>baga --verify --json</code> → refuted with counterexample → agent fixes → PROVEN. Deterministic, fast, no LLM in the judging seat.</p>
+<p>This isn't an SMT black box either. The verifier covers linear arithmetic (integer-exact — <code>n &gt; 0 ⇒ n &gt;= 1</code> proves), <code>while</code> loops with invariants, array bounds, element invariants, recursion via assume–guarantee, full correctness via <code>decreases</code>, and products of linear forms (<code>x*x &gt;= 0</code>; <code>fa &gt;= 1 ∧ fb &gt;= 1 ⇒ fa*fb &gt;= 1</code>). The flagship is <strong>factorial fully proven</strong> — recursive, non-linear, with termination, no SMT solver anywhere:</p>
+<pre><code class="language-baga">spec fact {
+    input: n: i64
+    output: i64
+    requires: n &gt;= 0
+    ensures: output &gt;= 1
+    decreases: n
+}
+
+fn fact(n: i64) -&gt; i64 {
+    if n &lt;= 0 { return 1 }
+    let r = fact(n - 1)   // induction hypothesis: r &gt;= 1
+    return n * r          // n &gt;= 1, r &gt;= 1 ⇒ n * r &gt;= 1
+}
+</code></pre>
+<h2 id="why-the-first-language-for-ai-is-a-claim-about-architecture-not-marketing">Why "the first language for AI" is a claim about architecture, not marketing</h2>
+<p>Every mainstream language was designed for a human writer and a human reader. AI broke that assumption: the writer is now a machine, and the scarce resource is <strong>trust</strong>. A language for this era needs:</p>
+<ol>
+<li><strong>Specs as first-class citizens</strong> — the intent lives in the code, not in a wiki page that drifts.</li>
+<li><strong>A mechanical judge</strong> — the compiler proves or refutes compliance, statically, with witnesses.</li>
+<li><strong>Errors visible in the type</strong> — effects (<code>str !IO !NotFound</code> is a different type from <code>str</code>) so the failure surface is part of the signature, not a runtime surprise.</li>
+<li><strong>Machine-readable verdicts</strong> — <code>--json</code> so the agent closes the loop itself.</li>
+</ol>
+<p>Baga has all four. SDD gives you (1) as a process discipline. Baga gives you (1)–(4) as a compilation.</p>
+<h2 id="honest-status">Honest status</h2>
+<p>Working prototype, not a production language. The verifier's fragment is deliberately small and says UNKNOWN rather than guessing; general non-linear arithmetic is the remaining staircase. Effects are compile-time only (erased in codegen). The trust story is engineered in, not hoped for: the compiler self-hosts with a byte-for-byte fixed point (<code>make self</code>), the LLVM backend is diffed against the C backend on every example, and <code>--test-specs</code> property-tests every contract the static verifier calls PROVEN. All of it is one command and wired into CI.</p>
+<p>Testable in five minutes:</p>
+<pre><code>make &amp;&amp; ./baga --verify examples/verify/fact_full.baga
+</code></pre>
+<h2 id="links">Links</h2>
+<ul>
+<li>Source: <a href="https://github.com/katehonz/baga-lang">github.com/katehonz/baga-lang</a></li>
+<li>The SDD reference: <a href="https://developer.microsoft.com/blog/spec-driven-development-ai-native-engineering/">Spec-Driven Development: the foundation of AI-native engineering</a> (Apoorv Gupta, Microsoft)</li>
+<li>Docs: theory, language reference, compiler architecture — English and Bulgarian</li>
+<li>License: MIT</li>
+</ul>
+<hr />
+<p><em>The industry agreed on the diagnosis: the spec is the center. The open question is whether conformance stays a human ritual in a Validate step — or becomes a compile-time judgement. That's the difference between anchoring code to a spec and making the anchor mechanical.</em></p>
+<p>🐆</p>
+      </article>
+      <aside><div class="toc"><div class="toc-label">Contents</div>
+<ul>
+<li><a href="#the-industry-converged-on-the-diagnosis">The industry converged on the diagnosis</a></li>
+<li><a href="#but-sdd-and-baga-solve-the-problem-at-different-levels">But SDD and Baga solve the problem at different levels</a></li>
+<li><a href="#the-compliance-technology">The compliance technology</a></li>
+<li><a href="#why-the-first-language-for-ai-is-a-claim-about-architecture-not-marketing">Why "the first language for AI" is a claim about architecture, not marketing</a></li>
+<li><a href="#honest-status">Honest status</a></li>
+<li><a href="#links">Links</a></li>
+</ul>
+</div></aside>
+    </div>
+    <div class="article-nav">
+      <a href="/blog/">← All posts</a>
+      <a href="https://github.com/katehonz/baga-lang/blob/main/blog/reddit-02-ai-compliance-language.md" target="_blank" rel="noopener">Source on GitHub ↗</a>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/en/" aria-label="Baga">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+          Бага
+        </a>
+        <p>A systems language with Bulgarian roots. Memory with a protocol, effects in the type, proofs with counterexamples.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+      <div class="foot-col">
+        <h4>Language</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+      </div>
+      <div class="foot-col">
+        <h4>Code</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+      <div class="foot-col">
+        <h4>More</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span class="lang" aria-label="Language">
+          <a href="/">BG</a>
+          <a href="/en/" aria-current="page">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

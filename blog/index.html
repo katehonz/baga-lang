@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Блог — Бага</title>
+<meta name="description" content="Светове, верификатор, памет и сторидж — какво е проверено, какво е измерено и какво още не е слепено заедно.">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/blog/">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Блог — Бага">
+<meta property="og:description" content="Светове, верификатор, памет и сторидж — какво е проверено, какво е измерено и какво още не е слепено заедно.">
+<meta property="og:url" content="https://baga-lang.top/blog/">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Към съдържанието</a>
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/" aria-label="Baga">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+    </a>
+    <nav class="nav-links" aria-label="Navigation">
+      <a href="/#idea">Идея</a><a href="/#worlds">Светове</a><a href="/#verify">Верификатор</a><a href="/blog/" aria-current="page">Блог</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="lang" aria-label="Language">
+        <a href="/" aria-current="page">BG</a>
+        <a href="/en/">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="main">
+  <section class="blog-hero">
+    <div class="container">
+      <div class="kicker"><b>07</b> Блог</div>
+      <h1>Бележки от строежа на езика.</h1>
+      <p>Светове, верификатор, памет и сторидж — какво е проверено, какво е измерено и какво още не е слепено заедно.</p>
+    </div>
+  </section>
+  <div class="container">
+    <div class="blog-toolbar">
+      <div class="filters" role="group" aria-label="Език">
+        <button class="filter" type="button" data-filter="all" aria-pressed="true">Всички</button>
+        <button class="filter" type="button" data-filter="bg" aria-pressed="false">Български</button>
+        <button class="filter" type="button" data-filter="en" aria-pressed="false">English</button>
+      </div>
+      <span class="blog-count">9 публикации</span>
+    </div>
+    <div class="blog-list">
+<a class="post reveal" data-lang="bg" href="svetove-i-storazh-2026-11-bg.html">
+  <span class="meta"><span>01.11.2026</span><span class="lang-badge">BG</span><span>4 мин</span></span>
+  <h3>Бага през ноември 2026: светове, REPL и сторидж в класа на RocksDB</h3>
+  <p>Бага е език за системен и продуктов код, в който компилаторът е съдията: пишете спецификации с requires/ensures/decreases, а статичният верификатор доказва или оборва имплементацията преди каквото и да е да се изпълни — с…</p>
+  <span class="more">Прочети →</span>
+</a>
+<a class="post reveal" data-lang="en" href="worlds-and-storage-2026-11.html">
+  <span class="meta"><span>Nov 1, 2026</span><span class="lang-badge">EN</span><span>4 min</span></span>
+  <h3>Baga in November 2026: worlds, a REPL, and storage in the RocksDB class</h3>
+  <p>Baga is a language for systems and product code in which the compiler is the judge: you write specifications with requires/ensures/decreases, and the static verifier proves or refutes the implementation before anything runs …</p>
+  <span class="more">Read →</span>
+</a>
+<a class="post reveal" data-lang="bg" href="predstavyane-baga-bg.html">
+  <span class="meta"><span>21.09.2026</span><span class="lang-badge">BG</span><span>6 мин</span></span>
+  <h3>Бага — езикът, в който компилаторът е съдията</h3>
+  <p>Бага е език за програмиране за системен и продуктов код в ерата на изкуствения интелект. Основната му идея е проста: пишете нормални програми, а компилаторът държи ефектите, спецификациите и доказателствените скици видими, така…</p>
+  <span class="more">Прочети →</span>
+</a>
+<a class="post reveal" data-lang="en" href="reddit-02-ai-compliance-language.html">
+  <span class="meta"><span>Sep 21, 2026</span><span class="lang-badge">EN</span><span>5 min</span></span>
+  <h3>Microsoft just validated the spec-first thesis for AI coding. Baga is what it looks like when the spec is a language construct and the compiler enforces compliance — statically, with counterexamples.</h3>
+  <p>A follow-up to my earlier post about Baga — the language where the compiler statically proves AI-written code against specs. This one is about why the timing stopped being a matter of opinion.</p>
+  <span class="more">Read →</span>
+</a>
+<a class="post reveal" data-lang="en" href="reddit-introducing-baga.html">
+  <span class="meta"><span>Sep 21, 2026</span><span class="lang-badge">EN</span><span>6 min</span></span>
+  <h3>I built a programming language where the compiler statically proves AI-written code against specs — with counterexamples. Errors are type dimensions. It compiles itself.</h3>
+  <p>Baga (Бага, Bulgarian for &quot;a warrior who fights alone&quot;) is a programming language I&#x27;ve been building that started from a simple observation: nothing in programming is new, but the right recombination at the right time can be.</p>
+  <span class="more">Read →</span>
+</a>
+<a class="post reveal" data-lang="bg" href="mezhdu-rust-i-c-bg.html">
+  <span class="meta"><span>06.09.2026</span><span class="lang-badge">BG</span><span>5 мин</span></span>
+  <h3>Между Rust и чистия C? Не съвсем — и това не е най-интересното за Бага</h3>
+  <p>Хората, които за пръв път видят Бага, почти винаги казват едно и също: „това е нещо между Rust и чист C&quot;. Разбирам откъде идва. Синтаксисът изглежда съвременен като Rust, а под капака има C bootstrap, транспилиране към C и нула…</p>
+  <span class="more">Прочети →</span>
+</a>
+<a class="post reveal" data-lang="bg" href="bagabuch-schetovodstvo-bg.html">
+  <span class="meta"><span>05.09.2026</span><span class="lang-badge">BG</span><span>5 мин</span></span>
+  <h3>От фактурата до файла за НАП: bagabuch</h3>
+  <p>bagabuch е счетоводна програма за българския пазар, написана върху екосистемата на Бага. Не е демо върху чужда база и чужд фреймуърк. Backend-ът е Baga + fmrbaga, парите са bagadecimal (низ в JSON, никога f64), датите са ISO…</p>
+  <span class="more">Прочети →</span>
+</a>
+<a class="post reveal" data-lang="bg" href="ekosistema-baga-bg.html">
+  <span class="meta"><span>05.09.2026</span><span class="lang-badge">BG</span><span>5 мин</span></span>
+  <h3>От самокомпилатора до първата фактура: екосистемата на Бага</h3>
+  <p>Бага започна с една теза: AI пише имплементацията, а компилаторът е съдията — съдия, който доказва, а не само проверява типове. Но език не се доказва с тези. Доказва се с вертикал: истински стек, в който всеки слой е написан на…</p>
+  <span class="more">Прочети →</span>
+</a>
+<a class="post reveal" data-lang="bg" href="boiladb-dual-get-bg.html">
+  <span class="meta"><span>26.08.2026</span><span class="lang-badge">BG</span><span>5 мин</span></span>
+  <h3>O(1) вместо full-shard scan: как boilaDB стигна нивото на PostgreSQL</h3>
+  <p>boilaDB — мултимодалната SQL база данни на Бага — започна една сесия за перформанс с 2.9k транзакции в секунда и сървър, който умираше от OOM под натоварване. Завърши я с 109k tps и резултат на нивото (а на места и над)…</p>
+  <span class="more">Прочети →</span>
+</a>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/" aria-label="Baga">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+          Бага
+        </a>
+        <p>Системен език с български корени. Памет с протокол, ефекти в типа, доказателства с контрапримери.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+      <div class="foot-col">
+        <h4>Език</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+      </div>
+      <div class="foot-col">
+        <h4>Код</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+      <div class="foot-col">
+        <h4>Още</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span class="lang" aria-label="Language">
+          <a href="/" aria-current="page">BG</a>
+          <a href="/en/">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,724 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Бага — език, в който компилаторът е съдия</title>
+<meta name="description" content="Бага е системен език с български корени: светове с машинно проверена памет, ефекти като измерения на типа и верификатор, който доказва или връща конкретен контрапример.">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/">
+<link rel="alternate" hreflang="bg" href="https://baga-lang.top/">
+<link rel="alternate" hreflang="en" href="https://baga-lang.top/en/">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Бага — език, в който компилаторът е съдия">
+<meta property="og:description" content="Светове с проверена памет, ефекти в типа и верификатор с контрапримери. C и LLVM бекенд, self-hosted.">
+<meta property="og:url" content="https://baga-lang.top/">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Към съдържанието</a>
+
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/" aria-label="Бага — начало">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+      <span class="ver">v1.4.0</span>
+    </a>
+
+    <nav class="nav-links" aria-label="Основна навигация">
+      <a href="#idea">Идея</a>
+      <a href="#worlds">Светове</a>
+      <a href="#verify">Верификатор</a>
+      <a href="#numbers">Числа</a>
+      <a href="#ecosystem">Екосистема</a>
+      <a href="#start">Започни</a>
+    </nav>
+
+    <div class="nav-actions">
+      <span class="lang" aria-label="Език на страницата">
+        <a href="/" aria-current="page">BG</a>
+        <a href="/en/">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub хранилище">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Меню">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="dot"></span> BAGA v1.4.0 · C + LLVM · self-hosted</div>
+        <h1>Паметта е дисциплина.<br><span class="gold">Компилаторът е съдия.</span></h1>
+        <p class="lead">
+          <strong>Бага</strong> е системен език с български корени. Световете дават на цял граф от данни
+          един жизнен цикъл — собственост, замразяване, преместване, освобождаване. Ефектите живеят в типа.
+          А <code>--verify</code> или доказва договора, или връща <strong>конкретен контрапример</strong>.
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#start">
+            Започни за 10 минути
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            GitHub
+          </a>
+        </div>
+        <div class="hero-meta">
+          <span>MIT лиценз</span>
+          <span>Linux</span>
+          <span>200+ теста</span>
+          <span>без външни зависимости</span>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="orbit" aria-hidden="true">
+          <svg viewBox="0 0 600 600">
+            <circle class="ring" cx="300" cy="300" r="252"/>
+            <circle class="ring ring-2" cx="300" cy="300" r="196"/>
+            <circle class="node" cx="300" cy="48" r="3.2"/>
+            <circle class="node node-teal" cx="489" cy="404" r="2.8"/>
+            <circle class="node" cx="111" cy="404" r="2.4"/>
+          </svg>
+        </div>
+
+        <div class="editor">
+          <div class="editor-bar">
+            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="editor-file">abs_val.baga</span>
+            <span class="editor-badge">реален изход</span>
+          </div>
+<pre class="code" data-hl="baga">spec abs_val {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output &gt;= 0
+}
+
+fn abs_val(x: i64) -&gt; i64 {
+    if x &lt; 0 {
+        return 0 - x
+    }
+    return x
+}</pre>
+          <div class="term">
+            <div class="cmd"><span class="prompt">$</span>./baga --verify abs_val.baga</div>
+            <div>verify abs_val:</div>
+            <div>&nbsp;&nbsp;ensures #1 (output &gt;= 0): <span class="ok">ДОКАЗАНО</span></div>
+            <div>&nbsp;&nbsp;аритметика (преливане: (0 - x)): <span class="bad">ОБРОЧЕНО</span></div>
+            <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="counter">контрапример: x = -9223372036854775808</span></div>
+          </div>
+        </div>
+
+        <div class="hero-note">фрагмент от истински <code>--verify</code> изход · baga 1.4.0</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="stats">
+    <div class="container stats-grid">
+      <div class="stat"><strong>138/138</strong><span>verify gate-а в CI</span></div>
+      <div class="stat"><strong>52</strong><span>self-hosting PARITY</span></div>
+      <div class="stat"><strong class="small">C + LLVM</strong><span>два бекенда, един оракул</span></div>
+      <div class="stat"><strong class="small">baga2 == baga3</strong><span>неподвижна точка</span></div>
+      <div class="stat"><strong>MIT</strong><span>отворен код, без зависимости</span></div>
+    </div>
+  </div>
+
+  <section class="section" id="idea">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>01</b> Езикът</div>
+        <h2>Твърдението е част от кода. Проверката — от компилатора.</h2>
+        <p>
+          Бага не добавя верификация като външен инструмент. <code>spec</code>, ефектите и регионите
+          са в езика, а компилаторът отказва да пусне програма, която им противоречи.
+        </p>
+      </div>
+
+      <div class="grid-3">
+        <article class="card reveal">
+          <div class="num">01 / SPEC</div>
+          <h3>Договорът е код</h3>
+          <p><code>spec</code> описва входа, изхода, <code>requires</code>, <code>ensures</code> и
+            <code>decreases</code>. Верификаторът доказва, оборва с контрапример или казва
+            „не мога да реша“ — никога „изглежда наред“.</p>
+        </article>
+        <article class="card reveal">
+          <div class="num">02 / EFFECTS</div>
+          <h3>Ефектите са в типа</h3>
+          <p><code>str !IO !NotFound</code> е различен тип от <code>str</code>. <code>?</code> ги
+            разпространява, <code>catch</code> ги обработва. Забравен ефект не се компилира.</p>
+        </article>
+        <article class="card reveal">
+          <div class="num">03 / MEMORY</div>
+          <h3>Паметта има протокол</h3>
+          <p>Световете са региони със собственост, замразяване и преместване. Компилаторът хваща
+            висящите указатели, преди да станат production инцидент.</p>
+        </article>
+      </div>
+
+      <div data-tabs style="margin-top:28px">
+        <div class="tabs" role="tablist" aria-label="Примери на езика">
+          <button class="tab" role="tab" id="tab-effects" aria-controls="panel-effects" aria-selected="true">ефекти.baga</button>
+          <button class="tab" role="tab" id="tab-fib" aria-controls="panel-fib" aria-selected="false" tabindex="-1">фибоначи.baga</button>
+          <button class="tab" role="tab" id="tab-repl" aria-controls="panel-repl" aria-selected="false" tabindex="-1">REPL</button>
+        </div>
+
+        <div class="tab-panel" id="panel-effects" role="tabpanel" aria-labelledby="tab-effects">
+          <div class="code-shell">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              examples/effects.baga
+              <button class="copy-btn" type="button">копирай</button>
+            </div>
+            <div class="code-body">
+<pre class="code" data-hl="baga">// Декларираме ефекти в return типа
+fn прочети_файл(път: str) -&gt; str !IO !NotFound {
+    return "съдържание"
+}
+
+fn обработи(път: str) -&gt; str !IO !NotFound {
+    // ? propagate-ва ефектите нагоре
+    let данни = прочети_файл(път)?
+    return данни
+}
+
+fn main() {
+    // catch обработва ВСЯКО измерение
+    let резултат = прочети_файл("данни.txt")
+        catch !NotFound =&gt; "празно"
+        catch !IO =&gt; "грешка"
+    print(резултат)
+}</pre>
+              <div class="term">
+                <div class="cmd"><span class="prompt">$</span>./baga -I . -I app-product examples/effects.baga</div>
+                <div>съдържание</div>
+                <div class="term-notes">
+                  <div>ефектът е в сигнатурата, не в коментар</div>
+                  <div><span class="tok-eff">?</span> не скрива ефекта — разпространява го</div>
+                  <div><span class="tok-kw">catch</span> <span class="tok-eff">!NotFound</span> хваща само това измерение</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-fib" role="tabpanel" aria-labelledby="tab-fib" hidden>
+          <div class="code-shell">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              fib.baga
+              <button class="copy-btn" type="button">копирай</button>
+            </div>
+            <div class="code-body">
+<pre class="code" data-hl="baga">fn фибоначи(n: i64) -&gt; i64 {
+    let mut a: i64 = 0
+    let mut b: i64 = 1
+    let mut i: i64 = 0
+    while i &lt; n {
+        let temp = b
+        b = a + b
+        a = temp
+        i = i + 1
+    }
+    return a
+}
+
+fn main() {
+    for i in 0..6 {
+        print(фибоначи(i))
+    }
+}</pre>
+              <div class="term">
+                <div class="cmd"><span class="prompt">$</span>./baga -I . -I app-product fib.baga</div>
+                <div>0</div>
+                <div>1</div>
+                <div>1</div>
+                <div>2</div>
+                <div>3</div>
+                <div>5</div>
+                <div class="term-notes">
+                  <div><code>for i in 0..6</code> е полуотворен интервал (0…5)</div>
+                  <div><code>let</code> е непроменима; <code>let mut</code> е променлива</div>
+                  <div>последният израз на функцията е нейната стойност</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-repl" role="tabpanel" aria-labelledby="tab-repl" hidden>
+          <div class="code-shell">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              make repl
+              <button class="copy-btn" type="button">копирай</button>
+            </div>
+            <div class="repl" style="border:0;border-radius:0">
+              <div><span class="rprompt">бага&gt;</span> <span class="rin">fn inc(x: i64) -&gt; i64 {</span></div>
+              <div><span class="rdim">…     return x + 1</span></div>
+              <div><span class="rdim">… }</span></div>
+              <div><span class="rdim">(записано)</span></div>
+              <div><span class="rprompt">бага&gt;</span> <span class="rin">inc(41)</span></div>
+              <div><span class="rout">42</span></div>
+              <div><span class="rprompt">бага&gt;</span> <span class="rin">let x = 5</span></div>
+              <div><span class="rprompt">бага&gt;</span> <span class="rin">x * 2</span></div>
+              <div><span class="rout">10</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="worlds">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>02</b> Памет</div>
+        <h2>Цял граф от данни — една стойност.</h2>
+        <p>
+          План-кеш, snapshot, документ, статистика: структури, които се раждат, замразяват, споделят
+          и умират наведнъж. Световете превръщат този жизнен цикъл в стойност с проверен протокол —
+          в C и в LLVM бекенда.
+        </p>
+      </div>
+
+      <div class="split">
+        <div class="reveal">
+          <div class="flow">
+            <div class="node mutable">mutable<small>собственик</small></div>
+            <div class="flow-arrow"><span class="line"></span><span class="arrow-glyph">→</span><small>world_freeze</small></div>
+            <div class="node frozen">frozen<small>N читатели</small></div>
+            <div class="flow-arrow"><span class="line"></span><span class="arrow-glyph">→</span><small>chan_send</small></div>
+            <div class="node moved">moved<small>друга нишка</small></div>
+          </div>
+          <div class="flow-free"><code>world_free(w)</code> — освобождава цялата верига наведнъж; всеки достъп след това е ОБРОЧЕНО.</div>
+
+          <ul class="points">
+            <li><b>Протоколът е заключение, не конвенция.</b> use-after-free, mutate-after-freeze,
+              use-after-move и double-free се оборват с конкретен контрапример.</li>
+            <li><b>Замразеният свят е споделена read-only capability.</b> N читатели без копиране;
+              <code>chan_send</code> го мести към друга нишка.</li>
+            <li><b>dump/load без fixup.</b> Корените и схемата са в региона, офсетите са позиционни.
+              Компактен dump: 1.60 MB вместо 4.19 MB за същия свят.</li>
+            <li><b>Seatbelt срещу висящи указатели.</b> Заемана стойност, изтекла във <code>Vec</code>/<code>Map</code>,
+              е compile error — също през fn граница, generics, <code>vec_slice</code>/<code>vec_concat</code> и <code>map_keys</code>.</li>
+          </ul>
+
+          <div class="metrics">
+            <div class="metric"><b>~3 ns</b><span>достъп през кеша</span></div>
+            <div class="metric"><b>~5.7 ns</b><span>streaming достъп</span></div>
+            <div class="metric"><b>~0.5 ns</b><span>чист Vec без проверки</span></div>
+          </div>
+          <p class="note">W2.14, същата машина. Регионът не е безплатен: таксата е няколко наносекунди
+            на достъп и е документирана в <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">docs/worlds-bg.md</a> §4–5.</p>
+        </div>
+
+        <div class="reveal">
+          <div class="code-shell">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              examples/worlds.baga
+              <button class="copy-btn" type="button">копирай</button>
+            </div>
+            <div class="code-body single">
+<pre class="code" data-hl="baga">// Регионът се пълни, замразява, дампи, освобождава
+// и зарежда отново: офсетите са позиционни.
+fn main() {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push_str(w, v, "hello")
+    wvec_push_str(w, v, "world")
+    world_freeze(w)
+    print(wvec_get_str(w, v, 0))
+    print(wvec_get_str(w, v, 1))
+
+    let dump = world_dump(w)
+    world_free(w)
+
+    let w2 = world_load(dump)
+    let v2 = wvec_new(w2)
+    wvec_push_str(w2, v2, "reloaded")
+    print(wvec_get_str(w2, v2, 0))
+    world_free(w2)
+}</pre>
+              <div class="term">
+                <div class="cmd"><span class="prompt">$</span>./baga -I . -I app-product examples/worlds.baga</div>
+                <div>hello</div>
+                <div>world</div>
+                <div>reloaded</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="diag">
+            <div class="diag-file">escape.baga · --check</div>
+            контейнерът 'out' държи заемана стойност или ключ от света 'w', който се освобождава тук —
+            след free елементите му са висящи указатели; копирай стойността преди free
+            (concat(s, "") за низ) или освободи контейнера първо (drop(out))
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="verify">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>03</b> Доказателство</div>
+        <h2>Три възможни отговора. Нито един не е „сигурно е“.</h2>
+        <p>
+          Верификаторът е малък и умишлено честен: извън доказания фрагмент казва
+          <strong>НЕ МОГА ДА РЕША</strong>. Това е разликата между доказателство и надежда.
+        </p>
+      </div>
+
+      <div class="verdicts">
+        <div class="verdict ok"><b>ДОКАЗАНО</b><p>Твърдението е изпълнено за всички входове във фрагмента. Терминацията се доказва с <code>decreases</code>.</p></div>
+        <div class="verdict bad"><b>ОБРОЧЕНО</b><p>Има вход, за който твърдението е лъжа. Верификаторът връща конкретен контрапример, не обвинение.</p></div>
+        <div class="verdict unk"><b>НЕ МОГА ДА РЕША</b><p>Извън доказания фрагмент. Честното „не знам“ е по-добро от фалшиво „доказано“.</p></div>
+      </div>
+
+      <div class="proof-panel reveal">
+        <div class="proof-side">
+          <div class="proof-label">abs_val.baga</div>
+<pre class="code" data-hl="baga">spec abs_val {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output &gt;= 0
+}
+
+fn abs_val(x: i64) -&gt; i64 {
+    if x &lt; 0 {
+        return 0 - x
+    }
+    return x
+}</pre>
+        </div>
+        <div class="proof-side">
+          <div class="proof-label">реален изход · ./baga --verify abs_val.baga</div>
+          <div class="term">
+            <div>verify abs_val:</div>
+            <div>&nbsp;&nbsp;ensures #1 (output &gt;= 0): <span class="ok">ДОКАЗАНО</span></div>
+            <div>&nbsp;&nbsp;аритметика (преливане: (0 - x)): <span class="bad">ОБРОЧЕНО</span></div>
+            <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="counter">контрапример: x = -9223372036854775808</span></div>
+            <div class="dim">&nbsp;&nbsp;(аритметика: 0/1 операции доказано безопасни — вердиктите за ensures са в идеализирания ℤ модел)</div>
+            <div class="dim">&nbsp;&nbsp;ефект !Overflow: прелива при x = -9223372036854775808, а !Overflow не е деклариран</div>
+          </div>
+        </div>
+      </div>
+      <p class="proof-caption reveal">
+        Обещанието е доказано за всички <code>x</code>. Но <code>0 - x</code> прелива при
+        <code>INT64_MIN</code> — и верификаторът не го скрива: това е отделен вердикт с конкретен
+        контрапример. <a href="https://github.com/katehonz/baga-lang/blob/main/docs/thesis-open-problems.md" target="_blank" rel="noopener">M31 индукция</a>
+        и <a href="https://github.com/katehonz/baga-lang/blob/main/docs/cdcl-audit-2026-10-31.md" target="_blank" rel="noopener">M32 CDCL</a>
+        са в CI заедно със 138/138 gate-а; <code>--json</code> дава същите вердикти на агенти.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="numbers">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>04</b> Измерено</div>
+        <h2>Числата идват с командата, която ги е произвела.</h2>
+        <p>
+          <strong>rocksbaga</strong> — издръжлив LSM KV на чист Бага — срещу официалния RocksDB:
+          едни и същи ключове, стойности и брой операции, на реален диск. Това е скоростен бар под
+          конкретен harness, не feature-паритет.
+        </p>
+      </div>
+
+      <div class="bench-grid">
+        <div class="panel reveal">
+          <div class="panel-head">
+            <h3>rocksbaga срещу RocksDB</h3>
+            <span>2026-11-01 · btrfs/NVMe · N=5000</span>
+          </div>
+          <table class="bench-table">
+            <thead>
+              <tr><th>Режим</th><th>Операция</th><th>rocksbaga</th><th>RocksDB</th><th>% от RocksDB</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="mode" rowspan="3">durable</td><td>PUT</td><td>762 ops/s</td><td>612 ops/s</td><td><span class="pct">124%</span></td></tr>
+              <tr><td>GET_SEQ</td><td>555k ops/s</td><td>437k ops/s</td><td><span class="pct">127%</span></td></tr>
+              <tr><td>GET_RND</td><td>555k ops/s</td><td>486k ops/s</td><td><span class="pct">114%</span></td></tr>
+              <tr><td class="mode" rowspan="3">batch</td><td>PUT</td><td>116k ops/s</td><td>140k ops/s</td><td><span class="pct low">82%</span></td></tr>
+              <tr><td>GET_SEQ</td><td>714k ops/s</td><td>501k ops/s</td><td><span class="pct">142%</span></td></tr>
+              <tr><td>GET_RND</td><td>714k ops/s</td><td>483k ops/s</td><td><span class="pct">148%</span></td></tr>
+            </tbody>
+          </table>
+          <p class="note">Durable: fsync на всеки PUT. Batch: bulk load. Един писател, чист двигател, без RESP/TCP.
+            Batch PUT е 82% в този прогон — числата трептят; затова командата и суровите артефакти са в
+            <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">scorecard-а</a>.</p>
+        </div>
+
+        <div class="panel reveal">
+          <div class="panel-head">
+            <h3>Световете в продукция</h3>
+          </div>
+          <ul class="stack-list">
+            <li><b>boilaDB</b> — SQL/HTTP/PG статистика в замразен свят; горещият път не взима глобален mutex.</li>
+            <li><b>fmrbaga · metbaga · cloudbaga</b> — <code>/metrics</code> gauges в замразен свят през <code>WMet</code>.</li>
+            <li><b>queuebaga</b> — read-through <code>wcache</code> за терминални статуси, дискът остава source of truth.</li>
+            <li><b>Не всичко иска свят</b> — <code>rocksbaga</code>, <code>raftbaga</code> и <code>txnbaga</code> държат състоянието под собствена синхронизация; картата обяснява защо.</li>
+          </ul>
+          <p class="note"><a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">docs/app-worlds-bg.md</a> — картата „къде световете помагат и къде не“.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="ecosystem">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>05</b> Стек</div>
+        <h2>Езикът се проверява от собствената си екосистема.</h2>
+        <p>
+          Всеки пакет е истински продукт, не демо: строи се със <strong>sandak</strong>, пуска се в CI
+          и упражнява езика — IO, конкурентност, памет.
+        </p>
+      </div>
+
+      <div class="eco-grid">
+        <a class="eco reveal" href="https://github.com/bagalang/boilaDB" target="_blank" rel="noopener">
+          <span class="eco-tag">SQL</span><span class="eco-name">boilaDB</span>
+          <span class="eco-role">Мултимодална база: BoilaSQL, PG wire, HTTP.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/rocksbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">Storage</span><span class="eco-name">rocksbaga</span>
+          <span class="eco-role">LSM KV: WAL, memtable, SST, bloom sidecar, RESP.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/fmrbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">Web</span><span class="eco-name">fmrbaga</span>
+          <span class="eco-role">Router, JSON, workers, metrics.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/httpdbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">HTTP</span><span class="eco-name">httpdbaga</span>
+          <span class="eco-role">HTTP/1.1 + HTTP/2 + HPACK.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/jwtbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">Crypto</span><span class="eco-name">jwtbaga</span>
+          <span class="eco-role">JWT HS256/RS256/ES256, PEM ключове.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/ormbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">ORM</span><span class="eco-name">ormbaga</span>
+          <span class="eco-role">ActiveRecord + миграции върху Postgres или boilaDB.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/raftbaga" target="_blank" rel="noopener">
+          <span class="eco-tag">Consensus</span><span class="eco-name">raftbaga</span>
+          <span class="eco-role">3-node Raft върху канали.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/katehonz/baga-lang/tree/main/std" target="_blank" rel="noopener">
+          <span class="eco-tag">Std</span><span class="eco-name">std</span>
+          <span class="eco-role">Pure-Baga crypto: AES-GCM, X25519, P-256, RSA, TLS 1.3.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/bagalang/bagabuch" target="_blank" rel="noopener">
+          <span class="eco-tag">App</span><span class="eco-name">bagabuch</span>
+          <span class="eco-role">Счетоводство: фактури, ДДС, SAF-T, банкови извлечения.</span><span class="eco-arrow">↗</span>
+        </a>
+        <a class="eco reveal" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">
+          <span class="eco-tag">Tools</span><span class="eco-name">sandak</span>
+          <span class="eco-role">Пакетен мениджър и build за екосистемата.</span><span class="eco-arrow">↗</span>
+        </a>
+      </div>
+      <p class="eco-note">Още десетки пакети под <code>app-product/</code> — пълният списък е в
+        <a href="https://github.com/katehonz/baga-lang#application-ecosystem-app-product--apps" target="_blank" rel="noopener">README</a>.</p>
+    </div>
+  </section>
+
+  <section class="section" id="start">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>06</b> Старт</div>
+        <h2>От клонирането до първия контрапример.</h2>
+        <p>
+          Няма външни библиотеки: нужни са C компилатор и make. LLVM бекендът е опция; <code>make self</code>
+          проверява, че компилаторът компилира себе си до неподвижна точка.
+        </p>
+      </div>
+
+      <div class="start-grid">
+        <div class="reveal">
+          <div class="code-shell install">
+            <div class="code-head">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              терминал
+              <button class="copy-btn" type="button">копирай</button>
+            </div>
+<pre class="code"><span class="tok-com"># клонирай и компилирай</span>
+git clone https://github.com/katehonz/baga-lang.git
+cd baga-lang
+make &amp;&amp; make sandak
+
+<span class="tok-com"># първа програма</span>
+./baga -I . -I app-product examples/zdravei.baga
+<span class="tok-str"># Здравей, багатуре. Боят започва.</span>
+
+<span class="tok-com"># интерактивна обвивка</span>
+make repl
+
+<span class="tok-com"># първият контрапример</span>
+./baga -I . -I app-product --verify examples/verify/abs_val.baga</pre>
+          </div>
+          <div class="doc-chips">
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">GETTING STARTED</a>
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът</a>
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Световете</a>
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/docs/thesis-open-problems.md" target="_blank" rel="noopener">Отворени проблеми</a>
+            <a class="chip" href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+          </div>
+
+          <div class="status">
+            <b>Честен статус:</b> Бага е работещ прототип, не производствен език. Верификаторът казва
+            „НЕ МОГА ДА РЕША“ извън доказания фрагмент, общата нелинейна аритметика остава отворена, а
+            бенчовете са микро-барове, не feature-паритет.
+            <a href="https://github.com/katehonz/baga-lang/blob/main/docs/thesis-open-problems.md" target="_blank" rel="noopener">Отворените проблеми са публични</a>.
+          </div>
+        </div>
+
+        <div class="reveal">
+          <div class="repl">
+            <div><span class="rprompt">бага&gt;</span> <span class="rin">fn inc(x: i64) -&gt; i64 {</span></div>
+            <div><span class="rdim">…     return x + 1</span></div>
+            <div><span class="rdim">… }</span></div>
+            <div><span class="rdim">(записано)</span></div>
+            <div><span class="rprompt">бага&gt;</span> <span class="rin">inc(41)</span></div>
+            <div><span class="rout">42</span></div>
+            <div><span class="rprompt">бага&gt;</span> <span class="rin">let x = 5</span></div>
+            <div><span class="rprompt">бага&gt;</span> <span class="rin">x * 2</span></div>
+            <div><span class="rout">10</span></div>
+          </div>
+          <p class="repl-note">Декларациите и <code>let</code>-овете се пазят между редовете; изразът се
+            печата сам. Моделът е compile-and-run, не интерпретатор.</p>
+          <div class="hero-cta" style="margin-top:20px">
+            <a class="btn btn-primary" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">
+              Отвори в GitHub
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6"/></svg>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="blog">
+    <div class="container">
+      <div class="section-head reveal">
+        <div class="kicker"><b>07</b> Блог</div>
+        <h2>Какво още не е слепено заедно.</h2>
+      </div>
+      <div class="blog-grid">
+        <a class="post reveal" href="/blog/svetove-i-storazh-2026-11-bg.html">
+          <span class="meta"><span>01.11.2026</span><span class="lang-badge">BG</span></span>
+          <h3>Бага през ноември 2026: светове, REPL и сторидж в класа на RocksDB</h3>
+          <p>Световете като проверена памет, честен бенч срещу RocksDB, REPL и върху какво работи верификаторът.</p>
+          <span class="more">Прочети →</span>
+        </a>
+        <a class="post reveal" href="/blog/worlds-and-storage-2026-11.html">
+          <span class="meta"><span>01.11.2026</span><span class="lang-badge">EN</span></span>
+          <h3>Baga in November 2026: worlds, a REPL, and storage in the RocksDB class</h3>
+          <p>Worlds as checked memory, an honest head-to-head with RocksDB, a REPL, and where the verifier stands.</p>
+          <span class="more">Read →</span>
+        </a>
+        <a class="post reveal" href="/blog/predstavyane-baga-bg.html">
+          <span class="meta"><span>21.09.2026</span><span class="lang-badge">BG</span></span>
+          <h3>Бага — езикът, в който компилаторът е съдията</h3>
+          <p>Защо спецификациите трябва да са код и какво значи компилаторът да върне контрапример.</p>
+          <span class="more">Прочети →</span>
+        </a>
+      </div>
+      <div class="blog-all"><a href="/blog/">Всички публикации →</a></div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/" aria-label="Бага — начало">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+            <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+            <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+            <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+            <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+            <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+          </svg>
+          Бага
+        </a>
+        <p>Системен език с български корени. Памет с протокол, ефекти в типа, доказателства с контрапримери.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+
+      <div class="foot-col">
+        <h4>Език</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Започни за 10 минути</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Световете</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/thesis.md" target="_blank" rel="noopener">Тезата</a>
+      </div>
+
+      <div class="foot-col">
+        <h4>Код</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/playground/README.md" target="_blank" rel="noopener">Playground (локален)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">Лиценз MIT</a>
+      </div>
+
+      <div class="foot-col">
+        <h4>Още</h4>
+        <a href="/blog/">Блог</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Световете в продукция</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span>Направено с проверки, не с обещания.</span>
+        <span class="lang" aria-label="Език">
+          <a href="/" aria-current="page">BG</a>
+          <a href="/en/">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

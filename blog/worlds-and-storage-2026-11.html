@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baga in November 2026: worlds, a REPL, and storage in the RocksDB class — Baga</title>
+<meta name="description" content="Baga is a language for systems and product code in which the compiler is the judge: you write specifications with requires/ensures/decreases, and the static verifier proves or refutes the implementation before anything runs …">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/blog/worlds-and-storage-2026-11.html">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Baga in November 2026: worlds, a REPL, and storage in the RocksDB class — Baga">
+<meta property="og:description" content="Baga is a language for systems and product code in which the compiler is the judge: you write specifications with requires/ensures/decreases, and the static verifier proves or refutes the implementation before anything runs …">
+<meta property="og:url" content="https://baga-lang.top/blog/worlds-and-storage-2026-11.html">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/en/" aria-label="Baga">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+    </a>
+    <nav class="nav-links" aria-label="Navigation">
+      <a href="/en/#idea">Idea</a><a href="/en/#worlds">Worlds</a><a href="/en/#verify">Verifier</a><a href="/blog/" aria-current="page">Blog</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="lang" aria-label="Language">
+        <a href="/">BG</a>
+        <a href="/en/" aria-current="page">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="main" class="article-wrap">
+  <div class="container">
+    <div class="article-head">
+      <div class="kicker"><b>Blog</b> post</div>
+      <div class="meta">
+        <span>Nov 1, 2026</span>
+        <span class="lang-badge">EN</span>
+        <span>4 min</span>
+      </div>
+      <h1>Baga in November 2026: worlds, a REPL, and storage in the RocksDB class</h1>
+    </div>
+    <div class="article-layout">
+      <article class="article">
+        <p><strong>Baga</strong> (⚔️) is a language for systems and product code in which the compiler is the <strong>judge</strong>: you write specifications with <code>requires</code>/<code>ensures</code>/<code>decreases</code>, and the static verifier proves or refutes the implementation before anything runs — with a concrete counterexample on refutation. Errors are effects in the type (<code>!IO</code>, <code>?</code>, <code>catch</code>), not exceptions. The compiler compiles itself to a fixed point (<code>make self</code>: baga2 == baga3 byte for byte) and has two backends — zero-dependency C and LLVM.</p>
+<blockquote>
+<p><em>"The question is not 'what is new'. The question is 'what has not yet been glued together'."</em></p>
+</blockquote>
+<p>This post is about what is new in recent weeks: <strong>worlds</strong> (a new memory model with a machine-checked protocol), <strong>rocksbaga</strong> with an honest benchmark against RocksDB, a REPL, and a wider verifier.</p>
+<h2 id="worlds-a-whole-graph-of-data-as-a-value">Worlds: a whole graph of data as a value</h2>
+<p>The two older memory disciplines have a documented ceiling: RC (<code>--rc</code>) leaks on cycles, and the bump arena is thread-local and does not travel across threads. Real server structures, though, are <strong>worlds</strong> — a query plan cache, a document graph, a table snapshot: a whole that is born, frozen, shared, and dies at once.</p>
+<p>Worlds in Baga (W0–W4.2, <code>world_*</code>/<code>wvec_*</code>/<code>wmap_*</code>/<code>wcache_*</code> builtins in both the C <strong>and</strong> LLVM backends) answer the question: <em>how do I make an entire owned graph — cycles included — one transferable, freezable, serializable value?</em></p>
+<pre><code class="language-baga">world_new() ──▶ mutable ──world_freeze──▶ frozen ──chan_send──▶ moved
+                    │                        │ (readers only,
+                    └──world_free──▶ freed   │  zero-copy across threads)
+                        (the whole chain at once)
+</code></pre>
+<p>The difference from Project Verona / Pony / Cyclone is not the idea but the <strong>verdict</strong>: the protocol is not a convention, it is a conclusion of the verifier. <code>mutate-after-freeze</code>, <code>use-after-free</code>, and <code>use-after-move</code> are refuted with a CONCRETE counterexample, and <code>--json</code> turns them into a machine channel for AI agents:</p>
+<pre><code class="language-bash">$ ./baga --verify examples/verify/worlds.baga     # 16 ensures + 10 protocols
+$ ./baga --verify --json examples/verify/worlds_cap.baga
+</code></pre>
+<p>The oracles are split up: region core, sharing and contracts, capability graphs, delegation, channel rely–guarantee, world blocks — plus <code>bench/worlds.baga</code> (streaming) and <code>bench/worlds_micro.baga</code> (hot loop in cache), with checksum validation, not just timing.</p>
+<p>Worlds already run in the ecosystem's production packages (see <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md">docs/app-worlds-bg.md</a>): boilaDB statistics and live connections live in a frozen world (<code>wcache_add</code>) and the hot path takes no global mutex; <code>/metrics</code> in <code>fmrbaga</code> and <code>cloudbaga</code> is in a frozen world via the new <code>WMet</code> in <code>metbaga</code>; <code>queuebaga</code> read-through caches terminal statuses. boilaDB, rocksbaga, and queuebaga now also pass through LLVM (<code>tests/llvm_storage.sh</code>, C↔LLVM parity).</p>
+<h2 id="rocksbaga-vs-rocksdb-now-with-honest-numbers">rocksbaga vs RocksDB — now with honest numbers</h2>
+<p><strong>rocksbaga</strong> is a durable LSM KV store in the RocksDB class, written in pure Baga: page cache, crc32c WAL, memtable + L0…L3 compaction, SST (BAGASST5) with bloom sidecar, a RESP2 server with poll multi-conn and MT mode.</p>
+<p>The benchmark is head-to-head on the <strong>pure engines</strong> — same keys, values, and op counts, single writer, no RESP/TCP (<code>bench/rocks/run_vs_rocksdb.sh</code>, the other side is official RocksDB via Python <code>rocksdict</code>):</p>
+<pre><code class="language-bash">BENCH_DIR=/var/tmp/rocksbench BENCH_N=5000 ./bench/rocks/run_vs_rocksdb.sh            # durable
+BENCH_DIR=/var/tmp/rocksbench BENCH_N=5000 BENCH_MODE=batch ./bench/rocks/run_vs_rocksdb.sh
+</code></pre>
+<p>Latest scorecard (2026-11-01, real disk — btrfs on NVMe, n=5000, vlen=100 — rocksbaga as % of RocksDB ops/s):</p>
+<table>
+<thead>
+<tr>
+<th>mode</th>
+<th style="text-align: right;">PUT</th>
+<th style="text-align: right;">GET_SEQ</th>
+<th style="text-align: right;">GET_RND</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>durable (fsync per put)</td>
+<td style="text-align: right;"><strong>124%</strong></td>
+<td style="text-align: right;"><strong>127%</strong></td>
+<td style="text-align: right;"><strong>114%</strong></td>
+</tr>
+<tr>
+<td>batch (bulk load)</td>
+<td style="text-align: right;"><strong>82%</strong></td>
+<td style="text-align: right;"><strong>142%</strong></td>
+<td style="text-align: right;"><strong>148%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>An honest note the runner itself now prints: <strong>by default the bench writes to <code>/tmp</code>, which is often tmpfs</strong> — there fsync is a no-op and durable numbers measure RAM, not disk. That is why the harness now supports <code>BENCH_DIR</code> on a real disk and warns on tmpfs. Full history: <code>bench/rocks/results/vs-rocksdb-scorecard.md</code>.</p>
+<p>This is a throughput bar under this harness, not a claim of feature parity with RocksDB — but a pure-Baga LSM in the same league as a decade of C++ storage work is a number worth owning.</p>
+<h2 id="other-new-things">Other new things</h2>
+<ul>
+<li><strong>REPL</strong> — <code>make repl</code>: declarations and <code>let</code>s persist across lines; handy for teaching and quick language checks.</li>
+<li><strong>The verifier grows without losing honesty</strong> — M31: while-loop induction (wait-for scan); M32: CDCL clause learning in the bitvector SAT solver, enabled after a formal soundness audit (<code>docs/cdcl-audit-2026-10-31.md</code>). Outside the fragment the answer stays UNKNOWN — never falsely proven.</li>
+<li><strong>Onboarding</strong> — <code>docs/GETTING-STARTED-bg.md</code> with machine-checked examples.</li>
+<li><strong>The ecosystem</strong>: boilaDB (multimodal SQL database on the PG v3 wire), fmrbaga, ormbaga, jwtbaga (RS256/ES256 now deterministic), raftbaga, txnbaga, queuebaga, and dozens more packages under <code>app-product/</code>, built with <code>sandak</code>.</li>
+</ul>
+<h2 id="quick-start">Quick start</h2>
+<pre><code class="language-bash">git clone git@github.com:katehonz/baga-lang.git &amp;&amp; cd baga-lang
+git submodule update --init --recursive
+make
+./baga examples/zdravei.baga        # Hello, warrior. The battle begins.
+make repl                            # interactive shell
+./baga --verify examples/verify/fact_full.baga   # factorial, fully proven
+</code></pre>
+<h2 id="honest-status">Honest status</h2>
+<p>Baga is a <strong>working prototype</strong>, not a production language. The verifier is deliberately small and says UNKNOWN instead of guessing; general nonlinear arithmetic is the remaining staircase. MIT license, code on <a href="https://github.com/katehonz/baga-lang">GitHub</a>, docs in Bulgarian and English, packages under <code>github.com/bagalang/*</code>.</p>
+<hr />
+<p><em>Nothing is new. But nothing is timely either. Regional memory is from the 90s — maybe now is the time for it to become a checked discipline, not a convention.</em></p>
+<p>⚔️</p>
+      </article>
+      <aside><div class="toc"><div class="toc-label">Contents</div>
+<ul>
+<li><a href="#worlds-a-whole-graph-of-data-as-a-value">Worlds: a whole graph of data as a value</a></li>
+<li><a href="#rocksbaga-vs-rocksdb-now-with-honest-numbers">rocksbaga vs RocksDB — now with honest numbers</a></li>
+<li><a href="#other-new-things">Other new things</a></li>
+<li><a href="#quick-start">Quick start</a></li>
+<li><a href="#honest-status">Honest status</a></li>
+</ul>
+</div></aside>
+    </div>
+    <div class="article-nav">
+      <a href="/blog/">← All posts</a>
+      <a href="https://github.com/katehonz/baga-lang/blob/main/blog/worlds-and-storage-2026-11.md" target="_blank" rel="noopener">Source on GitHub ↗</a>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/en/" aria-label="Baga">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+          Бага
+        </a>
+        <p>A systems language with Bulgarian roots. Memory with a protocol, effects in the type, proofs with counterexamples.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+      <div class="foot-col">
+        <h4>Language</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+      </div>
+      <div class="foot-col">
+        <h4>Code</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+      <div class="foot-col">
+        <h4>More</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span class="lang" aria-label="Language">
+          <a href="/">BG</a>
+          <a href="/en/" aria-current="page">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

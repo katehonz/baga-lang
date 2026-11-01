@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>От самокомпилатора до първата фактура: екосистемата на Бага — Baga</title>
+<meta name="description" content="Бага започна с една теза: AI пише имплементацията, а компилаторът е съдията — съдия, който доказва, а не само проверява типове. Но език не се доказва с тези. Доказва се с вертикал: истински стек, в който всеки слой е написан на…">
+<meta name="theme-color" content="#07080a">
+<link rel="canonical" href="https://baga-lang.top/blog/ekosistema-baga-bg.html">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta property="og:type" content="article">
+<meta property="og:title" content="От самокомпилатора до първата фактура: екосистемата на Бага — Baga">
+<meta property="og:description" content="Бага започна с една теза: AI пише имплементацията, а компилаторът е съдията — съдия, който доказва, а не само проверява типове. Но език не се доказва с тези. Доказва се с вертикал: истински стек, в който всеки слой е написан на…">
+<meta property="og:url" content="https://baga-lang.top/blog/ekosistema-baga-bg.html">
+<meta property="og:image" content="https://baga-lang.top/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+<noscript><style>.js .reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Към съдържанието</a>
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="/" aria-label="Baga">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+      Бага
+    </a>
+    <nav class="nav-links" aria-label="Navigation">
+      <a href="/#idea">Идея</a><a href="/#worlds">Светове</a><a href="/#verify">Верификатор</a><a href="/blog/" aria-current="page">Блог</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="lang" aria-label="Language">
+        <a href="/" aria-current="page">BG</a>
+        <a href="/en/">EN</a>
+      </span>
+      <a class="icon-link" href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-label="Menu">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="main" class="article-wrap">
+  <div class="container">
+    <div class="article-head">
+      <div class="kicker"><b>Блог</b> публикация</div>
+      <div class="meta">
+        <span>05.09.2026</span>
+        <span class="lang-badge">BG</span>
+        <span>5 мин</span>
+      </div>
+      <h1>От самокомпилатора до първата фактура: екосистемата на Бага</h1>
+    </div>
+    <div class="article-layout">
+      <article class="article">
+        <p><strong>Бага</strong> (⚔️) започна с една теза: AI пише имплементацията, а компилаторът е съдията — съдия, който доказва, а не само проверява типове. Но език не се доказва с тези. Доказва се с <strong>вертикал</strong>: истински стек, в който всеки слой е написан на самия език — от компилатора, който се компилира сам до неподвижна точка, през мултимодална SQL база данни, говореща протокола на PostgreSQL, до счетоводна програма за българския пазар, която издава фактури, води ДДС дневници и генерира SAF-T за НАП.</p>
+<blockquote>
+<p><em>„Екосистемата не е колекция от демота. Тя е вертикал — и вертикалът се проверява само когато най-горният етаж работи върху най-долния."</em></p>
+</blockquote>
+<h2 id="0">Ниво 0 — компилаторът</h2>
+<p>Основата е <a href="https://github.com/katehonz/baga-lang/blob/main/blog/predstavyane-baga-bg.md">самият компилатор</a>: спецификации с <code>requires</code>/<code>ensures</code>/<code>decreases</code>, налагани <strong>статично</strong>, ефекти (<code>!IO</code>, <code>?</code>, <code>catch</code>), които са част от типа, и доказателствени скици, извлечени директно от кода. Самокомпилиращият се компилатор е ~3200 реда Бага, C bootstrap-ът е с нула зависимости, а самокомпилацията се възпроизвежда байт по байт (<code>make self</code>).</p>
+<p>Върху тази основа стои <strong>sandak</strong> — пакетният мениджър на езика. Всеки пакет има <code>sandak.toml</code>; пакетите в монорепото се свързват с path-зависимости (<code>../../std</code>, <code>../pgbaga</code>), а продуктите живеят като отделни git хранилища, регистрирани като submodules в <code>app-product/</code>. Правилото е просто: <strong>компилаторът, <code>std</code> и споделените пакети остават в езика, продуктът е отделен</strong>.</p>
+<h2 id="1">Ниво 1 — данните</h2>
+<p>Най-долу е <strong>rocksbaga</strong> — издръжлив LSM KV сторидж в класа на RocksDB. Върху него стои флагманът на екосистемата:</p>
+<p><strong>boilaDB</strong> — мултимодална база данни на Бага. Езикът е <strong>BoilaSQL</strong>, документирано подмножество на PostgreSQL. Телото е <strong>PostgreSQL v3 wire</strong> — към нея се свързва истински <code>psql</code>/libpq:</p>
+<pre><code class="language-bash">$ psql -h localhost -p 6575 -U postgres -c &quot;CREATE TABLE фактури (
+    номер TEXT NOT NULL,
+    сума NUMERIC NOT NULL
+  );&quot;
+CREATE TABLE
+
+$ psql -h localhost -p 6575 -U postgres -c \
+  &quot;INSERT INTO фактури VALUES ('000123', 1000.50);
+   SELECT sum(сума) FROM фактури;&quot;
+   sum
+--------
+ 1000.50
+</code></pre>
+<p>Под капака няма имитация: типизирани стойности (никакви низови сентинели, <code>NULL = NULL</code> никога не е истина — SQL 3VL), всичко издръжливо през LSM key-пространства (редове, вторични индекси, HNSW, FTS постинги, графова съседност), транзакции (2PC + MVCC), Raft реплика, SCRAM, TLS 1.3 по избор. Непознат SQL получава <code>0A000 feature_not_supported</code> — никога тих грешен отговор. Товарът е ограничен с worker pool и query budget: целта е равен p99, не връх от една нишка.</p>
+<p>Над базата стои <strong>pgbaga</strong> (PostgreSQL wire клиент), <strong>ormbaga</strong> (ORM в стил ActiveRecord + миграции, 36/36 срещу <code>serve_pg</code>) и <strong>bagadecimal</strong> — аритметика с фиксирана точност (96-bit mantissa + scale + sign) по модела на rust-decimal. Това е пакетът, без който счетоводство не се пише: парите никога не са <code>f64</code>, а в JSON парите са <strong>низ</strong>, не число.</p>
+<h2 id="2">Ниво 2 — услугите</h2>
+<p>Хоризонталният слой е от пакети за използване: <strong>httpdbaga</strong> (HTTP/1.1 + HTTP/2 + HPACK), <strong>fmrbaga</strong> (уеб фреймуърк — route-id dispatch, OpenAPI, JWT), <strong>jwtbaga</strong> (HS256/RS256/ES256), <strong>wsbaga</strong> (WebSocket), <strong>raftbaga</strong> (3-възлов консенсус), <strong>txnbaga</strong>, <strong>imgbaga</strong> (растерни изображения), <strong>reportbaga</strong> (отчети — таблици, CSV и печат от HTML), <strong>officebaga</strong>/<strong>pdfbaga</strong>/<strong>xmlbaga</strong> (DOCX/ODT/PDF/XML), <strong>oauthbaga</strong>, <strong>otelbaga</strong>, <strong>testbaga</strong>, <strong>queuebaga</strong>, <strong>kvbaga</strong>, <strong>zipbaga</strong> — и още десетки.</p>
+<h2 id="3-bagabuch">Ниво 3 — продуктът: bagabuch</h2>
+<p>Най-горният етаж е <strong>bagabuch</strong> — счетоводна програма за българския пазар, написана изцяло върху екосистемата. Не е завършена къща, но основният цикъл вече минава от документа до файла за НАП. Отделен разказ за продукта: <a href="https://github.com/katehonz/baga-lang/blob/main/blog/bagabuch-schetovodstvo-bg.md">От фактурата до файла за НАП: bagabuch</a>. Накратко какво има в него:</p>
+<ul>
+<li><strong>Фирми, сметкоплан (йерархия), контрагенти, стоки и услуги</strong> — CRUD; контрагент от VIES, адрес към SAF-T полета с Mistral</li>
+<li><strong>Фактури</strong> — тип (фактура/проформа/кредитно/дебитно), автоматичен номер, данъчно събитие, артикули с мерки, ДДС по ред (20 / 9 / 0 / освободени), отстъпки, цени с/без ДДС; печат (оригинал/копие) и експорт PDF/DOCX/ODT през reportbaga; OCR към чернова</li>
+<li><strong>Публикуване на фактура</strong> — генерира счетоводни записи по типови кореспонденции, балансът дебит = кредит се пази, втори пост → 409:</li>
+</ul>
+<pre><code>изходяща фактура:  Дт 411  /  Кт 702 + Кт 4532
+входяща фактура:   Дт 602 + Дт 4531  /  Кт 401
+</code></pre>
+<ul>
+<li><strong>Счетоводен дневник</strong> — дебит/кредит редове по запис; справки (оборотна, главна книга, хронологичен журнал) с PDF/Excel/ODS</li>
+<li><strong>ДДС</strong> — дневници покупки/продажби от записите, клетки ППДДС 01-01…01-82, файлове DEKLAR/POKUPKI/PRODAGBI в Windows-1251 + ZIP за НАП</li>
+<li><strong>SAF-T BG</strong> — експорт на валиден SAF-T XML (месечен/поискан/годишен), генериран с xmlbaga и bagadecimal</li>
+<li><strong>Склад и производство</strong> — WAC/FIFO/LIFO по обект; вътрешен протокол без дневник; рецепти и поръчки с запис Дт 611 / Кт 302, Дт 303 / Кт 611</li>
+<li><strong>Банки</strong> — сметки, импорт на извлечения (MT-940, camt.053, OBB/PostBank XML, CSV), осчетоводяване</li>
+<li><strong>Дивиденти</strong> — разпределение към действителни собственици, данък 5 % по ЗДДФЛ</li>
+<li><strong>ДМА</strong> — категории по ЗКПО; месечна амортизация (Дт 603 / Кт 241) със закръгляне до 2 знака чрез bagadecimal</li>
+<li><strong>Мултитенант</strong> — активна фирма по потребител, превключвател в навигацията</li>
+<li><strong>Интерфейс</strong> — Next.js (App Router, React 19, чист CSS), светла/тъмна тема, български/английски</li>
+</ul>
+<p>Целият продукт е <strong>три процеса и три порта</strong>, без нищо вградено:</p>
+<table>
+<thead>
+<tr>
+<th>Услуга</th>
+<th>Порт</th>
+<th>Протокол</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>boilaDB</td>
+<td>6575</td>
+<td>PostgreSQL v3 wire (<code>serve_pg</code>)</td>
+</tr>
+<tr>
+<td>backend API</td>
+<td>8080</td>
+<td>HTTP/JSON (fmrbaga)</td>
+</tr>
+<tr>
+<td>frontend (dev)</td>
+<td>3000</td>
+<td>HTTP (Next.js)</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-bash">./scripts/dev.sh        # стартира трите услуги заедно, спира ги с Ctrl+C
+# отвори http://localhost:3000
+</code></pre>
+<h2 id="_1">Правилото: универсални приложения, разговори само през портове</h2>
+<p>Най-важното архитектурно решение на bagabuch е какво <strong>не</strong> прави: fmrbaga, boilaDB и останалите пакети не се копират, не се променят и не се вграждат. При компилация — path-зависимости в <code>sandak.toml</code>; по време на работа — само стандартни протоколи през портове. Приложенията остават <strong>универсални</strong>, а продуктът ги използва както са.</p>
+<p>Това правило не е естетика — то е тестовата рамка на екосистемата. Когато счетоводната програма удари бъг, бъгът почти винаги е в <strong>споделен</strong> пакет — и поправката отива там, за всички. По пътя на bagabuch бяха фиксирани три универсални бъга: коерция на числови низове str↔i64/num в boilaDB (<code>8f68e3b</code>), multi-column UPDATE в ormbaga (<code>a2e68b0</code>) и числови низове с водещи нули в boilaDB (<code>c7d5fbb</code>). Счетоводството не форкна базата данни; то я <strong>подобри за всички</strong>.</p>
+<h2 id="_2">Какво доказва вертикалът</h2>
+<p>Вертикалът отговаря на въпроса, който демотата не могат: дали езикът издържа истинска система. Компилаторът проверява верификатора върху себе си. boilaDB издържа <code>psql</code>, транзакции и три модалности върху един LSM сторидж. bagabuch издържа фактура с ДДС по ред, файл за НАП в Windows-1251, амортизация до стотинка и SAF-T XML — върху базата и фреймуърка, без да ги докосва. Всеки етаж е клиент на долния и свидетел срещу него.</p>
+<h2 id="_3">Честен статус</h2>
+<p>Всичко това е <strong>работен прототип</strong> — и си го казва честно. bagabuch не е завършен: ядрото (фирми, фактури, публикуване, дневник, ДДС файлове за НАП, SAF-T, ДМА, банки, дивиденти, производство) е поставено, но входът е скелет (изпраща се само <code>sub</code>, паролата не се проверява), правата по роля още не се налагат върху API, а boilaDB казва <code>feature_not_supported</code>, когато не знае. Но посоката на вертикала е реална и се проверява за пет минути: <code>make</code> в монорепото, <code>./scripts/dev.sh</code> в bagabuch — и една фактура от формата до дневника, до ДДС клетката, до ZIP-а за НАП.</p>
+<hr />
+<p><em>Нищо не е ново. Но вертикалът е рядък: един език, едно монорепо, едно правило за универсалност — от байтовете на самокомпилатора до стотинките на амортизацията.</em></p>
+<p>⚔️</p>
+      </article>
+      <aside><div class="toc"><div class="toc-label">Съдържание</div>
+<ul>
+<li><a href="#0">Ниво 0 — компилаторът</a></li>
+<li><a href="#1">Ниво 1 — данните</a></li>
+<li><a href="#2">Ниво 2 — услугите</a></li>
+<li><a href="#3-bagabuch">Ниво 3 — продуктът: bagabuch</a></li>
+<li><a href="#_1">Правилото: универсални приложения, разговори само през портове</a></li>
+<li><a href="#_2">Какво доказва вертикалът</a></li>
+<li><a href="#_3">Честен статус</a></li>
+</ul>
+</div></aside>
+    </div>
+    <div class="article-nav">
+      <a href="/blog/">← Всички публикации</a>
+      <a href="https://github.com/katehonz/baga-lang/blob/main/blog/ekosistema-baga-bg.md" target="_blank" rel="noopener">Източник в GitHub ↗</a>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/" aria-label="Baga">
+          <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="1" y="1" width="38" height="38" rx="10" fill="#0d1014" stroke="#e9b44c" stroke-opacity=".55" stroke-width="1.4"/>
+        <rect x="8" y="8.5" width="24" height="7" rx="2.6" fill="#e9b44c"/>
+        <rect x="8" y="19" width="24" height="6" rx="2.2" fill="#e9b44c" opacity=".42"/>
+        <rect x="8" y="28" width="15" height="4.5" rx="2" fill="#e9b44c" opacity=".18"/>
+        <circle cx="31.5" cy="11.5" r="2.5" fill="#6fd6c6"/>
+      </svg>
+          Бага
+        </a>
+        <p>Системен език с български корени. Памет с протокол, ефекти в типа, доказателства с контрапримери.</p>
+        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+      </div>
+      <div class="foot-col">
+        <h4>Език</h4>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/GETTING-STARTED-bg.md" target="_blank" rel="noopener">Getting started</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-en.md" target="_blank" rel="noopener">Language (EN)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/language-bg.md" target="_blank" rel="noopener">Езикът (BG)</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/worlds-bg.md" target="_blank" rel="noopener">Worlds</a>
+      </div>
+      <div class="foot-col">
+        <h4>Код</h4>
+        <a href="https://github.com/katehonz/baga-lang" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+      </div>
+      <div class="foot-col">
+        <h4>Още</h4>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/katehonz/baga-lang/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/docs/app-worlds-bg.md" target="_blank" rel="noopener">Worlds in production</a>
+        <a href="https://github.com/katehonz/baga-lang/blob/main/bench/rocks/results/vs-rocksdb-scorecard.md" target="_blank" rel="noopener">Scorecard</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Бага · MIT</span>
+      <span class="right">
+        <span class="lang" aria-label="Language">
+          <a href="/" aria-current="page">BG</a>
+          <a href="/en/">EN</a>
+        </span>
+      </span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>
