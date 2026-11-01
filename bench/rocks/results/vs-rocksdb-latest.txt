@@ -1,23 +1,24 @@
 === head-to-head: rocksbaga vs RocksDB ===
 n=5000 vlen=100 mode=batch host=deb1 x86_64
+bench_dir=/var/tmp/rocksbench fs=btrfs on /
 
 --- rocksbaga (pure engine) ---
 META n=5000 vlen=100 mode=batch
-PUT_MS=26 PUT_OPS=192307
+PUT_MS=43 PUT_OPS=116279
 GET_SEQ_MS=7 GET_SEQ_OPS=714285
 GET_RND_MS=7 GET_RND_OPS=714285
 OK
 
 --- RocksDB (rocksdict) ---
 META n=5000 vlen=100 mode=batch
-PUT_MS=37 PUT_OPS=133450
-GET_SEQ_MS=11 GET_SEQ_OPS=460887
-GET_RND_MS=15 GET_RND_OPS=330290
+PUT_MS=36 PUT_OPS=140358
+GET_SEQ_MS=10 GET_SEQ_OPS=500979
+GET_RND_MS=10 GET_RND_OPS=482552
 OK
 
 === comparison (ops/s; higher is better) ===
 metric          rocksbaga      RocksDB      ratio
-PUT                192307       133450       144%
-GET_SEQ            714285       460887       154%
-GET_RND            714285       330290       216%
+PUT                116279       140358        82%
+GET_SEQ            714285       500979       142%
+GET_RND            714285       482552       148%
 

@@ -4,6 +4,9 @@
 // Env:
 //   BENCH_N      key count (default 10000)
 //   BENCH_VLEN   value bytes (default 100)
+//   BENCH_PREFIX store path prefix (default /tmp/baga_rocks_bench;
+//                set via BENCH_DIR in run_vs_rocksdb.sh — use a real-disk
+//                dir for honest durable/fdatasync numbers, /tmp is often tmpfs)
 //   BENCH_MODE   durable | batch  (default durable)
 //     durable: sync_every=1  (fsync each put — worst case, fairest vs RocksDB sync)
 //     batch:   sync_every=N, flush_at=N  (mem+wal only; flush_force at end — bulk load)
@@ -75,7 +78,11 @@ fn main() -> i64 !IO !Time {
     if mode == "" {
         mode = "durable"
     }
-    let prefix = "/tmp/baga_rocks_bench"
+    let mut prefix = "/tmp/baga_rocks_bench"
+    let ep = env("BENCH_PREFIX")?
+    if ep != "" {
+        prefix = ep
+    }
     wipe_prefix(prefix)?
 
     // flush_at: durable keeps small L0 pressure; batch holds all puts in mem

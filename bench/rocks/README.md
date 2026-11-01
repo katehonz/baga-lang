@@ -23,14 +23,24 @@ Optional: `BENCH_FLUSH_AT=k` overrides the memtable flush threshold.
 ## Run
 
 ```bash
-# default: N=10000, durable
+# default: N=10000, durable, bench dir under /tmp
 ./bench/rocks/run_vs_rocksdb.sh
 
 BENCH_N=20000 BENCH_MODE=batch ./bench/rocks/run_vs_rocksdb.sh
 BENCH_N=5000 BENCH_VLEN=100 BENCH_MODE=durable ./bench/rocks/run_vs_rocksdb.sh
+
+# honest durable numbers: real-disk dir (see caveat below)
+BENCH_DIR=/var/tmp/rocksbench BENCH_N=5000 ./bench/rocks/run_vs_rocksdb.sh
 ```
 
-First run creates a venv at `/tmp/rocksbench-venv` and installs `rocksdict`.
+First run creates a venv at `/tmp/rocksbench-venv` and installs `rocksdict`
+(or set `ROCKS_VENV` to an existing venv with `rocksdict`).
+
+**tmpfs caveat:** the default bench dir is under `/tmp`, which is **tmpfs**
+on many hosts — there `fdatasync`/`WriteOptions.sync` are no-ops and the
+"durable" PUT row measures RAM, not durability. The runner prints the fs
+type of the bench dir and warns on tmpfs; use `BENCH_DIR=/var/tmp/...`
+(real disk) for durable claims.
 
 ## Output
 
@@ -38,12 +48,17 @@ Machine lines from both engines, then a ratio table (rocksbaga as % of RocksDB o
 
 Artifacts: `bench/rocks/results/vs-rocksdb-*.txt` and `vs-rocksdb-latest.txt`.
 
-**Scorecard (2026-08-06, n=5000):** [`results/vs-rocksdb-scorecard.md`](results/vs-rocksdb-scorecard.md)
+**Scorecard:** [`results/vs-rocksdb-scorecard.md`](results/vs-rocksdb-scorecard.md)
+
+Latest card (2026-11-01, real disk btrfs/NVMe, n=5000, vlen=100):
 
 | mode | PUT | GET_SEQ | GET_RND |
 |------|----:|--------:|--------:|
-| durable | **92%** of RocksDB | **103%** | **98%** |
-| batch | **137%** of RocksDB | **119%** | **100%** |
+| durable | **124%** of RocksDB | **127%** | **114%** |
+| batch | **82%** of RocksDB | **142%** | **148%** |
+
+Previous card (2026-08-07, n=5000): durable PUT 94%, GET 120–127%;
+batch PUT 144%, GET 154–216%.
 
 ## How to read results
 

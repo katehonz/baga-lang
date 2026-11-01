@@ -1,0 +1,15 @@
+=== head-to-head: rocksbaga vs RocksDB ===
+n=5000 vlen=100 mode=durable host=deb1 x86_64
+
+--- rocksbaga (pure engine) ---
+META n=5000 vlen=100 mode=durable
+PUT_MS=124 PUT_OPS=40322
+GET_SEQ_MS=9 GET_SEQ_OPS=555555
+GET_RND_MS=9 GET_RND_OPS=555555
+OK
+
+--- RocksDB (rocksdict) ---
+FAIL: rocksdict not installed (use venv from run_vs_rocksdb.sh)
+
+=== comparison (ops/s; higher is better) ===
+metric          rocksbaga      RocksDB      ratio

@@ -55,3 +55,32 @@ engine *speed* bar, not the full product bar. Still: worth owning.
 
 Previous card (2026-08-06): durable PUT 92%, GET 98–103%; batch PUT 137%,
 GET 100–119%.
+
+---
+
+## 2026-11-01 card (real disk — btrfs on NVMe)
+
+**Host:** deb1 x86_64, bench dir `/var/tmp/rocksbench` (btrfs, **not tmpfs** —
+`BENCH_DIR` set so fdatasync is real). N=5000, vlen=100, pure engine.
+
+| mode | metric | rocksbaga | RocksDB | ratio |
+|------|--------|----------:|--------:|------:|
+| durable | PUT | 762 ops/s | 612 ops/s | **124%** |
+| durable | GET_SEQ | 555k ops/s | 437k ops/s | **127%** |
+| durable | GET_RND | 555k ops/s | 486k ops/s | **114%** |
+| batch | PUT | 116k ops/s | 140k ops/s | **82%** |
+| batch | GET_SEQ | 714k ops/s | 501k ops/s | **142%** |
+| batch | GET_RND | 714k ops/s | 483k ops/s | **148%** |
+
+Artifacts: `vs-rocksdb-20261101T093046Z.txt` (durable),
+`vs-rocksdb-20261101T093103Z.txt` (batch).
+
+**Read:** on real disk the durable PUT is fsync-bound and now **beats**
+RocksDB on this harness (124%); reads are 114–127%. Batch (bulk) PUT is
+82% this run — noisier than the 2026-08-07 card (144%); batch reads 142–148%.
+
+**Caveat (important):** the default bench dir is under `/tmp`, which is
+**tmpfs** on many hosts — there `fdatasync` is a no-op and "durable" PUT
+numbers (e.g. 40k+ ops/s) are not comparable to a real disk. Always run
+with `BENCH_DIR=<real-disk dir>` for durable claims; the runner now prints
+the fs type and warns on tmpfs.

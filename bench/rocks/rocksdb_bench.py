@@ -6,7 +6,9 @@ Same workload as engine_bench.baga:
 
 Env:
   BENCH_N, BENCH_VLEN, BENCH_MODE=durable|batch
-  ROCKS_DIR  (default /tmp/baga_rocksdb_bench)
+  BENCH_DIR  store dir (default /tmp/baga_rocksdb_bench; ROCKS_DIR still
+             honored as fallback). Use a real-disk dir for honest
+             durable (WriteOptions.sync) numbers — /tmp is often tmpfs.
 
 Output: same META/PUT_*/GET_*_*/OK lines as engine_bench.baga.
 """
@@ -44,7 +46,7 @@ def main() -> int:
     if mode not in ("durable", "batch"):
         mode = "durable"
 
-    path = os.environ.get("ROCKS_DIR", "/tmp/baga_rocksdb_bench")
+    path = os.environ.get("BENCH_DIR") or os.environ.get("ROCKS_DIR") or "/tmp/baga_rocksdb_bench"
     if os.path.isdir(path):
         shutil.rmtree(path)
     os.makedirs(path, exist_ok=True)
