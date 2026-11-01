@@ -62,6 +62,19 @@ jobs:
         with:
           persist-credentials: false
 
+      # wmet_test (worlds oracle) imports metbaga → bufbaga; other
+      # app-product tests skip themselves when their submodule is absent.
+      - name: Submodules (metbaga, bufbaga)
+        run: |
+          set -euo pipefail
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git config --global url.https://github.com/.insteadOf git@github.com:
+          GIT_TERMINAL_PROMPT=0 git submodule update --init --depth 1 -- \
+            app-product/metbaga \
+            app-product/bufbaga
+          test -f app-product/metbaga/met.baga
+          test -f app-product/bufbaga/buf.baga
+
       - name: Install LLVM 14
         run: sudo apt-get update && sudo apt-get install -y llvm-14
 

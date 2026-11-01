@@ -17,7 +17,14 @@ done
 echo "(lli: $LLI; world runtime: lib/libbaga_world_rt.so)"
 FILES="tests/worlds_test.baga tests/wvec_test.baga tests/wmap_test.baga
        tests/wrec_test.baga tests/wcache_test.baga tests/world_block_test.baga
-       tests/wchan_fanout_test.baga tests/wmet_test.baga"
+       tests/wchan_fanout_test.baga"
+# wmet_test imports metbaga — skip honestly when the submodule is absent
+# (CI llvm job fetches only metbaga; a bare clone has no app-product at all).
+if [ -f app-product/metbaga/met.baga ]; then
+    FILES="$FILES tests/wmet_test.baga"
+else
+    echo "SKIP  tests/wmet_test.baga (metbaga submodule липсва)"
+fi
 for mode in "" "--rc"; do
     if [ -z "$mode" ]; then label=" (plain)"; else label=" (rc)"; fi
     for f in $FILES; do
