@@ -271,7 +271,7 @@ def footer(lang):
           Бага
         </a>
         <p>{t['footer']}</p>
-        <div class="foot-meta">MIT · v1.4.0 · C + LLVM</div>
+        <div class="foot-meta">MIT · v1.4.2 · C + LLVM</div>
       </div>
       <div class="foot-col">
         <h4>{t['f_lang']}</h4>

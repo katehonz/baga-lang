@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-11-01
+
+### Статичен сайт baga-lang.top
+- BG/EN landing, блог индекс и 9 статии от `blog/*.md`, 404, favicon и OG
+  карта. Генератор: `scripts/site/build_blog.py`; генерираните HTML са
+  комитнати, защото Pages качва repo-то без build стъпка.
+- Canonical/OG са на `https://baga-lang.top` (Let's Encrypt сертификатът е активен).
+- Тагът включва и промените след 1.4.0, описани по-долу (REPL, светове, верификатор).
+
 ### REPL за езика (2026-10-31)
 - `make repl` (или `scripts/baga-repl`) — интерактивен REPL. Моделът е
   compile-and-run (няма интерпретатор): декларациите (`fn`/`struct`/`spec`/

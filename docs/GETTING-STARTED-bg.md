@@ -15,7 +15,7 @@ make sandak   # package manager → ./sandak
 
 ```sh
 ./baga --version
-# baga 1.4.0
+# baga 1.4.2
 ```
 
 ## 2. Първа програма
