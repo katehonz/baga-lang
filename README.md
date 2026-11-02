@@ -67,6 +67,8 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired · [repo](https://github.com/bagalang/fmrbaga) (submodule) |
 | **kvbaga** | RESP KV server (`Map` probe) · [repo](https://github.com/bagalang/kvbaga) (submodule) |
 | **rocksbaga** | Durable LSM KV (WAL → memtable → SST + page cache + bloom sidecar) on RESP — **storage flagship** (was `lsmbaga`) · [repo](https://github.com/bagalang/rocksbaga) (submodule) |
+| **drockb** | rust-rocksdb-shaped Baga client for the rocksbaga RESP server — binary-safe keys/values, batch, SCAN iterator, CF commands · [repo](https://github.com/bagalang/drockb) (submodule) · [docs](app-product/drockb/README.md) |
+| **[buchnative](app-product/buchnative/)** | Счетоводна програма върху rocksbaga през `drockb` — двоен запис, сметкоплан (класове 1–9), фактури с автопроводка, периоди, НСС1/НСС2, JWT роли; нативен HTTP/JSON API + CLI, без SQL и без `f64` суми |
 | **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam · [repo](https://github.com/bagalang/raftbaga) (submodule) |
 | **[metbaga](https://github.com/bagalang/metbaga)** / **[logbaga](https://github.com/bagalang/logbaga)** / **[cloudbaga](https://github.com/bagalang/cloudbaga)** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
 | **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) · [repo](https://github.com/bagalang/pbbaga) (submodule) |

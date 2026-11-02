@@ -280,6 +280,113 @@ done
 	&& echo "OK: apps/registry target binary" \
 	|| { echo "FAIL: apps/registry target/registry missing"; exit 1; }
 
+echo "=== drockb (RESP driver: codec + live rocksbaga + CF mode) ==="
+# Isolated servers on dedicated ports; LSM_CF=1 is a separate mode because it
+# exposes only a subset of the plain commands (see app-product/drockb/gaps.md).
+DROCK_SUITE_PORT="${DROCK_SUITE_PORT:-16590}"
+DROCK_SUITE_CF_PORT="${DROCK_SUITE_CF_PORT:-16591}"
+DROCK_SUITE_PID=""
+drockb_suite_stop() {
+	if [[ -n "${DROCK_SUITE_PID:-}" ]]; then
+		kill "$DROCK_SUITE_PID" 2>/dev/null || true
+		# baga компилира до /tmp/baga_<pid>; детето оцелява след parent-а
+		pkill -f "/tmp/baga_${DROCK_SUITE_PID}" 2>/dev/null || true
+		wait "$DROCK_SUITE_PID" 2>/dev/null || true
+		DROCK_SUITE_PID=""
+	fi
+}
+drockb_suite_start() {
+	local path=$1 port=$2 cf=$3
+	rm -rf "$path"
+	mkdir -p "$path"
+	LSMPATH="$path" LSMPORT="$port" LSM_CF="$cf" \
+		"$BIN" $BAGAIFLAGS app-product/rocksbaga/tools/serve.baga \
+		> /tmp/baga_drockb_suite.log 2>&1 &
+	DROCK_SUITE_PID=$!
+	local ready=0
+	for _ in $(seq 1 90); do
+		if ss -tln 2>/dev/null | grep -q ":$port "; then ready=1; break; fi
+		sleep 1
+	done
+	if [[ $ready -ne 1 ]]; then
+		echo "FAIL: drockb rocksbaga server не слуша на :$port"
+		cat /tmp/baga_drockb_suite.log
+		exit 1
+	fi
+}
+trap drockb_suite_stop EXIT
+drockb_suite_start /tmp/baga_drockb_suite "$DROCK_SUITE_PORT" 0
+DROCK_PORT="$DROCK_SUITE_PORT" "$ROOT/scripts/baga-test" \
+	app-product/drockb/tests/wire_test.baga app-product/drockb/tests/smoke_test.baga
+drockb_suite_stop
+drockb_suite_start /tmp/baga_drockb_cf_suite "$DROCK_SUITE_CF_PORT" 1
+DROCK_PORT="$DROCK_SUITE_CF_PORT" "$ROOT/scripts/baga-test" \
+	app-product/drockb/tests/cf_test.baga
+drockb_suite_stop
+trap - EXIT
+echo "OK: drockb (codec + default server + CF mode)"
+
+echo "=== buchnative (счетоводно ядро върху rocksbaga) ==="
+# Чистите тестове (пари) не се нуждаят от сървър. journal_test работи върху
+# отделна фирма и си изчиства ключовете. api_test разчита на ПРАЗНА база —
+# първият регистриран потребител става супер-админ — затова получава собствен
+# сървър, независимо от изпънените преди него тестове.
+BN_SUITE_PORT="${BN_SUITE_PORT:-16592}"
+BN_API_PORT="${BN_API_PORT:-16593}"
+BN_SUITE_PID=""
+buchnative_suite_stop() {
+	if [[ -n "${BN_SUITE_PID:-}" ]]; then
+		kill "$BN_SUITE_PID" 2>/dev/null || true
+		pkill -f "/tmp/baga_${BN_SUITE_PID}" 2>/dev/null || true
+		wait "$BN_SUITE_PID" 2>/dev/null || true
+		BN_SUITE_PID=""
+	fi
+}
+buchnative_suite_start() {
+	local path=$1 port=$2
+	# Зает порт означава, че тестовете биха тичали в чужд сървър с останали
+	# данни — по-добре да паднем явно, отколкото да тръгнем с bool false.
+	if ss -tln 2>/dev/null | grep -q ":$port "; then
+		echo "FAIL: порт :$port е зает — не мога да изолирам buchnative батерията"
+		ss -tlnp 2>/dev/null | grep ":$port " || true
+		exit 1
+	fi
+	rm -rf "$path"
+	mkdir -p "$path"
+	LSMPATH="$path" LSMPORT="$port" \
+		"$BIN" $BAGAIFLAGS app-product/rocksbaga/tools/serve.baga \
+		> "/tmp/baga_buchnative_${port}.log" 2>&1 &
+	BN_SUITE_PID=$!
+	local ready=0
+	local mine=0
+	for _ in $(seq 1 90); do
+		if ss -tlnp 2>/dev/null | grep ":$port " | grep -q "baga_${BN_SUITE_PID}"; then
+			ready=1
+			mine=1
+			break
+		fi
+		sleep 1
+	done
+	if [[ $mine -ne 1 ]]; then
+		echo "FAIL: buchnative rocksbaga server не слуша на :$port (ready=$ready, но не е нашето дете)"
+		cat "/tmp/baga_buchnative_${port}.log"
+		buchnative_suite_stop
+		exit 1
+	fi
+}
+trap buchnative_suite_stop EXIT
+"$ROOT/scripts/baga-test" app-product/buchnative/tests/money_test.baga
+buchnative_suite_start /tmp/baga_buchnative_journal "$BN_SUITE_PORT"
+DROCK_PORT="$BN_SUITE_PORT" "$ROOT/scripts/baga-test" \
+	app-product/buchnative/tests/journal_test.baga
+buchnative_suite_stop
+buchnative_suite_start /tmp/baga_buchnative_api "$BN_API_PORT"
+DROCK_PORT="$BN_API_PORT" "$ROOT/scripts/baga-test" \
+	app-product/buchnative/tests/api_test.baga
+buchnative_suite_stop
+trap - EXIT
+echo "OK: buchnative (пари + дневник + API)"
+
 echo "=== boilaDB file-size gate (400-line hard limit, ARCHITECTURE.md §9) ==="
 bash "$ROOT/app-product/boilaDB/scripts/filesize.sh" \
 	&& echo "OK: boilaDB filesize" \

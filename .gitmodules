@@ -151,3 +151,9 @@
 [submodule "app-product/s3baga"]
 	path = app-product/s3baga
 	url = git@github.com:bagalang/s3baga.git
+[submodule "app-product/drockb"]
+	path = app-product/drockb
+	url = git@github.com:bagalang/drockb.git
+[submodule "app-product/buchnative"]
+	path = app-product/buchnative
+	url = git@github.com:bagalang/buchnative.git

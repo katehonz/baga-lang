@@ -83,6 +83,8 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | Package | Role |
 |---------|------|
 | **rocksbaga** | Durable LSM-style KV (RocksDB-class path); flagship storage; **git submodule** → [bagalang/rocksbaga](https://github.com/bagalang/rocksbaga) |
+| **drockb** | rust-rocksdb-shaped Baga client for the rocksbaga RESP2 wire — binary-safe keys/values, batch, SCAN iterator, CF commands; **git submodule** → [bagalang/drockb](https://github.com/bagalang/drockb) |
+| **buchnative** | Счетоводна програма върху rocksbaga през `drockb` — двоен запис, сметкоплан, фактури, НСС1/НСС2, JWT; **in-tree** (не submodule) |
 | **lsmbaga** | **Deprecated** → re-exports / points at `rocksbaga`; **git submodule** → [bagalang/lsmbaga](https://github.com/bagalang/lsmbaga) |
 | **kvbaga** | Redis-compatible RESP2 KV server (`Map` store, TTL); **git submodule** → [bagalang/kvbaga](https://github.com/bagalang/kvbaga) |
 | **queuebaga** | Background job queue — disk payloads, worker pool over `chan`; **git submodule** → [bagalang/queuebaga](https://github.com/bagalang/queuebaga) |
@@ -137,10 +139,11 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 ### Flat inventory (names only)
 
 ```
-bagadecimal  boilabaga   bufbaga     chatbaga    chronobaga  cloudbaga
-csvbaga      ctxbaga     flagbaga    fmrbaga     globbaga    grebaga
-httpdbaga    imgbaga     jsonrpcbaga jwtbaga     kvbaga      logbaga
-lsmbaga†     mdbaga      mdtbaga     metbaga     oauthbaga   officebaga
+bagadecimal  boilabaga   buchnative  bufbaga     chatbaga    chronobaga
+cloudbaga    csvbaga     ctxbaga     drockb      flagbaga    fmrbaga
+globbaga     grebaga     httpdbaga   imgbaga     jsonrpcbaga jwtbaga
+kvbaga       logbaga     lsmbaga†    mdbaga      mdtbaga     metbaga
+oauthbaga    officebaga
 otpbaga      ormbaga     otelbaga    pathbaga    pbbaga      pdfbaga
 pgbaga       querybaga   queuebaga   raftbaga    relbaga     reportbaga
 rocksbaga    statusbaga  testbaga    tplbaga     txnbaga     uuidbaga
