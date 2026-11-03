@@ -1,0 +1,202 @@
+// orm_drock_test.baga — ormbaga върху rocksbaga (ORM_BACKEND=drock).
+//
+// Нужен е жив rocksbaga на DROCK_PORT. Тестът ползва собствена таблица
+// (drock_test_t) и я изчиства, за да е идемпотентен.
+//
+//   DROCK_PORT=16579 ./baga -I . -I app-product tests/orm_drock_test.baga
+//
+// Покрива и регресия, която струва скъпо: суров SQL върху drock връщаше
+// OrmDb с backend=PG и мъртъв kv (orm_query_from строи db от PgResult), което
+// подменяше живата връзка на работника и всяка следваща заявка даваше 503.
+
+import "ormbaga/orm.baga"
+import "std/str/str.baga"
+
+fn check(name: str, cond: bool, fails: Map<str, i64>) {
+    if cond {
+        print(concat("  ok  ", name))
+        return
+    }
+    print(concat("  FAIL ", name))
+    map_set(fails, name, 1)
+}
+
+fn T() -> str { return "drock_test_t" }
+
+fn cols3() -> Vec<str> {
+    let c: Vec<str> = vec_new()
+    vec_push(c, "name")
+    vec_push(c, "amount")
+    vec_push(c, "note")
+    return c
+}
+
+fn vals3(name: str, amount: str, note: str) -> Vec<str> {
+    let v: Vec<str> = vec_new()
+    vec_push(v, name)
+    vec_push(v, amount)
+    vec_push(v, note)
+    return v
+}
+
+fn nulls3() -> Vec<i64> {
+    let n: Vec<i64> = vec_new()
+    vec_push(n, 0)
+    vec_push(n, 0)
+    vec_push(n, 0)
+    return n
+}
+
+fn main() -> i64 !Net !IO {
+    print("orm_drock_test:")
+    let fails: Map<str, i64> = map_new()
+    let db0 = orm_connect_drock_env()?
+    if orm_ok_db(db0) == 0 {
+        print(concat("  SKIP: ", orm_err_db(db0)))
+        print("orm_drock_test: skipped (няма rocksbaga)")
+        return 0
+    }
+    let mut db = db0
+    check("connect_drock", orm_ok_db(db) == 1, fails)
+    check("is_drock_backend", orm_is_drock(db) == 1, fails)
+
+    // Пингът минава през kv_query_sql (SELECT 1), не през PG socket.
+    let p = orm_ping(db)?
+    db = orm_db_q(p)
+    check("ping_ok", orm_ok_q(p) == 1, fails)
+    check("ping_one_row", orm_nrows(p) == 1, fails)
+
+    // Чиста плоча: изтриваме остатъци от предишни прогони.
+    let old = orm_all(db, T())?
+    db = orm_db_q(old)
+    let mut i: i64 = 0
+    while i < orm_nrows(old) {
+        let d = orm_delete_by_id(db, T(), orm_cell_by_i64(old, i, "id"))?
+        db = orm_db_exec(d)
+        i = i + 1
+    }
+
+    // INSERT през общия API — id се раздава от брояча и се връща в реда.
+    let ins = orm_insert_returning_full(db, T(), cols3(), vals3("алфа", "100.50", "първи"), nulls3())?
+    db = orm_db_q(ins)
+    check("insert_ok", orm_ok_q(ins) == 1, fails)
+    check("insert_nrows", orm_nrows(ins) == 1, fails)
+    let id1 = orm_cell_by_i64(ins, 0, "id")
+    check("insert_id_positive", id1 > 0, fails)
+    check("insert_name", orm_cell_by(ins, 0, "name") == "алфа", fails)
+    check("insert_amount", orm_cell_by(ins, 0, "amount") == "100.50", fails)
+
+    let ins2 = orm_insert_returning_full(db, T(), cols3(), vals3("бета", "7.00", "втори"), nulls3())?
+    db = orm_db_q(ins2)
+    let id2 = orm_cell_by_i64(ins2, 0, "id")
+    check("second_id_differs", id2 != id1, fails)
+
+    // SELECT * (колоните се извеждат от JSON реда).
+    let all = orm_all(db, T())?
+    db = orm_db_q(all)
+    check("all_two_rows", orm_nrows(all) == 2, fails)
+    check("star_has_name_col", orm_col_index(all, "name") >= 0, fails)
+    check("star_has_id_first", orm_colname(all, 0) == "id", fails)
+
+    // WHERE по индексирана колона.
+    let byname = orm_where_eq_str(db, T(), "name", "бета")?
+    db = orm_db_q(byname)
+    check("where_eq_str_found", orm_nrows(byname) == 1, fails)
+    check("where_eq_str_value", orm_cell_by(byname, 0, "amount") == "7.00", fails)
+
+    // По id.
+    let byid = orm_find_i64(db, T(), "id", id1)?
+    db = orm_db_q(byid)
+    check("find_i64_found", orm_nrows(byid) == 1, fails)
+    check("find_i64_name", orm_cell_by(byid, 0, "name") == "алфа", fails)
+
+    // Липсващ ред — празен резултат, не грешка.
+    let miss = orm_find_i64(db, T(), "id", 999999)?
+    db = orm_db_q(miss)
+    check("missing_ok", orm_ok_q(miss) == 1, fails)
+    check("missing_zero_rows", orm_nrows(miss) == 0, fails)
+
+    // UPDATE през общия API.
+    let ucols: Vec<str> = vec_new()
+    vec_push(ucols, "amount")
+    let uvals: Vec<str> = vec_new()
+    vec_push(uvals, "250.00")
+    let up = orm_update_by_id(db, T(), id1, ucols, uvals)?
+    db = orm_db_exec(up)
+    check("update_ok", orm_ok(up) == 1, fails)
+    let after = orm_find_i64(db, T(), "id", id1)?
+    db = orm_db_q(after)
+    check("update_applied", orm_cell_by(after, 0, "amount") == "250.00", fails)
+    check("update_kept_other_col", orm_cell_by(after, 0, "note") == "първи", fails)
+    // Индексът на старата стойност не бива да сочи към реда вече.
+    let stale = orm_where_eq_str(db, T(), "amount", "100.50")?
+    db = orm_db_q(stale)
+    check("old_index_cleared", orm_nrows(stale) == 0, fails)
+    let fresh = orm_where_eq_str(db, T(), "amount", "250.00")?
+    db = orm_db_q(fresh)
+    check("new_index_set", orm_nrows(fresh) == 1, fails)
+
+    // MAX(id) е четене — не бива да мести брояча.
+    let m1 = orm_count_sql(db, concat("SELECT MAX(id) AS count FROM ", T()))?
+    db = orm_db_c(m1)
+    let mx1 = orm_count_n(m1)
+    let m2 = orm_count_sql(db, concat("SELECT MAX(id) AS count FROM ", T()))?
+    db = orm_db_c(m2)
+    check("max_id_stable", mx1 == orm_count_n(m2), fails)
+    check("max_id_is_last", mx1 == id2, fails)
+
+    // COUNT(*).
+    let c1 = orm_count_sql(db, concat("SELECT COUNT(*) AS count FROM ", T()))?
+    db = orm_db_c(c1)
+    check("count_two", orm_count_n(c1) == 2, fails)
+
+    // Сортиране (замества ORDER BY).
+    let sorted = kv_select_all_order(db, T(), "name", cols3())?
+    db = orm_db_q(sorted)
+    check("sorted_two", orm_nrows(sorted) == 2, fails)
+    check("sorted_first_is_alfa", orm_cell_by(sorted, 0, "name") == "алфа", fails)
+
+    // ── регресия: суров SQL не бива да подменя връзката ──
+    let bad = orm_query_params(db, concat("SELECT * FROM ", concat(T(), " WHERE id = $1")), vec_new(), vec_new())?
+    db = orm_db_q(bad)
+    check("raw_sql_rejected", orm_ok_q(bad) == 0, fails)
+    check("raw_sql_error_names_kv", str_find(orm_err_q(bad), "kv_select_") >= 0, fails)
+    check("db_still_drock", orm_is_drock(db) == 1, fails)
+    check("db_still_ok", orm_ok_db(db) == 1, fails)
+    // И наистина работи после — това е смисълът на guard-а.
+    let ins3 = orm_insert_returning_full(db, T(), cols3(), vals3("гама", "1.00", "след грешка"), nulls3())?
+    db = orm_db_q(ins3)
+    check("insert_after_raw_sql_error", orm_ok_q(ins3) == 1, fails)
+
+    // DELETE.
+    let d1 = orm_delete_by_id(db, T(), id1)?
+    db = orm_db_exec(d1)
+    check("delete_ok", orm_ok(d1) == 1, fails)
+    let gone = orm_find_i64(db, T(), "id", id1)?
+    db = orm_db_q(gone)
+    check("delete_gone", orm_nrows(gone) == 0, fails)
+    let gone_ix = orm_where_eq_str(db, T(), "name", "алфа")?
+    db = orm_db_q(gone_ix)
+    check("delete_cleared_index", orm_nrows(gone_ix) == 0, fails)
+
+    // Изчистване.
+    let rest = orm_all(db, T())?
+    db = orm_db_q(rest)
+    let mut k: i64 = 0
+    while k < orm_nrows(rest) {
+        let dd = orm_delete_by_id(db, T(), orm_cell_by_i64(rest, k, "id"))?
+        db = orm_db_exec(dd)
+        k = k + 1
+    }
+    let empty = orm_all(db, T())?
+    db = orm_db_q(empty)
+    check("table_empty_after_cleanup", orm_nrows(empty) == 0, fails)
+
+    orm_close(db)?
+    if map_len(fails) == 0 {
+        print("orm_drock_test: all passed")
+        return 0
+    }
+    print(concat("orm_drock_test: ", concat(int_to_str(map_len(fails)), " FAILED")))
+    return 1
+}

@@ -326,66 +326,47 @@ drockb_suite_stop
 trap - EXIT
 echo "OK: drockb (codec + default server + CF mode)"
 
-echo "=== buchnative (счетоводно ядро върху rocksbaga) ==="
-# Чистите тестове (пари) не се нуждаят от сървър. journal_test работи върху
-# отделна фирма и си изчиства ключовете. api_test разчита на ПРАЗНА база —
-# първият регистриран потребител става супер-админ — затова получава собствен
-# сървър, независимо от изпънените преди него тестове.
-BN_SUITE_PORT="${BN_SUITE_PORT:-16592}"
-BN_API_PORT="${BN_API_PORT:-16593}"
-BN_SUITE_PID=""
-buchnative_suite_stop() {
-	if [[ -n "${BN_SUITE_PID:-}" ]]; then
-		kill "$BN_SUITE_PID" 2>/dev/null || true
-		pkill -f "/tmp/baga_${BN_SUITE_PID}" 2>/dev/null || true
-		wait "$BN_SUITE_PID" 2>/dev/null || true
-		BN_SUITE_PID=""
+echo "=== ormbaga drock backend (table слой върху rocksbaga) ==="
+# Изолиран сървър: тестът ползва собствена таблица и я чисти, но MAX(id)/COUNT
+# трябва да са детерминирани, значи базата почва празна. Зает порт = явен
+# провал, не тих тест в чужд сървър.
+DROCK_SUITE_KV_PORT="${DROCK_SUITE_KV_PORT:-16592}"
+DROCK_SUITE_KV_PID=""
+drock_kv_suite_stop() {
+	if [[ -n "${DROCK_SUITE_KV_PID:-}" ]]; then
+		kill "$DROCK_SUITE_KV_PID" 2>/dev/null || true
+		pkill -f "/tmp/baga_${DROCK_SUITE_KV_PID}" 2>/dev/null || true
+		wait "$DROCK_SUITE_KV_PID" 2>/dev/null || true
+		DROCK_SUITE_KV_PID=""
 	fi
 }
-buchnative_suite_start() {
-	local path=$1 port=$2
-	# Зает порт означава, че тестовете биха тичали в чужд сървър с останали
-	# данни — по-добре да паднем явно, отколкото да тръгнем с bool false.
-	if ss -tln 2>/dev/null | grep -q ":$port "; then
-		echo "FAIL: порт :$port е зает — не мога да изолирам buchnative батерията"
-		ss -tlnp 2>/dev/null | grep ":$port " || true
-		exit 1
-	fi
-	rm -rf "$path"
-	mkdir -p "$path"
-	LSMPATH="$path" LSMPORT="$port" \
-		"$BIN" $BAGAIFLAGS app-product/rocksbaga/tools/serve.baga \
-		> "/tmp/baga_buchnative_${port}.log" 2>&1 &
-	BN_SUITE_PID=$!
-	local ready=0
-	local mine=0
-	for _ in $(seq 1 90); do
-		if ss -tlnp 2>/dev/null | grep ":$port " | grep -q "baga_${BN_SUITE_PID}"; then
-			ready=1
-			mine=1
-			break
-		fi
-		sleep 1
-	done
-	if [[ $mine -ne 1 ]]; then
-		echo "FAIL: buchnative rocksbaga server не слуша на :$port (ready=$ready, но не е нашето дете)"
-		cat "/tmp/baga_buchnative_${port}.log"
-		buchnative_suite_stop
-		exit 1
-	fi
-}
-trap buchnative_suite_stop EXIT
-"$ROOT/scripts/baga-test" app-product/buchnative/tests/money_test.baga
-buchnative_suite_start /tmp/baga_buchnative_journal "$BN_SUITE_PORT"
-DROCK_PORT="$BN_SUITE_PORT" "$ROOT/scripts/baga-test" \
-	app-product/buchnative/tests/journal_test.baga
-buchnative_suite_stop
-buchnative_suite_start /tmp/baga_buchnative_api "$BN_API_PORT"
-DROCK_PORT="$BN_API_PORT" "$ROOT/scripts/baga-test" \
-	app-product/buchnative/tests/api_test.baga
-buchnative_suite_stop
+if ss -tln 2>/dev/null | grep -q ":$DROCK_SUITE_KV_PORT "; then
+	echo "FAIL: порт :$DROCK_SUITE_KV_PORT е зает — не мога да изолирам drock батерията"
+	ss -tlnp 2>/dev/null | grep ":$DROCK_SUITE_KV_PORT " || true
+	exit 1
+fi
+rm -rf /tmp/baga_drock_kv_suite
+mkdir -p /tmp/baga_drock_kv_suite
+LSMPATH=/tmp/baga_drock_kv_suite LSMPORT="$DROCK_SUITE_KV_PORT" \
+	"$BIN" $BAGAIFLAGS app-product/rocksbaga/tools/serve.baga \
+	> /tmp/baga_drock_kv_suite.log 2>&1 &
+DROCK_SUITE_KV_PID=$!
+KV_READY=0
+for _ in $(seq 1 90); do
+	if ss -tlnp 2>/dev/null | grep ":$DROCK_SUITE_KV_PORT " | grep -q "baga_${DROCK_SUITE_KV_PID}"; then KV_READY=1; break; fi
+	sleep 1
+done
+if [[ $KV_READY -ne 1 ]]; then
+	echo "FAIL: drock rocksbaga server не слуша на :$DROCK_SUITE_KV_PORT"
+	cat /tmp/baga_drock_kv_suite.log
+	drock_kv_suite_stop
+	exit 1
+fi
+trap drock_kv_suite_stop EXIT
+DROCK_PORT="$DROCK_SUITE_KV_PORT" "$ROOT/scripts/baga-test" tests/orm_drock_test.baga
+drock_kv_suite_stop
 trap - EXIT
-echo "OK: buchnative (пари + дневник + API)"
+echo "OK: ormbaga drock backend"
 
 echo "=== boilaDB file-size gate (400-line hard limit, ARCHITECTURE.md §9) ==="
 bash "$ROOT/app-product/boilaDB/scripts/filesize.sh" \
