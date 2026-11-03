@@ -1,0 +1,122 @@
+// orm_drock_migrate_test.baga — версионирани KV миграции (законови промени).
+//
+// Сценарият е точно този, който притеснява счетоводството: стар ред без нова
+// законово изисквана колона трябва да получи стойност, различна от нулата,
+// без да се пипат ръчно. Плюс идемпотентност — втори прогон не пипа нищо.
+//
+//   DROCK_PORT=16579 ./baga -I . -I app-product tests/orm_drock_migrate_test.baga
+
+import "ormbaga/orm.baga"
+import "std/str/str.baga"
+
+fn check(name: str, cond: bool, fails: Map<str, i64>) {
+    if cond {
+        print(concat("  ok  ", name))
+        return
+    }
+    print(concat("  FAIL ", name))
+    map_set(fails, name, 1)
+}
+
+fn T() -> str { return "drock_mig_t" }
+
+// Законова промяна: всички стари редове трябва да имат vat_rate = "20".
+fn mig_fill_vat(db: OrmDb, table: str, cols: Vec<str>, vals: Vec<str>, nulls: Vec<i64>, id: str) -> i64 !Net !IO !Time {
+    let mut i: i64 = 0
+    while i < vec_len(cols) {
+        if vec_get(cols, i) == "vat_rate" {
+            if vec_get(nulls, i) == 1 || vec_get(vals, i) == "" {
+                vec_set(vals, i, "20")
+                vec_set(nulls, i, 0)
+                return 1
+            }
+            return 0
+        }
+        i = i + 1
+    }
+    vec_push(cols, "vat_rate")
+    vec_push(vals, "20")
+    vec_push(nulls, 0)
+    return 1
+}
+
+fn main() -> i64 !Net !IO !Time {
+    print("orm_drock_migrate_test:")
+    let fails: Map<str, i64> = map_new()
+    let db0 = orm_connect_drock_env()?
+    if orm_ok_db(db0) == 0 {
+        print(concat("  SKIP: ", orm_err_db(db0)))
+        return 0
+    }
+    let mut db = db0
+
+    // Чиста плоча.
+    let old = orm_all(db, T())?
+    db = orm_db_q(old)
+    let mut i: i64 = 0
+    while i < orm_nrows(old) {
+        let d = orm_delete_by_id(db, T(), orm_cell_by_i64(old, i, "id"))?
+        db = orm_db_exec(d)
+        i = i + 1
+    }
+    let vk = concat("kv:mig:", T())
+    drock_delete(db.kv, bytes_of_str(vk))?
+
+    // Стар ред БЕЗ vat_rate (колоната я е нямало по онова време).
+    let cols: Vec<str> = vec_new()
+    vec_push(cols, "name")
+    let vals: Vec<str> = vec_new()
+    vec_push(vals, "стар ред")
+    let nulls: Vec<i64> = vec_new()
+    vec_push(nulls, 0)
+    let ins = orm_insert_returning_full(db, T(), cols, vals, nulls)?
+    db = orm_db_q(ins)
+    check("seed_row", orm_ok_q(ins) == 1, fails)
+
+    let before = orm_all(db, T())?
+    db = orm_db_q(before)
+    check("before_lacks_vat_col", orm_col_index(before, "vat_rate") < 0, fails)
+    check("before_vat_empty", orm_cell_by(before, 0, "vat_rate") == "", fails)
+    check("before_version_zero", kv_mig_version(db, T())? == 0, fails)
+
+    // Миграция v1.
+    let reg = kv_migrations_new()
+    let reg2 = kv_migrations_add(reg, T(), 1, "ДДС ставка 20 по подразбиране", mig_fill_vat)
+    let n1 = kv_migrate_run(db, reg2)?
+    check("applied_one", n1 == 1, fails)
+    check("version_is_one", kv_mig_version(db, T())? == 1, fails)
+
+    let after = orm_all(db, T())?
+    db = orm_db_q(after)
+    check("after_vat_20", orm_cell_by(after, 0, "vat_rate") == "20", fails)
+    check("after_kept_name", orm_cell_by(after, 0, "name") == "стар ред", fails)
+
+    // Идемпотентност: втори прогон не прилага нищо.
+    let n2 = kv_migrate_run(db, reg2)?
+    check("second_run_zero", n2 == 0, fails)
+
+    // Нова версия върху същата таблица минава независимо.
+    let reg3 = kv_migrations_add(reg2, T(), 2, "ново поле", mig_fill_vat)
+    let n3 = kv_migrate_run(db, reg3)?
+    check("third_run_one", n3 == 1, fails)
+    check("version_is_two", kv_mig_version(db, T())? == 2, fails)
+
+    // Чистене.
+    let rest = orm_all(db, T())?
+    db = orm_db_q(rest)
+    let mut k: i64 = 0
+    while k < orm_nrows(rest) {
+        let d = orm_delete_by_id(db, T(), orm_cell_by_i64(rest, k, "id"))?
+        db = orm_db_exec(d)
+        k = k + 1
+    }
+    drock_delete(db.kv, bytes_of_str(vk))?
+
+    orm_close(db)?
+    if map_len(fails) == 0 {
+        print("orm_drock_migrate_test: all passed")
+        return 0
+    }
+    print(concat("orm_drock_migrate_test: ", concat(int_to_str(map_len(fails)), " FAILED")))
+    return 1
+}

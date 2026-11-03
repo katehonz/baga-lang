@@ -363,10 +363,10 @@ if [[ $KV_READY -ne 1 ]]; then
 	exit 1
 fi
 trap drock_kv_suite_stop EXIT
-DROCK_PORT="$DROCK_SUITE_KV_PORT" "$ROOT/scripts/baga-test" tests/orm_drock_test.baga
+DROCK_PORT="$DROCK_SUITE_KV_PORT" "$ROOT/scripts/baga-test" tests/orm_drock_test.baga tests/orm_drock_migrate_test.baga
 drock_kv_suite_stop
 trap - EXIT
-echo "OK: ormbaga drock backend"
+echo "OK: ormbaga drock backend + KV миграции"
 
 echo "=== boilaDB file-size gate (400-line hard limit, ARCHITECTURE.md §9) ==="
 bash "$ROOT/app-product/boilaDB/scripts/filesize.sh" \
