@@ -47,6 +47,13 @@ fn nulls3() -> Vec<i64> {
     return n
 }
 
+fn base2cols(db: OrmDb) -> OrmQuery !Net !IO {
+    let c: Vec<str> = vec_new()
+    vec_push(c, "name")
+    vec_push(c, "amount")
+    return kv_select_all(db, T(), c)?
+}
+
 fn main() -> i64 !Net !IO {
     print("orm_drock_test:")
     let fails: Map<str, i64> = map_new()
@@ -178,6 +185,85 @@ fn main() -> i64 !Net !IO {
     let gone_ix = orm_where_eq_str(db, T(), "name", "алфа")?
     db = orm_db_q(gone_ix)
     check("delete_cleared_index", orm_nrows(gone_ix) == 0, fails)
+
+    // ── транзакция (буфер в OrmDb, rocksbaga няма MULTI/EXEC) ──────────────
+    let tdb = orm_begin(db)?
+    db = orm_db_exec(tdb)
+    check("tx_begin_ok", orm_ok(tdb) == 1, fails)
+    let tin = orm_insert_returning_full(db, T(), cols3(), vals3("тх", "9.00", "в буфер"), nulls3())?
+    db = orm_db_q(tin)
+    let tseen = orm_where_eq_str(db, T(), "name", "тх")?
+    db = orm_db_q(tseen)
+    check("tx_reads_own_write", orm_nrows(tseen) == 1, fails)
+    let trb = orm_rollback(db)?
+    db = orm_db_exec(trb)
+    let thidden = orm_where_eq_str(db, T(), "name", "тх")?
+    db = orm_db_q(thidden)
+    check("tx_rollback_drops", orm_nrows(thidden) == 0, fails)
+    let tin2 = orm_insert_returning_full(db, T(), cols3(), vals3("тх2", "8.00", "за commit"), nulls3())?
+    db = orm_db_q(tin2)
+    let tcb = orm_begin(db)?
+    db = orm_db_exec(tcb)
+    let t2in = orm_insert_returning_full(db, T(), cols3(), vals3("тх3", "7.00", "изоставен"), nulls3())?
+    db = orm_db_q(t2in)
+    // Изоставен буфер се изхвърля при следващ BEGIN — worker-ът не трупва мъртви редове.
+    let t3 = orm_begin(db)?
+    db = orm_db_exec(t3)
+    let t3seen = orm_where_eq_str(db, T(), "name", "тх3")?
+    db = orm_db_q(t3seen)
+    check("tx_stale_begin_discards", orm_nrows(t3seen) == 0, fails)
+    let tcommit = orm_commit(db)?
+    db = orm_db_exec(tcommit)
+    let t2 = orm_where_eq_str(db, T(), "name", "тх2")?
+    db = orm_db_q(t2)
+    check("tx_commit_persists", orm_nrows(t2) == 1, fails)
+    check("tx_commit_db_alive", orm_ok_db(db) == 1, fails)
+
+    // ORDER BY надолу + мулти-ключ с различни посоки.
+    let dirs1: Vec<i64> = vec_new()
+    vec_push(dirs1, 1)
+    let names2: Vec<str> = vec_new()
+    vec_push(names2, "name")
+    let desc = kv_select_all_dir(db, T(), cols3(), names2, dirs1)?
+    db = orm_db_q(desc)
+    check("desc_first_is_highest", orm_cell_by(desc, 0, "name") == "тх2", fails)
+
+    // KV няма JOIN — kv_attach дописва колона от map.
+    let two: Vec<str> = vec_new()
+    vec_push(two, "id")
+    vec_push(two, "name")
+    let base = kv_select_all_order(db, T(), "id", two)?
+    db = orm_db_q(base)
+    let amounts = kv_map_of(base2cols(db), "name", "amount")
+    let joined = kv_attach(base, two, kv_col_values(base, "name"), amounts, "amount")
+    check("join_column_added", orm_col_index(joined, "amount") >= 0, fails)
+    let mut jrow: i64 = 0
+    let mut jj: i64 = 0
+    while jj < orm_nrows(joined) {
+        if orm_cell_by(joined, jj, "name") == "тх2" {
+            jrow = jj
+            jj = orm_nrows(joined)
+        }
+        jj = jj + 1
+    }
+    check("join_value_right", orm_cell_by(joined, jrow, "amount") == "8.00", fails)
+
+    // DELETE FROM child WHERE fk — минава през индекса.
+    let dv = kv_delete_where(db, T(), "note", "за commit")?
+    db = orm_db_exec(dv)
+    let dgone = orm_where_eq_str(db, T(), "name", "тх2")?
+    db = orm_db_q(dgone)
+    check("delete_where_removes", orm_nrows(dgone) == 0, fails)
+
+    // Изоставена от action транзакция не преминава в следващата заявка.
+    let gb = orm_begin(db)?
+    db = orm_db_exec(gb)
+    let gin = orm_insert_returning_full(db, T(), cols3(), vals3("гут", "1.00", "guard"), nulls3())?
+    db = orm_db_q(gin)
+    db = orm_guard_txn(db)?
+    let gseen = orm_where_eq_str(db, T(), "name", "гут")?
+    db = orm_db_q(gseen)
+    check("guard_closes_abandoned_txn", orm_nrows(gseen) == 0, fails)
 
     // Изчистване.
     let rest = orm_all(db, T())?
