@@ -14,7 +14,8 @@ fn check(name: str, cond: bool) {
     if cond {
         print(concat("  ok  ", name))
     } else {
-        print(concat("  FAIL ", name))
+        eprintln(concat("  FAIL ", name))
+        exit(1)
     }
 }
 

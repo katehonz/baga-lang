@@ -1,4 +1,8 @@
-// orm_test.baga — migrations + table CRUD against baga_orm.
+// orm_test.baga — migrations + table CRUD against собствена база.
+//
+// Базата се създава при всеки run (baga_orm_test, DROP+CREATE със template0):
+// споделената baga_orm носи чужди редове в baga_schema_migrations и down-ът
+// справедливо отказва върху версии, които не са в набора.
 
 import "ormbaga/orm.baga"
 import "ormbaga/migrate.baga"
@@ -11,8 +15,28 @@ fn check(name: str, cond: bool) {
     if cond {
         print(concat("  ok  ", name))
     } else {
-        print(concat("  FAIL ", name))
+        eprintln(concat("  FAIL ", name))
+        exit(1)
     }
+}
+
+// Собствена база на теста: DROP + CREATE (template0 — заобикаля collation
+// mismatch-а на template1 на стари инсталации).
+fn prepare_orm_db() -> i64 !Net !IO !Random {
+    let host = orm_cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(orm_cfg("PGPORT", "5432")?)
+    let user = orm_cfg("PGUSER", "bagatest")?
+    let password = orm_cfg("PGPASSWORD", "pas+123")?
+    let admin = pg_connect_to(host, port, user, password, "postgres", 5)?
+    if admin.ok == 0 {
+        print(concat("prepare: admin connect failed: ", admin.err))
+        return 1
+    }
+    // DROP+CREATE; ако се провали, следващият connect го казва ясно.
+    let rd = pg_query(admin, "DROP DATABASE IF EXISTS baga_orm_test")?
+    let cd = pg_query(pg_conn_of(rd), "CREATE DATABASE baga_orm_test TEMPLATE template0")?
+    pg_close(pg_conn_of(cd))?
+    return 0
 }
 
 fn main() -> i64 !Net !IO !Random !Par {
@@ -29,11 +53,20 @@ fn main() -> i64 !Net !IO !Random !Par {
     vec_push(idents, "name")
     check("sql_ident_list", sql_ident_list(idents) == "id, name")
 
-    let db0 = orm_connect_env()?
+    let prep = prepare_orm_db()
+    if prep != 0 {
+        print("orm_test: FAILED (prepare baga_orm_test)")
+        return 1
+    }
+    let host = orm_cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(orm_cfg("PGPORT", "5432")?)
+    let user = orm_cfg("PGUSER", "bagatest")?
+    let password = orm_cfg("PGPASSWORD", "pas+123")?
+    let db0 = orm_connect(host, port, user, password, "baga_orm_test")?
     check("connect", orm_ok_db(db0) == 1)
     if orm_ok_db(db0) == 0 {
         print(concat("  connect err: ", orm_err_db(db0)))
-        print("orm_test: FAILED (connect — need baga_orm DB + bagatest)")
+        print("orm_test: FAILED (connect baga_orm_test)")
         return 1
     }
     let mut db = db0
@@ -314,7 +347,7 @@ fn main() -> i64 !Net !IO !Random !Par {
     orm_close(db)?
 
     // connection pool
-    let pool = orm_pool_from_env(2)?
+    let pool = orm_pool_new(host, port, user, password, "baga_orm_test", 2)?
     check("pool_size", orm_pool_size(pool) == 2)
     check("pool_idle2", orm_pool_idle(pool) == 2)
     let lease1 = orm_pool_acquire(pool)?
