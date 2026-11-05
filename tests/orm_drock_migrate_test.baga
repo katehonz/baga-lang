@@ -44,7 +44,9 @@ fn main() -> i64 !Net !IO !Time {
     print("orm_drock_migrate_test:")
     let fails: Map<str, i64> = map_new()
     let db0 = orm_connect_drock_env()?
-    if orm_ok_db(db0) == 0 {
+    // orm_ok_db за drock е оптимистично (връзката се възстановява сама),
+    // затова SKIP гледа и записаната грешка от свързването.
+    if orm_ok_db(db0) == 0 || orm_err_db(db0) != "" {
         print(concat("  SKIP: ", orm_err_db(db0)))
         return 0
     }
