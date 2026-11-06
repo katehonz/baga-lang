@@ -45,6 +45,11 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 5. Do not fork a second web framework without a strong reason.
 6. Every package carries a `sandak.toml` (name == directory name) and builds
    with `sandak build`; imports use package names, never `../../` paths.
+7. **boilaDB is a language-test vehicle.** Its writer threads contend on a
+   single SQL engine, and around ~100 concurrent threads the store goes
+   unstable. Use it to exercise the compiler and ORM against a second backend —
+   not for production workloads. `rocksbaga` via `drockb` is the storage
+   flagship; `app-product/buchnative` runs on it.
 
 ---
 

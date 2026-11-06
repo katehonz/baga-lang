@@ -61,7 +61,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **httpdbaga** | HTTP/1.1 + HTTP/2 + HPACK · [repo](https://github.com/bagalang/httpdbaga) (submodule) |
 | **jwtbaga** | JWT HS256 / RS256 / ES256 — **sign + verify** (RS256 PKCS#1, ES256 det-k), PEM keys · [repo](https://github.com/bagalang/jwtbaga) (submodule) |
 | **pgbaga** | PostgreSQL wire client (SCRAM, `$1` params) · [repo](https://github.com/bagalang/pgbaga) (submodule) |
-| **boilaDB** | Multimodal SQL database (BoilaSQL + PG wire `:6575` + HTTP) — [docs](app-product/boilaDB/docs/README.md) · [repo](https://github.com/bagalang/boilaDB) (submodule) |
+| **boilaDB** | Multimodal SQL database (BoilaSQL + PG wire `:6575` + HTTP) — **language-test vehicle, not for production loads**: writer threads contend on a single SQL engine and the store goes unstable around ~100 concurrent threads · [docs](app-product/boilaDB/docs/README.md) · [repo](https://github.com/bagalang/boilaDB) (submodule) |
 | **boilabaga** | Client adapter to boilaDB over PG wire (`:6575`) · [repo](https://github.com/bagalang/boilabaga) (submodule) |
 | **ormbaga** | ActiveRecord-style ORM + goose migrations (Postgres or boila) · [repo](https://github.com/bagalang/ormbaga) (submodule) |
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired · [repo](https://github.com/bagalang/fmrbaga) (submodule) |
