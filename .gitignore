@@ -15,6 +15,9 @@ lib/
 .env
 **/.env
 
+# reference accounting program (buchnative) — local only, NEVER commit
+app-product/buchnative/secret/
+
 # worktrees
 .worktrees/
 
