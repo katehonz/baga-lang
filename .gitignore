@@ -21,6 +21,9 @@ app-product/buchnative/secret/
 # worktrees
 .worktrees/
 
+# generated images (ImageGen scratch)
+vibe_images/
+
 # Wasmtime C API prebuilts (fetch via app-product/wasmtimebaga/scripts/fetch-wasmtime-c-api.sh)
 app-product/wasmtimebaga/vendor/lib/
 app-product/wasmtimebaga/vendor/include/
