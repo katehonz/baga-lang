@@ -1241,6 +1241,24 @@ LLVMValueRef llv_build_baga_str_eq(void) {
     return fn;
 }
 
+/* M33: < > <= >= върху str — лексикографски чрез strcmp (не указателно). */
+static LLVMValueRef llv_build_baga_str_cmp(const char *name, LLVMIntPredicate pred) {
+    LLVMTypeRef p[] = { lg.ptr_ty, lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, name,
+        LLVMFunctionType(lg.i64_ty, p, 2, 0));
+    llv_h_begin(fn);
+    LLVMValueRef ab[] = { LLVMGetParam(fn, 0), LLVMGetParam(fn, 1) };
+    LLVMValueRef c = llv_h_call(llv_rt_strcmp(), ab, 2, "c");
+    LLVMValueRef cmp = LLVMBuildICmp(lg.builder, pred, c,
+        LLVMConstInt(lg.i32_ty, 0, 0), "cmp");
+    LLVMBuildRet(lg.builder, LLVMBuildZExt(lg.builder, cmp, lg.i64_ty, "r"));
+    return fn;
+}
+LLVMValueRef llv_build_baga_str_lt(void) { return llv_build_baga_str_cmp("baga_str_lt", LLVMIntSLT); }
+LLVMValueRef llv_build_baga_str_gt(void) { return llv_build_baga_str_cmp("baga_str_gt", LLVMIntSGT); }
+LLVMValueRef llv_build_baga_str_le(void) { return llv_build_baga_str_cmp("baga_str_le", LLVMIntSLE); }
+LLVMValueRef llv_build_baga_str_ge(void) { return llv_build_baga_str_cmp("baga_str_ge", LLVMIntSGE); }
+
 /* static const char *baga_str_repeat(const char *s, int64_t n) — една
  * алокация (P55); RHS е чист, без concat-двойки. */
 LLVMValueRef llv_build_baga_str_repeat(void) {

@@ -1153,6 +1153,10 @@ LLVMValueRef llv_baga_rt(const char *name) {
     else if (strcmp(name, "baga_substr") == 0)      fn = llv_build_baga_substr();
     else if (strcmp(name, "baga_concat") == 0)      fn = llv_build_baga_concat();
     else if (strcmp(name, "baga_str_eq") == 0)      fn = llv_build_baga_str_eq();
+    else if (strcmp(name, "baga_str_lt") == 0)      fn = llv_build_baga_str_lt();
+    else if (strcmp(name, "baga_str_gt") == 0)      fn = llv_build_baga_str_gt();
+    else if (strcmp(name, "baga_str_le") == 0)      fn = llv_build_baga_str_le();
+    else if (strcmp(name, "baga_str_ge") == 0)      fn = llv_build_baga_str_ge();
     else if (strcmp(name, "baga_chr") == 0)         fn = llv_build_baga_chr();
     else if (strcmp(name, "baga_byte_chr") == 0)    fn = llv_build_baga_byte_chr();
     else if (strcmp(name, "baga_str_repeat") == 0)  fn = llv_build_baga_str_repeat();

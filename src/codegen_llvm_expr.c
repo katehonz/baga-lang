@@ -1019,6 +1019,29 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
                 }
                 return v;
             }
+            /* M33: str < > <= >= — лексикографски чрез baga_str_lt/gt/le/ge
+             * (strcmp), не указателно сравнение на i8*. */
+            if ((n->bin_op == OP_LT || n->bin_op == OP_GT ||
+                 n->bin_op == OP_LE || n->bin_op == OP_GE) &&
+                n->left->type && n->right->type &&
+                n->left->type->kind == TYPE_STR && n->right->type->kind == TYPE_STR) {
+                LLVMValueRef l = llv_emit_expr_llvm(n->left);
+                LLVMValueRef r = llv_emit_expr_llvm(n->right);
+                if (!l || !r) llv_llvm_unsupported("print в сравнение на низове");
+                const char *fn = n->bin_op == OP_LT ? "baga_str_lt"
+                               : n->bin_op == OP_GT ? "baga_str_gt"
+                               : n->bin_op == OP_LE ? "baga_str_le" : "baga_str_ge";
+                LLVMValueRef sc = llv_baga_rt(fn);
+                LLVMValueRef args[] = { l, r };
+                char *nm = llv_tmp_name();
+                LLVMValueRef cmp = llv_h_call(sc, args, 2, nm);
+                free(nm);
+                char *nm2 = llv_tmp_name();
+                LLVMValueRef v = LLVMBuildICmp(lg.builder, LLVMIntNE, cmp,
+                    LLVMConstInt(lg.i64_ty, 0, 0), nm2);
+                free(nm2);
+                return v;
+            }
             LLVMValueRef left = llv_emit_expr_llvm(n->left);
             LLVMValueRef right = llv_emit_expr_llvm(n->right);
             if (!left || !right) llv_llvm_unsupported("print в аритметичен израз");

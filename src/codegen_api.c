@@ -706,6 +706,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static const char *baga_i64_to_str(int64_t x) { char *r = baga_alloc(24); int64_t n = (int64_t)snprintf(r, 24, \"%%lld\", (long long)x); baga_set_slen(r, n); return r; }\n");
     fprintf(out, "static const char *baga_f64_to_str(double x) { char *r = baga_alloc(32); int64_t n = (int64_t)snprintf(r, 32, \"%%g\", x); baga_set_slen(r, n); return r; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
+    /* M33: < > <= >= върху str са лексикографски (strcmp), не указателни. */
+    fprintf(out, "static int64_t baga_str_lt(const char *a, const char *b) { return strcmp(a, b) < 0; }\n");
+    fprintf(out, "static int64_t baga_str_gt(const char *a, const char *b) { return strcmp(a, b) > 0; }\n");
+    fprintf(out, "static int64_t baga_str_le(const char *a, const char *b) { return strcmp(a, b) <= 0; }\n");
+    fprintf(out, "static int64_t baga_str_ge(const char *a, const char *b) { return strcmp(a, b) >= 0; }\n");
     /* M22: отмествания с маскиран брояч (b & 63) — детерминирано, паритет
      * с LLVM (shl/ashr след and 63). C `>>` върху отрицателни е
      * имплементационно дефиниран; baga_ashr_i64 е аритметично (floor). */

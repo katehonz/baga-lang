@@ -427,6 +427,19 @@ void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, "), (int64_t)(");
                 emit_expr(cg, n->right);
                 fprintf(f, ")))");
+            } else if ((n->bin_op == OP_LT || n->bin_op == OP_GT ||
+                        n->bin_op == OP_LE || n->bin_op == OP_GE) &&
+                       n->left->type && n->left->type->kind == TYPE_STR) {
+                /* M33: < > <= >= върху str са лексикографски (strcmp), не
+                 * указателни — C `const char* < const char*` сравнява адреси. */
+                const char *fn = n->bin_op == OP_LT ? "baga_str_lt"
+                               : n->bin_op == OP_GT ? "baga_str_gt"
+                               : n->bin_op == OP_LE ? "baga_str_le" : "baga_str_ge";
+                fprintf(f, "%s(", fn);
+                emit_expr(cg, n->left);
+                fprintf(f, ", ");
+                emit_expr(cg, n->right);
+                fprintf(f, ")");
             } else if (n->bin_op == OP_AND || n->bin_op == OP_OR) {
                 /* RC4 v1.1: десният операнд се оценява условно — локален
                  * wrap пуска temp-овете му веднага след оценката (не се

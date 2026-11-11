@@ -1,0 +1,38 @@
+// str_cmp_test — M33: < > <= >= върху str са лексикографски (strcmp),
+// не указателни. C↔LLVM паритет.
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok { print(concat("ok ", name)) }
+    else { eprintln(concat("FAIL ", name)); exit(1) }
+}
+
+fn main() {
+    check("lt", "a" < "b")
+    check("gt", "b" > "a")
+    check("le", "a" <= "a")
+    check("ge", "b" >= "b")
+    check("not_lt", !("b" < "a"))
+    check("date_lt", "2026-03-02" < "2026-03-31")
+    check("date_gt", "2026-03-31" > "2026-03-02")
+    check("prefix", "ab" < "abc")
+    check("prefix_gt", "abc" > "ab")
+    check("empty_lt", "" < "a")
+    check("empty_ge", "" >= "")
+    // стойности от Vec — указателното сравнение се чупеше точно тук
+    let ds: Vec<str> = vec_new()
+    vec_push(ds, "2026-03-31")
+    vec_push(ds, "2026-03-02")
+    let mut mn = ""
+    let mut mx = ""
+    let mut i: i64 = 0
+    while i < vec_len(ds) {
+        let d = vec_get(ds, i)
+        if mn == "" || d < mn { mn = d }
+        if mx == "" || d > mx { mx = d }
+        i = i + 1
+    }
+    check("vec_min", mn == "2026-03-02")
+    check("vec_max", mx == "2026-03-31")
+    print("str_cmp_test: all passed")
+}

@@ -171,6 +171,10 @@ LLVMValueRef llv_build_baga_byte_at(void);   /* 1629 */
 LLVMValueRef llv_build_baga_substr(void);   /* 1645 */
 LLVMValueRef llv_build_baga_concat(void);   /* 1676 */
 LLVMValueRef llv_build_baga_str_eq(void);   /* 1706 */
+LLVMValueRef llv_build_baga_str_lt(void);   /* M33 */
+LLVMValueRef llv_build_baga_str_gt(void);   /* M33 */
+LLVMValueRef llv_build_baga_str_le(void);   /* M33 */
+LLVMValueRef llv_build_baga_str_ge(void);   /* M33 */
 LLVMValueRef llv_build_baga_chr(void);   /* 1722 */
 LLVMValueRef llv_build_baga_byte_chr(void);   /* baga_byte_chr */
 LLVMValueRef llv_build_baga_str_repeat(void);   /* baga_str_repeat */
